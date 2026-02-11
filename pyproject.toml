@@ -1,0 +1,23 @@
+[project]
+name = "unienv_genesis"
+version = "0.0.1a1"
+readme = "README.md"
+license = "MIT"
+requires-python = ">= 3.10"
+dependencies = [
+    "unienv",
+    "genesis-world",
+]
+
+[project.optional-dependencies]
+
+[project.urls]
+Homepage = "https://github.com/UniEnvOrg/genesis_adaptor"
+Documentation = "https://github.com/UniEnvOrg/genesis_adaptor"
+Repository = "https://github.com/UniEnvOrg/genesis_adaptor"
+Issues = "https://github.com/UniEnvOrg/genesis_adaptor/issues"
+Changelog = "https://github.com/UniEnvOrg/genesis_adaptor/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+include = ["*"]
+exclude = ["training*", "tests*"]
