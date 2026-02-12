@@ -1,0 +1,176 @@
+"""Robot entity node for loading URDF/MJCF/USD files."""
+
+from typing import Literal, Optional, Dict, Any, List, Tuple, Union
+import genesis as gs
+from genesis.engine.entities.base_entity import Entity as BaseEntity
+from genesis.engine import entities as gs_entities
+import torch
+import logging
+import os
+import abc
+from dataclasses import dataclass
+from unienv_interface.space import Space, DictSpace, BoxSpace
+from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
+from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_interface.world.nodes.flat_combined_node import FlatCombinedWorldNode
+from .base import EntityNode, ContextType, ObsType, ActType
+from .entity_controllers.base import EntityController
+
+LOGGER = logging.getLogger(__name__)
+
+@dataclass
+class RobotKeyframe:
+    """Keyframe for robot pose."""
+    pos: Optional[PyTorchArrayType] = None # Shape (3,)
+    quat: Optional[PyTorchArrayType] = None # (w, x, y, z)
+    joint_position: Optional[PyTorchArrayType] = None # Shape (n_dofs,)
+    joint_velocity: Optional[PyTorchArrayType] = None # Shape (n_dofs,)
+
+class RobotDescriptionNode(EntityNode[
+    BaseEntity,
+    ContextType,
+    ObsType,
+    ActType,
+], abc.ABC):
+    """Node for loading robot models (URDF/MJCF/USD)."""
+    reload_priorities = {-50}
+    reset_priorities = {-50}
+
+    after_reload_priorities = {-50, 0}
+    after_reset_priorities = {-50, 0} 
+    # Triggers agent `qpos` reset before any normal nodes are being reset
+
+    pre_environment_step_priorities = {0}
+    post_environment_step_priorities = {0}
+
+    def initialize_entity_from_description_file(self, description_file: Union[str, os.PathLike]) -> BaseEntity:
+        """Load a Genesis Morph from a description file."""
+        description_base = os.path.basename(description_file)
+        if description_base.endswith('.urdf'):
+            morph = gs.morphs.URDF(description_file, fixed=self.fix_root)
+        elif description_base.endswith('.xml'):
+            with open(description_file, "r") as f:
+                f_content = f.read()
+                has_frejoint = f_content.find("freejoint") != -1
+                if has_frejoint and self.fix_root:
+                    logging.warning("`self.fix_root` is set to True, but the MJCF has `freejoint` attributes. By default Genesis will always follow the MJCF specification, which may cause unexpected behaviors")
+                elif not has_frejoint and not self.fix_root:
+                    logging.warning("`self.fix_root` is set to False, but the MJCF does not have `freejoint` attributes. By default Genesis will always follow the MJCF specification, which may cause unexpected behaviors")
+
+            morph = gs.morphs.MJCF(description_file)
+        elif description_base.endswith('.usd') or description_base.endswith('.usda') or description_base.endswith('.usdc'):
+            morph = gs.morphs.USD(description_file, fixed=self.fix_root)
+        else:
+            raise ValueError(f"Unsupported robot description file format: {description_file}")
+        entity = self.world.scene.add_entity(morph)
+
+        return entity
+
+    @abc.abstractmethod
+    def init_controller(self) -> EntityController:
+        raise NotImplementedError
+    
+    def __init__(
+        self,
+        world: GenesisWorld,
+        name: str,
+        description_file: str,
+        control_timestep: Optional[float] = None,
+        update_timestep: Optional[float] = None,
+        keyframes : Dict[Union[Literal['reset'], str], RobotKeyframe] = {},
+        fix_root : bool = True,
+    ):
+        super().__init__(world, name)
+        self.world : GenesisWorld = world
+        self.description_file = description_file
+        self.control_timestep = control_timestep
+        self.update_timestep = update_timestep
+        self.fix_root = fix_root
+        self.keyframes = keyframes
+
+        self.entity : Optional[BaseEntity] = None
+        self.controller : Optional[EntityController] = None
+        self.reload(priority=0)
+
+        self._last_observation = None
+        self._next_action = None
+
+    def update_observation(self):
+        self._last_observation = self.controller.get_observation()
+
+    def reload(
+        self,
+        *,
+        priority: int = 0,
+        seed: Optional[int] = None,
+        mask: Optional[PyTorchArrayType] = None,
+        **kwargs
+    ) -> None:
+        if priority == -50:
+            assert os.path.exists(self.description_file), f"Description file not found: {self.description_file}"
+            self.entity = self.initialize_entity_from_description_file(self.description_file)
+            if self.controller is None:
+                self.controller = self.init_controller()
+                self.controller.reload(mask=mask)
+            else:
+                self.controller.entity = self.entity
+                self.controller.reload(mask=mask)
+    
+    def reset(self, *, priority = 0, seed = None, mask = None, **kwargs):
+        if priority == -50:
+            if self.controller is not None:
+                self.controller.reset(mask=mask)
+
+    def after_reset(self, *, priority = 0, mask = None):
+        if priority == -10:
+            if 'reset' in self.keyframes and isinstance(self.entity, gs_entities.RigidEntity):
+                reset_keyframe = self.keyframes['reset']
+                if mask is not None:
+                    env_idx = torch.nonzero(mask)[0]
+                else:
+                    env_idx = None
+                if reset_keyframe.pos is not None:
+                    self.entity.set_pos(
+                        reset_keyframe.pos,
+                        envs_idx=env_idx
+                    )
+                if reset_keyframe.quat is not None:
+                    self.entity.set_quat(
+                        reset_keyframe.quat,
+                        envs_idx=env_idx
+                    )
+                if reset_keyframe.joint_position is not None:
+                    self.entity.set_dofs_position(
+                        reset_keyframe.joint_position,
+                        envs_idx=env_idx
+                    )
+                if reset_keyframe.joint_velocity is not None:
+                    self.entity.set_dofs_velocity(
+                        reset_keyframe.joint_velocity,
+                        envs_idx=env_idx,
+                    )
+        elif priority == 0:
+            self.update_observation()
+    
+    def after_reload(self, *, priority = 0, mask = None):
+        return self.after_reset(self, priority=priority, mask=mask)
+    
+    def pre_environment_step(self, dt, *, priority = 0):
+        if priority == 0:
+            if self._next_action is not None:
+                self.controller.apply_action(self._next_action)
+
+    def post_environment_step(
+        self,
+        dt: Union[float, PyTorchArrayType],
+        *,
+        priority: int = 0
+    ) -> None:
+        if priority == 0:
+            self.update_observation()
+
+    def get_observation(self) -> Optional[Dict[str, PyTorchArrayType]]:
+        return self._last_observation
+
+    def set_next_action(self, action):
+        self._next_action = action

@@ -1,0 +1,107 @@
+from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Generic, TypeVar, Sequence
+import abc
+import genesis as gs
+from genesis.engine import entities as gs_entities 
+import torch
+from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
+from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
+from unienv_genesis.world.genesis_world import GenesisWorld
+from .base import DiscreteEntityController, EntityType, ActType
+
+class JointPositionAndVelocityController(
+    DiscreteEntityController[
+        PyTorchArrayType
+    ]
+):
+    controller_type = "joint_position_and_velocity"
+
+    def __init__(
+        self,
+        world : GenesisWorld,
+        entity : gs_entities.RigidEntity,
+        Kp : Optional[Union[float, PyTorchArrayType]] = None,
+        Kd : Optional[Union[float, PyTorchArrayType]] = None,
+        joint_indexes : Optional[Sequence[int]] = None,
+    ) -> None:
+        joint_limit_low, joint_limit_high = entity.get_dofs_limit(dofs_idx_local=joint_indexes)
+        n_envs = world.batch_size
+        if joint_limit_low.ndim == 1:
+            joint_limit_low = joint_limit_low.unsqueeze(0).expand(n_envs, -1)
+            joint_limit_high = joint_limit_high.unsqueeze(0).expand(n_envs, -1)
+
+        action_space = DictSpace(
+            PyTorchComputeBackend,
+            {
+                "target_joint_position": BoxSpace(
+                    PyTorchComputeBackend,
+                    low=joint_limit_low,
+                    high=joint_limit_high,
+                    dtype=joint_limit_low.dtype,
+                    device=joint_limit_low.device,
+                ),
+                "target_joint_velocity": BoxSpace(
+                    PyTorchComputeBackend,
+                    low=-torch.inf,
+                    high=torch.inf,
+                    shape=joint_limit_low.shape,
+                    dtype=joint_limit_low.dtype,
+                    device=joint_limit_low.device,
+                ),
+            },
+            device=joint_limit_low.device,
+        )
+        super().__init__(world, entity, joint_indexes, action_space)
+        self.Kp = Kp
+        self.Kd = Kd
+    
+    @property
+    def Kp(self) -> Optional[Union[float, PyTorchArrayType]]:
+        return self._Kp
+    
+    @Kp.setter
+    def Kp(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
+        self._Kp = value
+        if value is not None:
+            self._Kp_expanded = self._broadcast_to_dofs(
+                value, self.world.batch_size, self.entity.n_dofs, device=self.world.device
+            )
+            self.entity.set_dofs_kp(
+                self._Kp_expanded, dofs_idx_local=self.joint_indexes
+            )
+        else:
+            self._Kp_expanded = None
+
+    @property
+    def Kd(self) -> Optional[Union[float, PyTorchArrayType]]:
+        return self._Kd
+    
+    @Kd.setter
+    def Kd(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
+        self._Kd = value
+        if value is not None:
+            self._Kd_expanded = self._broadcast_to_dofs(
+                value, self.world.batch_size, self.entity.n_dofs, device=self.world.device
+            )
+            self.entity.set_dofs_kv(
+                self._Kd_expanded, dofs_idx_local=self.joint_indexes
+            )
+        else:
+            self._Kd_expanded = None
+
+    def reload(self, mask = None):
+        if mask is not None:
+            env_idx = torch.nonzero(mask)[0]
+        else:
+            env_idx = None
+        # Set the controller for the entity
+        if self._Kp_expanded is not None:
+            self.entity.set_dofs_kp(self._Kp_expanded, dofs_idx_local=self.joint_indexes, envs_idx=env_idx)
+        if self._Kd_expanded is not None:
+            self.entity.set_dofs_kv(self._Kd_expanded, dofs_idx_local=self.joint_indexes, envs_idx=env_idx)
+
+    def apply_action(self, action):
+        self.entity.control_dofs_position_velocity(
+            action['target_joint_position'],
+            action['target_joint_velocity'],
+            dofs_idx_local=self.joint_indexes
+        )
