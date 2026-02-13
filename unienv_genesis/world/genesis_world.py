@@ -20,17 +20,8 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     This wraps a Genesis scene and provides UniEnv World interface.
     Supports parallel environments via Genesis's built-in batching.
     
-    Example:
-        # Using explicit scene creation
-        scene = gs.Scene(...)
-        world = GenesisWorld(scene=scene, batch_size=4)
-        
-        # Or using the create() factory method with all Genesis options
-        world = GenesisWorld.create(
-            batch_size=4,
-            sim_options=gs.options.SimOptions(dt=0.02),
-            show_viewer=True,
-        )
+    Note:
+    This implementation does not support `n_envs = 0` because it adds significant complexity to handle when the return values of various functions (like forward kinematics) can be either batched or unbatched. By enforcing `n_envs > 0`, we can ensure that all return values are consistently batched, simplifying the implementation and reducing potential bugs.
     """
     GS_INIT_KWARGS_DEFAULT = {
         "backend": gs.gs_backend.gpu,
@@ -50,7 +41,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             batch_size: Number of parallel environments
         """
         self.scene = scene
-        self._batch_size = batch_size
+        self.batch_size = batch_size
         
         # Track if scene is built
         self._scene_built = False
