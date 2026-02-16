@@ -62,7 +62,7 @@ class RobotDescriptionNode(EntityNode[
             morph = gs.morphs.USD(description_file, fixed=self.fix_root)
         else:
             raise ValueError(f"Unsupported robot description file format: {description_file}")
-        entity = self.world.scene.add_entity(morph)
+        entity = self.world.scene.add_entity(morph, name=self._name)
 
         return entity
 
@@ -73,18 +73,16 @@ class RobotDescriptionNode(EntityNode[
     def __init__(
         self,
         world: GenesisWorld,
-        name: str,
         description_file: str,
+        name: Optional[str] = None,
         control_timestep: Optional[float] = None,
         update_timestep: Optional[float] = None,
         keyframes : Dict[Union[Literal['reset'], str], RobotKeyframe] = {},
         fix_root : bool = True,
     ):
-        super().__init__(world, name)
+        super().__init__(world, name, control_timestep, update_timestep)
         self.world : GenesisWorld = world
         self.description_file = description_file
-        self.control_timestep = control_timestep
-        self.update_timestep = update_timestep
         self.fix_root = fix_root
         self.keyframes = keyframes
 

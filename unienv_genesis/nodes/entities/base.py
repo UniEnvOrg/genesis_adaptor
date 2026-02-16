@@ -44,17 +44,25 @@ class EntityNode(ABC, WorldNode[
     def __init__(
         self,
         world: GenesisWorld,
-        name: str,
+        name: Optional[str] = None,
         control_timestep : Optional[float] = None,
         update_timestep : Optional[float] = None,
     ):
-        self.name = name
+        self._name = name
         self.world = world
         
-        self.entity: Optional[EntityType] = None
+        self.entity : Optional[EntityType] = None
         
         self._control_timestep = control_timestep
         self._update_timestep = update_timestep
+    
+    @property
+    def name(self) -> str:
+        return self._name or self.entity.name
+    
+    @name.setter
+    def name(self, value: str) -> None:
+        self._name = value
     
     @property
     def control_timestep(self) -> float:

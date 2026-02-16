@@ -30,8 +30,9 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     
     def __init__(
         self,
-        scene: gs.Scene,
         batch_size: int = 1,
+        scene_init_kwargs : Dict[str, Any] = {},
+        scene_build_kwargs : Dict[str, Any] = {},
     ):
         """Initialize Genesis World.
         
@@ -40,12 +41,30 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
                    to create a scene with default simulation options.
             batch_size: Number of parallel environments
         """
-        self.scene = scene
-        self.batch_size = batch_size
+        if not gs._initialized:
+            gs.init(**self.GS_INIT_KWARGS_DEFAULT)
         
-        # Track if scene is built
-        self._scene_built = False
+        self.batch_size = batch_size
+        self.scene_init_kwargs = scene_init_kwargs
+        self.scene_build_kwargs = scene_build_kwargs
+        self.scene = self.create_scene()
     
+    def create_scene(
+        self,
+    ) -> gs.Scene:
+        scene = gs.Scene(
+            **self.scene_init_kwargs
+        )
+        return scene
+
+    def build_scene(self) -> None:
+        """Build the Genesis scene."""
+        if not self.scene.is_built:
+            self.scene.build(
+                n_envs=self.batch_size,
+                **self.scene_build_kwargs
+            )
+
     @property
     def backend(self):
         """Compute backend for tensor operations."""
@@ -79,91 +98,13 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         Returns world_timestep divided by number of substeps.
         """
         return self.world_timestep / self.scene.sim.substeps
-
-    @staticmethod
-    def create(
-        batch_size: int = 1,
-        # gs.Scene parameters (exact match to gs.Scene.__init__)
-        sim_options: Optional[gs.options.SimOptions] = None,
-        coupler_options: Optional[gs.options.BaseCouplerOptions] = None,
-        tool_options: Optional[gs.options.ToolOptions] = None,
-        rigid_options: Optional[gs.options.RigidOptions] = None,
-        mpm_options: Optional[gs.options.MPMOptions] = None,
-        sph_options: Optional[gs.options.SPHOptions] = None,
-        fem_options: Optional[gs.options.FEMOptions] = None,
-        sf_options: Optional[gs.options.SFOptions] = None,
-        pbd_options: Optional[gs.options.PBDOptions] = None,
-        vis_options: Optional[gs.options.VisOptions] = None,
-        viewer_options: Optional[gs.options.ViewerOptions] = None,
-        profiling_options: Optional[gs.options.ProfilingOptions] = None,
-        renderer: Optional[gs.renderers.RendererOptions] = None,
-        show_viewer: bool = False,
-        show_FPS: Optional[bool] = None,  # deprecated, use profiling_options.show_FPS instead
-    ) -> "GenesisWorld":
-        """Factory method to create a GenesisWorld with all Genesis Scene options.
-        
-        This is a direct wrapper around gs.Scene.__init__. See Genesis documentation
-        for details on each option type.
-        
-        Args:
-            batch_size: Number of parallel environments
-            sim_options: Simulation options (dt, substeps, gravity, etc.)
-            coupler_options: Coupler options
-            tool_options: Tool options
-            rigid_options: Rigid body physics options
-            mpm_options: Material Point Method options
-            sph_options: Smoothed Particle Hydrodynamics options
-            fem_options: Finite Element Method options
-            sf_options: Stable Fluids options
-            pbd_options: Position Based Dynamics options
-            vis_options: Visualization options
-            viewer_options: Interactive viewer options
-            profiling_options: Profiling options
-            renderer: Custom renderer
-            show_viewer: Show interactive viewer window
-            show_FPS: Deprecated, use profiling_options.show_FPS instead
-            
-        Returns:
-            GenesisWorld instance with configured scene
-        """
-        scene = gs.Scene(
-            sim_options=sim_options,
-            coupler_options=coupler_options,
-            tool_options=tool_options,
-            rigid_options=rigid_options,
-            mpm_options=mpm_options,
-            sph_options=sph_options,
-            fem_options=fem_options,
-            sf_options=sf_options,
-            pbd_options=pbd_options,
-            vis_options=vis_options,
-            viewer_options=viewer_options,
-            profiling_options=profiling_options,
-            renderer=renderer,
-            show_viewer=show_viewer,
-            show_FPS=show_FPS,
-        )
-        
-        return GenesisWorld(scene=scene, batch_size=batch_size)
-    
-    def build(self) -> None:
-        if not gs._initialized:
-            gs.init(**self.GS_INIT_KWARGS_DEFAULT)
-        
-        """Build the Genesis scene. Must be called before simulation."""
-        if not self._scene_built:
-            self.scene.build(n_envs=self.batch_size)
-            self._scene_built = True
         
     def step(self) -> float:
         """Step the Genesis simulation.
         
         Returns:
             float: Simulation timestep (world_timestep)
-        """
-        if not self._scene_built:
-            self.build()
-            
+        """        
         self.scene.step()
         
         return self.world_timestep
@@ -181,10 +122,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             seed: Random seed for reproducibility
             mask: Boolean mask for which environments to reset (batch_size,)
             **kwargs: Additional arguments passed to scene.reset()
-        """
-        if not self._scene_built:
-            self.reload(seed=seed, mask=mask, **kwargs)
-            
+        """  
         if seed is not None:
             gs.set_random_seed(seed)
         
@@ -193,7 +131,14 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             self.scene.reset(envs_idx=env_indices)
         else:
             self.scene.reset()
-        
+
+    def after_reset(self, *, seed = None, mask = None, **kwargs):
+        if not self.scene.is_built:
+            self.reload(seed=seed, mask=mask, **kwargs)
+            return
+        if seed is not None:
+            gs.set_random_seed(seed)
+
     def reload(
         self,
         *,
@@ -211,9 +156,10 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             gs.set_random_seed(seed)
         
         # Clear scene if it was previously built
-        if self._scene_built:
+        if self.scene.is_built:
             self.scene.destroy()
-            self._scene_built = False
+        
+        self.scene = self.create_scene()
     
     def after_reload(
         self,
@@ -224,16 +170,12 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     ) -> None:
         """Compile the scene AFTER all nodes have added their entities."""
         assert mask is None, "Masking not supported in after_reload()"
-        if not self._scene_built:
-            self.build()
-        
         if seed is not None:
             gs.set_random_seed(seed)
+        
+        self.build_scene()
         
     def close(self) -> None:
         """Close the Genesis simulation and cleanup."""
         # Genesis handles cleanup automatically
-        if self._scene_built:
-            self.scene.destroy()
-            self._scene_built = False
-
+        self.scene.destroy()
