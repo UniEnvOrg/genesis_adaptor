@@ -92,12 +92,12 @@ class EndEffectorPoseController(
         self,
         world : GenesisWorld,
         entity : RigidEntity,
-        base_frame : Optional[Union[str, RigidLink, RigidEntity]],
         target_link : Union[str, RigidLink],
+        base_frame : Optional[Union[str, RigidLink, RigidEntity]] = None,
         Kp : Optional[Union[float, PyTorchArrayType]] = None,
         Kd : Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes : Optional[Sequence[int]] = None,
-        rotation_representation : str = "quat", # "euler", "quat", "rot6d"
+        rotation_representation : str = "euler", # "euler", "quat", "rot6d"
         normalize_rotation_action : bool = False,
         **ik_kwargs,
     ) -> None:

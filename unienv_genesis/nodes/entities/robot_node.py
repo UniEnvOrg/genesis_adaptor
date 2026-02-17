@@ -15,6 +15,7 @@ from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_interface.world.nodes.flat_combined_node import FlatCombinedWorldNode
 from .base import EntityNode, ContextType, ObsType, ActType
 from .entity_controllers.base import EntityController
+from .entity_controllers import CONTROL_MODE_MAP, CONTROL_MODE_T
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,10 +67,6 @@ class RobotDescriptionNode(EntityNode[
 
         return entity
 
-    @abc.abstractmethod
-    def init_controller(self) -> EntityController:
-        raise NotImplementedError
-
     @property
     def observation_space(self) -> Optional[Space[ObsType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]]:
         return self.controller.observation_space if self.controller is not None else None
@@ -87,12 +84,16 @@ class RobotDescriptionNode(EntityNode[
         update_timestep: Optional[float] = None,
         keyframes : Dict[Union[Literal['reset'], str], RobotKeyframe] = {},
         fix_root : bool = True,
+        controller_type: CONTROL_MODE_T = "joint_position_and_velocity",
+        **controller_kwargs,
     ):
         super().__init__(world, name, control_timestep, update_timestep)
         self.world : GenesisWorld = world
         self.description_file = description_file
         self.fix_root = fix_root
         self.keyframes = keyframes
+        self.controller_type = controller_type
+        self.controller_kwargs = controller_kwargs
 
         self.entity : Optional[BaseEntity] = None
         self.controller : Optional[EntityController] = None
@@ -100,6 +101,33 @@ class RobotDescriptionNode(EntityNode[
 
         self._last_observation = None
         self._next_action = None
+
+    def init_controller(self) -> EntityController:
+        """Initialize the controller based on controller_type and controller_kwargs.
+        
+        This method creates a controller instance using the controller_type
+        specified in __init__ (default: "joint_position_and_velocity").
+        
+        Subclasses can override this method to provide custom controller logic.
+        
+        Returns:
+            EntityController instance
+            
+        Raises:
+            ValueError: If controller_type is not recognized
+        """
+        if self.controller_type not in CONTROL_MODE_MAP:
+            raise ValueError(
+                f"Unknown controller_type: {self.controller_type}. "
+                f"Available types: {list(CONTROL_MODE_MAP.keys())}"
+            )
+        
+        controller_class = CONTROL_MODE_MAP[self.controller_type]
+        return controller_class(
+            world=self.world,
+            entity=self.entity,
+            **self.controller_kwargs
+        )
 
     def update_observation(self):
         self._last_observation = self.controller.get_observation()
