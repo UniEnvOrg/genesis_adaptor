@@ -275,7 +275,7 @@ class CameraSensorNode(SensorNode[
         """Get the observation space for this camera sensor."""
         spaces: Dict[str, Space] = {}
 
-        W, H = self._applied_option.res
+        W, H = self.option.res
         if self.render_rgb:
             spaces["rgb"] = BoxSpace(
                 PyTorchComputeBackend,
@@ -324,6 +324,10 @@ class CameraSensorNode(SensorNode[
 
     def update_observation(self) -> None:
         """Render and cache camera observations."""
+        # Move camera to attached link's current position before rendering
+        if self.attach_entity_name is not None:
+            self.sensor.move_to_attach()
+        
         rgb, depth, segmentation, normal = self.sensor.render(
             rgb=self.render_rgb,
             depth=self.render_depth,
