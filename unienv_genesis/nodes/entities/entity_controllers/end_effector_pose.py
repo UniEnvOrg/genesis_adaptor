@@ -19,7 +19,7 @@ from unienv_genesis.utils.batch_dim_utils import (
     get_batch_aware_shape,
     is_batched,
 )
-from .base import DiscreteEntityControllerNode, EntityType, ActType
+from .base import DiscreteEntityController, EntityType, ActType
 from .joint_position_velocity_control import JointPositionAndVelocityController
 from typing import TYPE_CHECKING
 

@@ -6,10 +6,10 @@ import torch
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
-from .base import DiscreteEntityControllerNode, EntityType, ActType
+from .base import DiscreteEntityController, EntityType, ActType
 from .joint_position_velocity_control import JointPositionAndVelocityController
 
-class JointVelocityControllerNode(
+class JointVelocityController(
     JointPositionAndVelocityController
 ):
     controller_type = "joint_velocity"

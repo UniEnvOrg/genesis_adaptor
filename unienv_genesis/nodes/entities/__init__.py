@@ -1,6 +1,6 @@
 """Entity nodes for Genesis."""
 
-from unienv_genesis.nodes.entities.base import RigidEntityNode
-from unienv_genesis.nodes.entities.robot_node import RobotNode
+from .base import EntityNode
+from .robot_node import RobotKeyframe, RobotDescriptionNode
 
-__all__ = ["RigidEntityNode", "RobotNode"]
+__all__ = ["EntityNode", "RobotKeyframe", "RobotDescriptionNode"]
