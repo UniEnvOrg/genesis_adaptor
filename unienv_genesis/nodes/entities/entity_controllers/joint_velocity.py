@@ -1,7 +1,7 @@
 from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Generic, TypeVar, Sequence
 import abc
 import genesis as gs
-from genesis.engine import entities as gs_entities 
+from genesis.engine import entities as gs_entities
 import torch
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
@@ -21,8 +21,10 @@ class JointVelocityController(
         Kp : Optional[Union[float, PyTorchArrayType]] = None,
         Kd : Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes : Optional[Sequence[int]] = None,
+        min_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
+        max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel)
         self.action_space = self.action_space['target_joint_velocity']
 
     def apply_action(self, action):

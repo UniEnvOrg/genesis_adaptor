@@ -20,7 +20,7 @@ from unienv_genesis.utils.batch_dim_utils import (
     is_batched,
 )
 from .base import DiscreteEntityController, EntityType, ActType
-from .joint_position_velocity_control import JointPositionAndVelocityController
+from .joint_position import JointPositionController
 from typing import TYPE_CHECKING
 
 class AbsoluteRotationConventionUtils:
@@ -84,7 +84,7 @@ class AbsoluteRotationConventionUtils:
         return action
 
 class EndEffectorPoseController(
-    JointPositionAndVelocityController
+    JointPositionController
 ):
     controller_type = "eef_pose"
 
@@ -314,10 +314,7 @@ class EndEffectorPoseController(
             target_pos, target_rot_quat
         ) # (batch_size, n_dof), (batch_size, 3), (batch_size, 4), (batch_size, 6)
         
-        self.entity.control_dofs_position(
-            target_joint_positions,
-            dofs_idx_local=self.joint_indexes
-        )
+        super().apply_action(target_joint_positions)
         self._last_ik_result = {
             'target_joint_positions': target_joint_positions,
             'achieved_position': achieved_position,

@@ -1,7 +1,7 @@
 from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Generic, TypeVar, Sequence
 import abc
 import genesis as gs
-from genesis.engine import entities as gs_entities 
+from genesis.engine import entities as gs_entities
 import torch
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
@@ -27,12 +27,24 @@ class JointPositionAndVelocityController(
         Kp : Optional[Union[float, PyTorchArrayType]] = None,
         Kd : Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes : Optional[Sequence[int]] = None,
+        min_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
+        max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
     ) -> None:
         n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
         batch_size = world.batch_size
-        
+
         # Get limits from entity - returns (low, high) tuple of shape (batch_size, n_dofs) or (n_dofs,)
         joint_limit_low, joint_limit_high = entity.get_dofs_limit(dofs_idx_local=joint_indexes)
+
+        # Build velocity limit tensors if provided
+        vel_low = (
+            broadcast_to_batch(min_joint_vel, batch_size, n_dofs, device=joint_limit_low.device)
+            if min_joint_vel is not None else None
+        )
+        vel_high = (
+            broadcast_to_batch(max_joint_vel, batch_size, n_dofs, device=joint_limit_low.device)
+            if max_joint_vel is not None else None
+        )
 
         action_space = DictSpace(
             PyTorchComputeBackend,
@@ -46,9 +58,9 @@ class JointPositionAndVelocityController(
                 ),
                 "target_joint_velocity": BoxSpace(
                     PyTorchComputeBackend,
-                    low=-torch.inf,
-                    high=torch.inf,
-                    shape=get_batch_aware_shape(batch_size, n_dofs),
+                    low=vel_low if vel_low is not None else -torch.inf,
+                    high=vel_high if vel_high is not None else torch.inf,
+                    shape=None if vel_low is not None else get_batch_aware_shape(batch_size, n_dofs),
                     dtype=joint_limit_low.dtype,
                     device=joint_limit_low.device,
                 ),
@@ -58,11 +70,11 @@ class JointPositionAndVelocityController(
         super().__init__(world, entity, joint_indexes, action_space)
         self.Kp = Kp
         self.Kd = Kd
-    
+
     @property
     def Kp(self) -> Optional[Union[float, PyTorchArrayType]]:
         return self._Kp
-    
+
     @Kp.setter
     def Kp(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
         self._Kp = value
@@ -79,7 +91,7 @@ class JointPositionAndVelocityController(
     @property
     def Kd(self) -> Optional[Union[float, PyTorchArrayType]]:
         return self._Kd
-    
+
     @Kd.setter
     def Kd(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
         self._Kd = value

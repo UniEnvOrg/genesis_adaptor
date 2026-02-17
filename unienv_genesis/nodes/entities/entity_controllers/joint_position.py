@@ -1,7 +1,7 @@
 from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Generic, TypeVar, Sequence
 import abc
 import genesis as gs
-from genesis.engine import entities as gs_entities 
+from genesis.engine import entities as gs_entities
 import torch
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
