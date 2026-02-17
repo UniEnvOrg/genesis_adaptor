@@ -33,6 +33,11 @@ from unienv_genesis.world.genesis_world import GenesisWorld
 
 from .base import SensorNode, ContextType, ObsType
 
+__all__ = [
+    "CameraSensorNodeOptions",
+    "CameraSensorNode",
+]
+
 CameraSensor = Union[Camera, BatchRenderer]
 class CameraSensorNodeOptions(Options):
     model : Literal['pinhole', 'thinlens', 'fisheye'] = "pinhole"

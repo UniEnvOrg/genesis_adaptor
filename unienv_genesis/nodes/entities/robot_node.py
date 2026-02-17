@@ -17,6 +17,11 @@ from .base import EntityNode, ContextType, ObsType, ActType
 from .entity_controllers.base import EntityController
 from .entity_controllers import CONTROL_MODE_MAP, CONTROL_MODE_T
 
+__all__ = [
+    "RobotKeyframe",
+    "RobotDescriptionNode",
+]
+
 LOGGER = logging.getLogger(__name__)
 
 @dataclass
