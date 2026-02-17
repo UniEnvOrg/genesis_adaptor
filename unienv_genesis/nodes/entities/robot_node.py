@@ -39,11 +39,11 @@ class RobotDescriptionNode(EntityNode[
     ActType,
 ], abc.ABC):
     """Node for loading robot models (URDF/MJCF/USD)."""
-    reload_priorities = {-50}
-    reset_priorities = {-50}
+    reload_priorities = {50}
+    reset_priorities = {50}
 
-    after_reload_priorities = {-50, 0}
-    after_reset_priorities = {-50, 0} 
+    after_reload_priorities = {50, 0}
+    after_reset_priorities = {50, 0}
     # Triggers agent `qpos` reset before any normal nodes are being reset
 
     pre_environment_step_priorities = {0}
@@ -51,9 +51,16 @@ class RobotDescriptionNode(EntityNode[
 
     def initialize_entity_from_description_file(self, description_file: Union[str, os.PathLike]) -> BaseEntity:
         """Load a Genesis Morph from a description file."""
+        # Build optional pos/quat kwargs for the morph
+        pose_kwargs: Dict[str, Any] = {}
+        if self.pos is not None:
+            pose_kwargs["pos"] = self.pos
+        if self.quat is not None:
+            pose_kwargs["quat"] = self.quat
+
         description_base = os.path.basename(description_file)
         if description_base.endswith('.urdf'):
-            morph = gs.morphs.URDF(description_file, fixed=self.fix_root)
+            morph = gs.morphs.URDF(file=description_file, fixed=self.fix_root, **pose_kwargs)
         elif description_base.endswith('.xml'):
             with open(description_file, "r") as f:
                 f_content = f.read()
@@ -63,9 +70,9 @@ class RobotDescriptionNode(EntityNode[
                 elif not has_frejoint and not self.fix_root:
                     logging.warning("`self.fix_root` is set to False, but the MJCF does not have `freejoint` attributes. By default Genesis will always follow the MJCF specification, which may cause unexpected behaviors")
 
-            morph = gs.morphs.MJCF(description_file)
+            morph = gs.morphs.MJCF(file=description_file, **pose_kwargs)
         elif description_base.endswith('.usd') or description_base.endswith('.usda') or description_base.endswith('.usdc'):
-            morph = gs.morphs.USD(description_file, fixed=self.fix_root)
+            morph = gs.morphs.USD(file=description_file, fixed=self.fix_root, **pose_kwargs)
         else:
             raise ValueError(f"Unsupported robot description file format: {description_file}")
         entity = self.world.scene.add_entity(morph, name=self._name)
@@ -75,7 +82,7 @@ class RobotDescriptionNode(EntityNode[
     @property
     def observation_space(self) -> Optional[Space[ObsType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]]:
         return self.controller.observation_space if self.controller is not None else None
-    
+
     @property
     def action_space(self) -> Optional[Space[ActType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]]:
         return self.controller.action_space if self.controller is not None else None
@@ -89,6 +96,8 @@ class RobotDescriptionNode(EntityNode[
         update_timestep: Optional[float] = None,
         keyframes : Dict[Union[Literal['reset'], str], RobotKeyframe] = {},
         fix_root : bool = True,
+        pos: Optional[tuple] = None,
+        quat: Optional[tuple] = None,
         controller_type: CONTROL_MODE_T = "joint_position_and_velocity",
         **controller_kwargs,
     ):
@@ -96,13 +105,24 @@ class RobotDescriptionNode(EntityNode[
         self.world : GenesisWorld = world
         self.description_file = description_file
         self.fix_root = fix_root
+        self.pos = pos
+        self.quat = quat
         self.keyframes = keyframes
         self.controller_type = controller_type
         self.controller_kwargs = controller_kwargs
 
         self.entity : Optional[BaseEntity] = None
         self.controller : Optional[EntityController] = None
-        self.reload(priority=0)
+
+        # Build a temporary single-robot scene so the controller can be initialised
+        # immediately, giving real (non-None) action/observation spaces before
+        # WorldEnv is constructed.  The scene is rebuilt properly (with all nodes)
+        # during the first WorldEnv.reload() call.
+        self.world.reload()             # fresh scene (destroys any prior built scene)
+        self.reload(priority=50)        # add this entity to the fresh scene
+        self.world.after_reload()       # compile scene
+        self.after_reload(priority=50)  # init controller — real spaces now available
+        self.world.reload()             # restore fresh unbuilt scene for subsequent nodes
 
         self._last_observation = None
         self._next_action = None
@@ -145,18 +165,12 @@ class RobotDescriptionNode(EntityNode[
         mask: Optional[PyTorchArrayType] = None,
         **kwargs
     ) -> None:
-        if priority == -50:
+        if priority == 50:
             assert os.path.exists(self.description_file), f"Description file not found: {self.description_file}"
             self.entity = self.initialize_entity_from_description_file(self.description_file)
-            if self.controller is None:
-                self.controller = self.init_controller()
-                self.controller.reload(mask=mask)
-            else:
-                self.controller.entity = self.entity
-                self.controller.reload(mask=mask)
     
     def reset(self, *, priority = 0, seed = None, mask = None, **kwargs):
-        if priority == -50:
+        if priority == 50:
             if self.controller is not None:
                 self.controller.reset(mask=mask)
 
@@ -189,7 +203,7 @@ class RobotDescriptionNode(EntityNode[
                 )
 
     def after_reset(self, *, priority = 0, mask = None):
-        if priority == -50:
+        if priority == 50:
             self._apply_rest(mask=mask)
             if self.controller is not None:
                 self.controller.after_reset(mask=mask)
@@ -197,12 +211,18 @@ class RobotDescriptionNode(EntityNode[
             self.update_observation()
     
     def after_reload(self, *, priority = 0, mask = None):
-        if priority == -50:
+        if priority == 50:
+            if self.controller is None:
+                self.controller = self.init_controller()
+            else:
+                self.controller.entity = self.entity
+            self.controller.reload(mask=mask)
             self._apply_rest(mask=mask)
-            if self.controller is not None:
-                self.controller.after_reload(mask=mask)
-        elif priority == 0:
+            self.controller.after_reload(mask=mask)
             self.update_observation()
+        elif priority == 0:
+            if self.controller is not None:
+                self.update_observation()
     
     def pre_environment_step(self, dt, *, priority = 0):
         if priority == 0:

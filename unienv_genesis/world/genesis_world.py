@@ -31,6 +31,8 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         "performance_mode": True
     }
     
+    backend = PyTorchComputeBackend
+
     def __init__(
         self,
         batch_size: Optional[int] = None,
@@ -60,18 +62,13 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         )
         return scene
 
-    def build_scene(self) -> None:
+    def build_scene(self, scene : gs.Scene, n_envs : Optional[int] = None) -> None:
         """Build the Genesis scene."""
-        if not self.scene.is_built:
-            self.scene.build(
-                n_envs=0 if self.batch_size is None else self.batch_size,
+        if not scene.is_built:
+            scene.build(
+                n_envs=0 if n_envs is None else n_envs,
                 **self.scene_build_kwargs
             )
-
-    @property
-    def backend(self):
-        """Compute backend for tensor operations."""
-        return self._backend
 
     @property
     def device(self) -> PyTorchDeviceType:
@@ -182,7 +179,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         if seed is not None:
             gs.set_random_seed(seed)
         
-        self.build_scene()
+        self.build_scene(self.scene, n_envs=self.batch_size)
         
     def close(self) -> None:
         """Close the Genesis simulation and cleanup."""

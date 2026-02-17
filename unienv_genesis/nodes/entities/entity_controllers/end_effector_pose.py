@@ -92,8 +92,8 @@ class EndEffectorPoseController(
         self,
         world : GenesisWorld,
         entity : RigidEntity,
-        target_link : Union[str, RigidLink],
-        base_frame : Optional[Union[str, RigidLink, RigidEntity]] = None,
+        target_link : str,
+        base_frame : Optional[str] = None,
         Kp : Optional[Union[float, PyTorchArrayType]] = None,
         Kd : Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes : Optional[Sequence[int]] = None,
@@ -102,8 +102,9 @@ class EndEffectorPoseController(
         **ik_kwargs,
     ) -> None:
         super().__init__(world, entity, Kp, Kd, joint_indexes)
-        self.base_frame = base_frame if isinstance(base_frame, (RigidLink, RigidEntity)) else entity.get_link(base_frame) if base_frame is not None else None
-        self.target_link = target_link if isinstance(target_link, RigidLink) else entity.get_link(target_link)
+        self._target_link_name = target_link
+        self._base_frame_name = base_frame
+        self._resolve_links()
         self.rotation_representation = rotation_representation
         self.normalize_rotation_action = normalize_rotation_action
         self.ik_kwargs = ik_kwargs
@@ -155,7 +156,16 @@ class EndEffectorPoseController(
             device=world.device,
         )
         self._last_ik_result = {}
-    
+
+    def _resolve_links(self) -> None:
+        """Re-resolve target_link and base_frame from the current entity by name."""
+        self.target_link = self.entity.get_link(self._target_link_name)
+        self.base_frame = self.entity.get_link(self._base_frame_name) if self._base_frame_name is not None else None
+
+    def reload(self, mask: Optional[PyTorchArrayType] = None) -> None:
+        self._resolve_links()
+        super().reload(mask=mask)
+
     def reset(self, mask: Optional[PyTorchArrayType] = None) -> None:
         """Reset the controller's IK result cache."""
         self._last_ik_result = {}

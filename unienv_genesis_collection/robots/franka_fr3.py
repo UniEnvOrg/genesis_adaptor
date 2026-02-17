@@ -11,7 +11,7 @@ from unienv_genesis_collection.asset_path import get_asset_path
 FR3_HOME_JOINT_POSITIONS = torch.tensor([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
 
 # Default end-effector link name for FR3 (used in IK control)
-FR3_EE_LINK_NAME = "panda_hand"
+FR3_EE_LINK_NAME = "fr3_link7"
 
 class FrankaFR3(RobotDescriptionNode):
     """Franka Research FR3 7-DOF manipulator.
@@ -52,6 +52,8 @@ class FrankaFR3(RobotDescriptionNode):
         self,
         world: GenesisWorld,
         name: str = "franka",
+        pos: tuple = None,
+        quat: tuple = None,
         controller_type: CONTROL_MODE_T = "eef_pose",
         **controller_kwargs,
     ):
@@ -64,6 +66,8 @@ class FrankaFR3(RobotDescriptionNode):
             name=name,
             keyframes=self.keyframes,
             fix_root=True,
+            pos=pos,
+            quat=quat,
             controller_type=controller_type,
             **controller_kwargs,
         )

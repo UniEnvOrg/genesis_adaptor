@@ -52,7 +52,6 @@ class EntityController(
         pass
 
 class DiscreteEntityController(
-    abc.ABC,
     EntityController[
         gs_entities.RigidEntity,
         Dict[str, Any],

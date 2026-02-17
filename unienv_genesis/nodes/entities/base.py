@@ -18,7 +18,7 @@ from unienv_interface.backends.pytorch import (
 from unienv_genesis.world.genesis_world import GenesisWorld
 
 EntityType = TypeVar('EntityType', bound=BaseEntity)
-class EntityNode(ABC, WorldNode[
+class EntityNode(WorldNode[
     ContextType,
     ObsType,
     ActType,

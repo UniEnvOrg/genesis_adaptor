@@ -17,7 +17,7 @@ from unienv_interface.backends.pytorch import (
 from unienv_genesis.world.genesis_world import GenesisWorld
 
 SensorType = TypeVar('SensorType')
-class SensorNode(ABC, WorldNode[
+class SensorNode(WorldNode[
     ContextType,
     ObsType,
     None,

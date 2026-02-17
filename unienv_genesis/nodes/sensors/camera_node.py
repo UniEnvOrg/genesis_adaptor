@@ -123,16 +123,23 @@ class CameraSensorNode(SensorNode[
     Dict[str, PyTorchArrayType],
 ]):
     """Camera sensor node for rendering RGB and depth images.
-    
+
     This node wraps Genesis's Camera sensor which provides visual
     observations from a specified viewpoint in the scene.
+
+    When ``render_rgb=True`` (the default), the node declares
+    ``render_mode = "rgb_array"`` so it participates in the standard
+    ``env.render()`` pipeline and is usable with
+    ``EpisodeVideoWrapper``.
     """
+    supported_render_modes = ("rgb_array",)
+
     reload_priorities = {0}
-    after_reload_priorities = {0}
+    after_reload_priorities = {-50}
     reset_priorities = {0}
-    after_reset_priorities = {0}
+    after_reset_priorities = {-50}
     post_environment_step_priorities = {0}
-    
+
     def __init__(
         self,
         world: GenesisWorld,
@@ -176,7 +183,10 @@ class CameraSensorNode(SensorNode[
         self.render_depth = render_depth
         self.render_seg = render_seg
         self.render_normal = render_normal
-        
+
+        # Expose render() when RGB is available.
+        self.render_mode = "rgb_array" if render_rgb else None
+
         # Initialize sensor
         self.sensor = self._init_sensor()
 
@@ -261,10 +271,18 @@ class CameraSensorNode(SensorNode[
         mask: Optional[PyTorchArrayType] = None,
     ) -> None:
         """Update observation after reset."""
-        if priority == 0:
+        if priority in self.after_reset_priorities:
             self.update_observation()
-    
-    after_reload = after_reset
+
+    def after_reload(
+        self,
+        *,
+        priority: int = 0,
+        mask: Optional[PyTorchArrayType] = None,
+    ) -> None:
+        """Update observation after reload."""
+        if priority in self.after_reload_priorities:
+            self.update_observation()
     
     def post_environment_step(
         self,
@@ -358,3 +376,14 @@ class CameraSensorNode(SensorNode[
     def get_observation(self) -> ObsType:
         """Get the latest camera observation."""
         return self._last_observation
+
+    def render(self) -> Optional[Union[np.ndarray, torch.Tensor]]:
+        """Return the latest RGB frame as a ``(H, W, 3)`` uint8 pytorch array.
+
+        Returns ``None`` if no frame has been captured yet or if
+        ``render_rgb`` is ``False``.
+        """
+        if self._last_observation is None or "rgb" not in self._last_observation:
+            return None
+        rgb = self._last_observation["rgb"]
+        return rgb
