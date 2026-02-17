@@ -14,8 +14,14 @@ from xbarray.transformations.rotation_conversions.pytorch import (
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_genesis.utils.batch_dim_utils import (
+    index_batch_dimension,
+    get_batch_aware_shape,
+    is_batched,
+)
 from .base import DiscreteEntityControllerNode, EntityType, ActType
 from .joint_position_velocity_control import JointPositionAndVelocityController
+from typing import TYPE_CHECKING
 
 class AbsoluteRotationConventionUtils:
     AVAILABLE_REPRESENTATIONS = ["euler", "quat", "rot6d"]
@@ -37,36 +43,30 @@ class AbsoluteRotationConventionUtils:
             raise ValueError(f"Unsupported rotation representation: {representation}")
     
     @staticmethod
-    def get_action_space(representation: AVAILABLE_REPRESENTATIONS_T, device : Optional[PyTorchDeviceType]) -> BoxSpace[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
+    def get_action_space(
+        representation: AVAILABLE_REPRESENTATIONS_T, 
+        batch_size: Optional[int],
+        device: Optional[PyTorchDeviceType]
+    ) -> BoxSpace[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
         if representation == "euler":
-            return BoxSpace(
-                PyTorchComputeBackend,
-                low=-torch.inf,
-                high=torch.inf,
-                shape=(3,),
-                dtype=torch.float32,
-                device=device,
-            )
+            rot_dim = 3
         elif representation == "quat":
-            return BoxSpace(
-                PyTorchComputeBackend,
-                low=-1.0,
-                high=1.0,
-                shape=(4,),
-                dtype=torch.float32,
-                device=device,
-            )
+            rot_dim = 4
         elif representation == "rot6d":
-            return BoxSpace(
-                PyTorchComputeBackend,
-                low=-torch.inf,
-                high=torch.inf,
-                shape=(6,),
-                dtype=torch.float32,
-                device=device,
-            )
+            rot_dim = 6
         else:
             raise ValueError(f"Unsupported rotation representation: {representation}")
+        
+        # Position (3) + Rotation (rot_dim)
+        action_dim = 3 + rot_dim
+        return BoxSpace(
+            PyTorchComputeBackend,
+            low=-torch.inf,
+            high=torch.inf,
+            shape=get_batch_aware_shape(batch_size, action_dim),
+            dtype=torch.float32,
+            device=device,
+        )
     
     @staticmethod
     def normalize_action(representation: AVAILABLE_REPRESENTATIONS_T, action: PyTorchArrayType) -> PyTorchArrayType:
@@ -107,19 +107,18 @@ class EndEffectorPoseController(
         self.rotation_representation = rotation_representation
         self.normalize_rotation_action = normalize_rotation_action
         self.ik_kwargs = ik_kwargs
-        self.action_space = BoxSpace(
-            PyTorchComputeBackend,
-            low=-torch.inf,
-            high=torch.inf,
-            shape=(6,) if rotation_representation == "euler" else (7,) if rotation_representation == "quat" else (9,),
-            dtype=torch.float32,
-            device=world.device,
+        
+        batch_size = world.batch_size
+        
+        # Action space: 3D position + rotation (depends on representation)
+        self.action_space = AbsoluteRotationConventionUtils.get_action_space(
+            rotation_representation, batch_size, world.device
         )
         self.observation_space['eef_position'] = BoxSpace(
             PyTorchComputeBackend,
             low=-torch.inf,
             high=torch.inf,
-            shape=(3,),
+            shape=get_batch_aware_shape(batch_size, 3),
             dtype=torch.float32,
             device=world.device,
         )
@@ -127,7 +126,7 @@ class EndEffectorPoseController(
             PyTorchComputeBackend,
             low=-1,
             high=1,
-            shape=(4,),
+            shape=get_batch_aware_shape(batch_size, 4),
             dtype=torch.float32,
             device=world.device,
         )
@@ -135,7 +134,7 @@ class EndEffectorPoseController(
             PyTorchComputeBackend,
             low=-torch.inf,
             high=torch.inf,
-            shape=(3,),
+            shape=get_batch_aware_shape(batch_size, 3),
             dtype=torch.float32,
             device=world.device,
         )
@@ -143,7 +142,7 @@ class EndEffectorPoseController(
             PyTorchComputeBackend,
             low=-torch.inf,
             high=torch.inf,
-            shape=(4,),
+            shape=get_batch_aware_shape(batch_size, 4),
             dtype=torch.float32,
             device=world.device,
         )
@@ -151,10 +150,14 @@ class EndEffectorPoseController(
             PyTorchComputeBackend,
             low=-torch.inf,
             high=torch.inf,
-            shape=(6,),
+            shape=get_batch_aware_shape(batch_size, 6),
             dtype=torch.float32,
             device=world.device,
         )
+        self._last_ik_result = {}
+    
+    def reset(self, mask: Optional[PyTorchArrayType] = None) -> None:
+        """Reset the controller's IK result cache."""
         self._last_ik_result = {}
     
     def get_base_transform(self) -> Optional[Tuple[PyTorchArrayType, PyTorchArrayType]]:
@@ -217,16 +220,30 @@ class EndEffectorPoseController(
         )
 
         if self.joint_indexes is not None:
-            target_joint_positions = full_target_joint_positions[:, self.joint_indexes]
+            target_joint_positions = index_batch_dimension(
+                full_target_joint_positions,
+                self.joint_indexes,
+                batch_size=self.world.batch_size,
+            )
         else:
             target_joint_positions = full_target_joint_positions
         
-        link_idx_local = self.target_link.idx - self.entity.link_start
+        
         achieved_position_alllinks, achieved_quaternion_alllinks = self.entity.forward_kinematics(
             target_joint_positions
         )
-        achieved_position = achieved_position_alllinks[:, link_idx_local]
-        achieved_quaternion = achieved_quaternion_alllinks[:, link_idx_local]
+        
+        link_idx_local = self.target_link.idx - self.entity.link_start
+        achieved_position = index_batch_dimension(
+            achieved_position_alllinks,
+            link_idx_local,
+            batch_size=self.world.batch_size,
+        )
+        achieved_quaternion = index_batch_dimension(
+            achieved_quaternion_alllinks,
+            link_idx_local,
+            batch_size=self.world.batch_size,
+        )
         return target_joint_positions, achieved_position, achieved_quaternion, achieved_error
 
     def solve_ik_base(self, target_position : Optional[PyTorchArrayType], target_quaternion : Optional[PyTorchArrayType]) -> Tuple[PyTorchArrayType, PyTorchArrayType, PyTorchArrayType, PyTorchArrayType]:
@@ -269,9 +286,12 @@ class EndEffectorPoseController(
         eef_pos_base, eef_quat_base = self.get_eef_pose_base()
         obs['eef_position'] = eef_pos_base
         obs['eef_quaternion'] = eef_quat_base
-        obs['last_ik_solved_position'] = self._last_ik_result.get('achieved_position', eef_pos_base, device=self.world.device)
-        obs['last_ik_solved_quaternion'] = self._last_ik_result.get('achieved_quaternion', eef_quat_base, device=self.world.device)
-        obs['last_ik_solved_error'] = self._last_ik_result.get('achieved_error', torch.zeros((self.world.batch_size, 6), device=self.world.device))
+        obs['last_ik_solved_position'] = self._last_ik_result.get('achieved_position', eef_pos_base)
+        obs['last_ik_solved_quaternion'] = self._last_ik_result.get('achieved_quaternion', eef_quat_base)
+        if 'achieved_error' in self._last_ik_result:
+            obs['last_ik_solved_error'] = self._last_ik_result['achieved_error']
+        else:
+            obs['last_ik_solved_error'] = torch.zeros(get_batch_aware_shape(self.world.batch_size, 6), device=self.world.device)
         return obs
 
     def apply_action(self, action):

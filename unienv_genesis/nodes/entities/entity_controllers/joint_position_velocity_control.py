@@ -6,6 +6,11 @@ import torch
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_genesis.utils.batch_dim_utils import (
+    broadcast_to_batch,
+    get_batch_aware_shape,
+    is_batched,
+)
 from .base import DiscreteEntityController, EntityType, ActType
 
 class JointPositionAndVelocityController(
@@ -23,11 +28,11 @@ class JointPositionAndVelocityController(
         Kd : Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes : Optional[Sequence[int]] = None,
     ) -> None:
+        n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
+        batch_size = world.batch_size
+        
+        # Get limits from entity - returns (low, high) tuple of shape (batch_size, n_dofs) or (n_dofs,)
         joint_limit_low, joint_limit_high = entity.get_dofs_limit(dofs_idx_local=joint_indexes)
-        n_envs = world.batch_size
-        if joint_limit_low.ndim == 1:
-            joint_limit_low = joint_limit_low.unsqueeze(0).expand(n_envs, -1)
-            joint_limit_high = joint_limit_high.unsqueeze(0).expand(n_envs, -1)
 
         action_space = DictSpace(
             PyTorchComputeBackend,
@@ -43,7 +48,7 @@ class JointPositionAndVelocityController(
                     PyTorchComputeBackend,
                     low=-torch.inf,
                     high=torch.inf,
-                    shape=joint_limit_low.shape,
+                    shape=get_batch_aware_shape(batch_size, n_dofs),
                     dtype=joint_limit_low.dtype,
                     device=joint_limit_low.device,
                 ),
@@ -62,7 +67,7 @@ class JointPositionAndVelocityController(
     def Kp(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
         self._Kp = value
         if value is not None:
-            self._Kp_expanded = self._broadcast_to_dofs(
+            self._Kp_expanded = broadcast_to_batch(
                 value, self.world.batch_size, self.entity.n_dofs, device=self.world.device
             )
             self.entity.set_dofs_kp(
@@ -79,7 +84,7 @@ class JointPositionAndVelocityController(
     def Kd(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
         self._Kd = value
         if value is not None:
-            self._Kd_expanded = self._broadcast_to_dofs(
+            self._Kd_expanded = broadcast_to_batch(
                 value, self.world.batch_size, self.entity.n_dofs, device=self.world.device
             )
             self.entity.set_dofs_kv(

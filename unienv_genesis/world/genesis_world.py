@@ -21,7 +21,10 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     Supports parallel environments via Genesis's built-in batching.
     
     Note:
-    This implementation does not support `n_envs = 0` because it adds significant complexity to handle when the return values of various functions (like forward kinematics) can be either batched or unbatched. By enforcing `n_envs > 0`, we can ensure that all return values are consistently batched, simplifying the implementation and reducing potential bugs.
+    When batch_size is None, the environment is unbatched (single environment).
+    Genesis uses n_envs=0 for this case, and tensors returned by Genesis will
+    not have a batch dimension. The adaptor code handles both batched and 
+    unbatched cases through utility functions in batch_dim_utils.
     """
     GS_INIT_KWARGS_DEFAULT = {
         "backend": gs.gs_backend.gpu,
@@ -30,21 +33,21 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     
     def __init__(
         self,
-        batch_size: int = 1,
+        batch_size: Optional[int] = None,
         scene_init_kwargs : Dict[str, Any] = {},
         scene_build_kwargs : Dict[str, Any] = {},
     ):
         """Initialize Genesis World.
         
         Args:
-            scene: Pre-configured Genesis scene. Use GenesisWorld.create() 
-                   to create a scene with default simulation options.
-            batch_size: Number of parallel environments
+            batch_size: Number of parallel environments, or None for single (unbatched) environment.
+            scene_init_kwargs: Kwargs passed to gs.Scene constructor.
+            scene_build_kwargs: Kwargs passed to scene.build() method.
         """
         if not gs._initialized:
             gs.init(**self.GS_INIT_KWARGS_DEFAULT)
         
-        self.batch_size = batch_size
+        self._batch_size = batch_size
         self.scene_init_kwargs = scene_init_kwargs
         self.scene_build_kwargs = scene_build_kwargs
         self.scene = self.create_scene()
@@ -61,7 +64,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         """Build the Genesis scene."""
         if not self.scene.is_built:
             self.scene.build(
-                n_envs=self.batch_size,
+                n_envs=0 if self.batch_size is None else self.batch_size,
                 **self.scene_build_kwargs
             )
 
@@ -76,13 +79,19 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         return gs.device
 
     @property
-    def batch_size(self) -> int:
-        """Number of parallel environments."""
+    def batch_size(self) -> Optional[int]:
+        """Number of parallel environments, or None for unbatched."""
         return self._batch_size
     
+    @property
+    def is_batched(self) -> bool:
+        """Whether the environment is batched (has a batch dimension)."""
+        from unienv_genesis.utils.batch_dim_utils import is_batched as _is_batched
+        return _is_batched(self._batch_size)
+    
     @batch_size.setter
-    def batch_size(self, value: int):
-        assert value > 0, "Batch size must be positive"
+    def batch_size(self, value: Optional[int]):
+        assert value is None or value >= 0, "Batch size must be None or non-negative"
         assert not self._scene_built, "Cannot change batch size after scene is built"
         self._batch_size = value
 

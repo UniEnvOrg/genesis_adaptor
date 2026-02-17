@@ -69,6 +69,14 @@ class RobotDescriptionNode(EntityNode[
     @abc.abstractmethod
     def init_controller(self) -> EntityController:
         raise NotImplementedError
+
+    @property
+    def observation_space(self) -> Optional[Space[ObsType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]]:
+        return self.controller.observation_space if self.controller is not None else None
+    
+    @property
+    def action_space(self) -> Optional[Space[ActType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]]:
+        return self.controller.action_space if self.controller is not None else None
     
     def __init__(
         self,
@@ -119,39 +127,49 @@ class RobotDescriptionNode(EntityNode[
             if self.controller is not None:
                 self.controller.reset(mask=mask)
 
+    def _apply_rest(self, mask : Optional[torch.Tensor] = None) -> None:
+        if 'reset' in self.keyframes and isinstance(self.entity, gs_entities.RigidEntity):
+            reset_keyframe = self.keyframes['reset']
+            if mask is not None:
+                env_idx = torch.nonzero(mask)[0]
+            else:
+                env_idx = None
+            if reset_keyframe.pos is not None:
+                self.entity.set_pos(
+                    reset_keyframe.pos,
+                    envs_idx=env_idx
+                )
+            if reset_keyframe.quat is not None:
+                self.entity.set_quat(
+                    reset_keyframe.quat,
+                    envs_idx=env_idx
+                )
+            if reset_keyframe.joint_position is not None:
+                self.entity.set_dofs_position(
+                    reset_keyframe.joint_position,
+                    envs_idx=env_idx
+                )
+            if reset_keyframe.joint_velocity is not None:
+                self.entity.set_dofs_velocity(
+                    reset_keyframe.joint_velocity,
+                    envs_idx=env_idx,
+                )
+
     def after_reset(self, *, priority = 0, mask = None):
-        if priority == -10:
-            if 'reset' in self.keyframes and isinstance(self.entity, gs_entities.RigidEntity):
-                reset_keyframe = self.keyframes['reset']
-                if mask is not None:
-                    env_idx = torch.nonzero(mask)[0]
-                else:
-                    env_idx = None
-                if reset_keyframe.pos is not None:
-                    self.entity.set_pos(
-                        reset_keyframe.pos,
-                        envs_idx=env_idx
-                    )
-                if reset_keyframe.quat is not None:
-                    self.entity.set_quat(
-                        reset_keyframe.quat,
-                        envs_idx=env_idx
-                    )
-                if reset_keyframe.joint_position is not None:
-                    self.entity.set_dofs_position(
-                        reset_keyframe.joint_position,
-                        envs_idx=env_idx
-                    )
-                if reset_keyframe.joint_velocity is not None:
-                    self.entity.set_dofs_velocity(
-                        reset_keyframe.joint_velocity,
-                        envs_idx=env_idx,
-                    )
+        if priority == -50:
+            self._apply_rest(mask=mask)
+            if self.controller is not None:
+                self.controller.after_reset(mask=mask)
         elif priority == 0:
             self.update_observation()
     
     def after_reload(self, *, priority = 0, mask = None):
-        return self.after_reset(self, priority=priority, mask=mask)
+        if priority == -50:
+            self._apply_rest(mask=mask)
+            if self.controller is not None:
+                self.controller.after_reload(mask=mask)
+        elif priority == 0:
+            self.update_observation()
     
     def pre_environment_step(self, dt, *, priority = 0):
         if priority == 0:

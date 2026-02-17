@@ -7,6 +7,10 @@ import torch
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_genesis.utils.batch_dim_utils import (
+    get_batch_aware_shape,
+    is_batched,
+)
 from ..base import EntityNode, EntityType, ContextType, ObsType, ActType
 
 class EntityController(
@@ -56,22 +60,6 @@ class DiscreteEntityController(
     ],
     Generic[ActType]
 ):
-    @staticmethod
-    def _broadcast_to_dofs(
-        scalar_or_array: Union[float, PyTorchArrayType],
-        batch_size: int,
-        n_dofs: int,
-        device: Optional[PyTorchDeviceType] = None,
-    ) -> PyTorchArrayType:
-        if isinstance(scalar_or_array, float):
-            array = torch.full((batch_size, n_dofs), scalar_or_array, device=device)
-        else:
-            if scalar_or_array.ndim == 1:
-                array = scalar_or_array.unsqueeze(0).expand(batch_size, -1)
-            else:
-                array = scalar_or_array
-        return array
-
     def __init__(
         self,
         world : GenesisWorld,
@@ -79,65 +67,75 @@ class DiscreteEntityController(
         joint_indexes : Optional[Sequence[int]] = None,
         action_space : Optional[Space[ActType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]] = None,
     ) -> None:
-        super().__init__(world, entity, action_space)
         n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
-        n_envs = world.batch_size
-        self.joint_position_low, self.joint_position_high = self._broadcast_to_dofs(entity.get_dofs_limit(dofs_idx_local=joint_indexes), n_envs, n_dofs)
-        self.joint_force_low, self.joint_force_high = self._broadcast_to_dofs(entity.get_dofs_force_range(dofs_idx_local=joint_indexes), n_envs, n_dofs)
-        self.joint_indexes = joint_indexes
-
-        self.observation_space = DictSpace(
+        batch_size = world.batch_size
+        
+        # Get limits from entity - returns (low, high) tuple of shape (batch_size, n_dofs) or (n_dofs,)
+        joint_position_low, joint_position_high = entity.get_dofs_limit(dofs_idx_local=joint_indexes)
+        joint_force_low, joint_force_high = entity.get_dofs_force_range(dofs_idx_local=joint_indexes)
+        
+        # Build observation space before calling super().__init__
+        obs_space = DictSpace(
             PyTorchComputeBackend,
             {
                 "joint_position": BoxSpace(
                     PyTorchComputeBackend,
-                    low=self.joint_position_low[..., 0],
-                    high=self.joint_position_high[..., 1],
-                    dtype=self.joint_position_low.dtype,
-                    device=self.joint_position_low.device,
+                    low=joint_position_low,
+                    high=joint_position_high,
+                    dtype=joint_position_low.dtype,
+                    device=joint_position_low.device,
                 ),
                 "joint_velocity": BoxSpace(
                     PyTorchComputeBackend,
                     low=-torch.inf,
                     high=torch.inf,
-                    shape=(n_envs, n_dofs),
-                    dtype=self.joint_position_low.dtype,
-                    device=self.joint_position_low.device,
+                    shape=get_batch_aware_shape(batch_size, n_dofs),
+                    dtype=joint_position_low.dtype,
+                    device=joint_position_low.device,
                 ),
                 "joint_torque": BoxSpace(
                     PyTorchComputeBackend,
                     low=-torch.inf,
                     high=torch.inf,
-                    shape=(n_envs, n_dofs),
-                    dtype=self.joint_force_low.dtype,
-                    device=self.joint_force_low.device,
+                    shape=get_batch_aware_shape(batch_size, n_dofs),
+                    dtype=joint_force_low.dtype,
+                    device=joint_force_low.device,
                 ),
                 "joint_motor_torque": BoxSpace(
                     PyTorchComputeBackend,
-                    low=self.joint_force_low[..., 0],
-                    high=self.joint_force_high[..., 1],
-                    dtype=self.joint_force_low.dtype,
-                    device=self.joint_force_low.device,
+                    low=joint_force_low,
+                    high=joint_force_high,
+                    dtype=joint_force_low.dtype,
+                    device=joint_force_low.device,
                 ),
                 "root_pos": BoxSpace(
                     PyTorchComputeBackend,
                     low=-torch.inf,
                     high=torch.inf,
-                    shape=(n_envs, 3),
-                    dtype=self.joint_force_low.dtype,
-                    device=self.joint_force_low.device,
+                    shape=get_batch_aware_shape(batch_size, 3),
+                    dtype=joint_force_low.dtype,
+                    device=joint_force_low.device,
                 ),
                 "root_quat": BoxSpace(
                     PyTorchComputeBackend,
                     low=-1,
                     high=1,
-                    shape=(n_envs, 4),
-                    dtype=self.joint_force_low.dtype,
-                    device=self.joint_force_low.device,
+                    shape=get_batch_aware_shape(batch_size, 4),
+                    dtype=joint_force_low.dtype,
+                    device=joint_force_low.device,
                 ),
             },
-            device=self.joint_position_low.device,
+            device=joint_position_low.device,
         )
+        
+        super().__init__(world, entity, obs_space, action_space)
+        
+        # Store the broadcasted limits as attributes
+        self.joint_position_low = joint_position_low
+        self.joint_position_high = joint_position_high
+        self.joint_force_low = joint_force_low
+        self.joint_force_high = joint_force_high
+        self.joint_indexes = joint_indexes
 
     def get_observation(self):
         qpos = self.entity.get_dofs_position(dofs_idx_local=self.joint_indexes)
