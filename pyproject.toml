@@ -21,3 +21,6 @@ Changelog = "https://github.com/UniEnvOrg/genesis_adaptor/blob/main/CHANGELOG.md
 [tool.setuptools.packages.find]
 include = ["*"]
 exclude = ["training*", "tests*"]
+
+[tool.setuptools.package-data]
+"unienv_genesis_collection.assets" = ["**/*.xml", "**/*.urdf", "**/*.usd", "**/*.usda", "**/*.usdc", "**/*.stl", "**/*.obj", "**/*.dae", "**/*.png", "**/*.jpg", "**/*.mtl"]

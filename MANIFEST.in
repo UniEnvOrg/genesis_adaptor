@@ -1,0 +1,4 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+recursive-include unienv_genesis_collection/assets **/*.xml **/*.urdf **/*.usd **/*.usda **/*.usdc **/*.stl **/*.obj **/*.dae **/*.png **/*.jpg **/*.mtl
