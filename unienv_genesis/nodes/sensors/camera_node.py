@@ -262,7 +262,9 @@ class CameraSensorNode(SensorNode[
             env_indices = torch.nonzero(mask)[0]
         else:
             env_indices = None
-        self.sensor.reset(envs_idx=env_indices)
+        # BatchRenderer exposes reset(); the plain Camera class does not.
+        if hasattr(self.sensor, "reset"):
+            self.sensor.reset(envs_idx=env_indices)
     
     def after_reset(
         self,

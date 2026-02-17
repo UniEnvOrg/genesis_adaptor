@@ -1,0 +1,47 @@
+# box_with_uv.obj
+# Unit cube (1x1x1) centred at origin with per-face UV mapping.
+# Every face independently maps to [0,1]x[0,1] UV space so any
+# ImageTexture tiles correctly on the surface.
+#
+# Usage with Genesis:
+#   gs.morphs.Mesh(file="box_with_uv.obj", scale=(w, d, h), pos=..., fixed=True)
+
+# 8 corner vertices
+v -0.5 -0.5 -0.5
+v  0.5 -0.5 -0.5
+v  0.5  0.5 -0.5
+v -0.5  0.5 -0.5
+v -0.5 -0.5  0.5
+v  0.5 -0.5  0.5
+v  0.5  0.5  0.5
+v -0.5  0.5  0.5
+
+# UV corners — one set of 4, shared across all faces
+vt 0.0 0.0
+vt 1.0 0.0
+vt 1.0 1.0
+vt 0.0 1.0
+
+# Top face (+Z) — outward normal (0,0,+1)
+f 5/1 6/2 7/3
+f 5/1 7/3 8/4
+
+# Bottom face (-Z) — outward normal (0,0,-1)
+f 3/1 2/2 1/3
+f 3/1 1/3 4/4
+
+# Front face (-Y) — outward normal (0,-1,0)
+f 1/1 2/2 6/3
+f 1/1 6/3 5/4
+
+# Back face (+Y) — outward normal (0,+1,0)
+f 3/1 4/2 8/3
+f 3/1 8/3 7/4
+
+# Left face (-X) — outward normal (-1,0,0)
+f 4/1 1/2 5/3
+f 4/1 5/3 8/4
+
+# Right face (+X) — outward normal (+1,0,0)
+f 2/1 3/2 7/3
+f 2/1 7/3 6/4
