@@ -79,6 +79,7 @@ def test_table_and_fr3():
     )
 
     N_VIDEOS = 3
+    total_steps = 250
 
     env = EpisodeVideoWrapper(
         WorldEnv(world, [plane, table, table2, franka, camera], render_mode="auto"),
@@ -93,15 +94,67 @@ def test_table_and_fr3():
 
         assert obs is not None, f"Expected observation from Franka (episode {episode})"
 
-        # Hold the initial EE pose (pos + euler = 6D) throughout the episode
-        eef_pos = obs["franka"]["eef_position"]
-        eef_quat = obs["franka"]["eef_quaternion"]
+        # --- Get initial EE pose for movement planning ---
+        eef_pos = obs["franka"]["eef_position"].clone()
+        eef_quat = obs["franka"]["eef_quaternion"].clone()
         rot_mat = quaternion_to_matrix(eef_quat)
         euler = matrix_to_euler_angles(rot_mat, "XYZ")
-        action = torch.cat([eef_pos, euler], dim=-1)
 
-        for _ in range(100):
+        # Define movement targets (relative to initial position)
+        home_pos = eef_pos.clone()
+        # Reach forward toward the empty table
+        forward_pos = home_pos.clone()
+        forward_pos[0] += 0.3  # Move +x (toward table)
+        # Lower position (down to table surface)
+        lower_pos = forward_pos.clone()
+        lower_pos[2] = TABLE_SURFACE_Z + 0.15  # 15cm above table
+        # Lift position (above table)
+        lift_pos = lower_pos.clone()
+        lift_pos[2] += 0.15
+        # Side position (move to the side)
+        side_pos = home_pos.clone()
+        side_pos[1] += 0.2  # Move +y (to the side)
+        # High position (reach up)
+        high_pos = home_pos.clone()
+        high_pos[2] += 0.2  # Move up
+
+        # 5-phase movement demonstration:
+        #   Phase 0 (  0- 49): Move forward to table
+        #   Phase 1 ( 50- 99): Lower to table surface
+        #   Phase 2 (100-149): Lift up from table
+        #   Phase 3 (150-199): Move to side position
+        #   Phase 4 (200-249): Return to home position
+        for step in range(total_steps):
+            if step < 50:
+                # Phase 0: Move forward
+                alpha = step / 50.0
+                target_pos = (1 - alpha) * home_pos + alpha * forward_pos
+            elif step < 100:
+                # Phase 1: Lower down
+                alpha = (step - 50) / 50.0
+                target_pos = (1 - alpha) * forward_pos + alpha * lower_pos
+            elif step < 150:
+                # Phase 2: Lift up
+                alpha = (step - 100) / 50.0
+                target_pos = (1 - alpha) * lower_pos + alpha * lift_pos
+            elif step < 200:
+                # Phase 3: Move to side
+                alpha = (step - 150) / 50.0
+                target_pos = (1 - alpha) * lift_pos + alpha * side_pos
+            else:
+                # Phase 4: Return home
+                alpha = (step - 200) / 50.0
+                target_pos = (1 - alpha) * side_pos + alpha * home_pos
+
+            action = torch.cat([target_pos, euler], dim=-1).clone()
             obs, reward, terminated, truncated, info = env.step(action)
+
+            # Log progress at key points
+            if step % 50 == 0:
+                actual_pos = obs["franka"]["eef_position"]
+                err = torch.norm(actual_pos - target_pos).item()
+                print(f"Episode {episode}, Step {step:3d}: target=({target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f}), "
+                      f"actual=({actual_pos[0]:.3f}, {actual_pos[1]:.3f}, {actual_pos[2]:.3f}), err={err:.4f}")
 
         assert obs is not None
 
@@ -109,7 +162,7 @@ def test_table_and_fr3():
 
     # EpisodeVideoWrapper names files episode_{n}_step_{cumulative_step}.mp4
     for episode in range(N_VIDEOS):
-        step = episode * 100
+        step = episode * total_steps
         video_path = os.path.join(VIDEO_DIR, f"episode_{episode}_step_{step}.mp4")
         assert os.path.exists(video_path), f"Video not saved to {video_path}"
         print(f"Video saved to: {video_path}")

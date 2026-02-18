@@ -108,45 +108,83 @@ def test_table_and_fr3_hand():
 
         assert obs is not None, f"Expected observation from Franka (episode {episode})"
 
-        # --- Arm: hold the initial EE pose throughout the episode ---
+        # --- Get initial EE pose for movement planning ---
         arm_obs = obs["franka"]["arm"]
-        eef_pos = arm_obs["eef_position"]
-        eef_quat = arm_obs["eef_quaternion"]
+        eef_pos = arm_obs["eef_position"].clone()
+        eef_quat = arm_obs["eef_quaternion"].clone()
         rot_mat = quaternion_to_matrix(eef_quat)
         euler = matrix_to_euler_angles(rot_mat, "XYZ")
-        arm_action = torch.cat([eef_pos, euler], dim=-1)
 
-        # --- Gripper open/close cycle ---
-        # Phase 1 (steps 0–29):   open  (action = -1)
-        # Phase 2 (steps 30–59):  close (action = +1)
-        # Phase 3 (steps 60–99):  open  (action = -1)
-        OPEN  = torch.tensor([-1.0])
-        CLOSE = torch.tensor([ 1.0])
+        # Define movement targets (relative to initial position)
+        home_pos = eef_pos.clone()
+        # Reach forward toward the empty table
+        forward_pos = home_pos.clone()
+        forward_pos[0] += 0.3  # Move +x (toward table)
+        # Lower position (down to table surface)
+        lower_pos = forward_pos.clone()
+        lower_pos[2] = TABLE_SURFACE_Z + 0.15  # 15cm above table
+        # Lift position (above table)
+        lift_pos = lower_pos.clone()
+        lift_pos[2] += 0.15
+        # Side position (move to the side)
+        side_pos = home_pos.clone()
+        side_pos[1] += 0.2  # Move +y (to the side)
 
-        finger_pos_open_check  = None
-        finger_pos_close_check = None
+        OPEN = torch.tensor([-1.0])
+        CLOSE = torch.tensor([1.0])
 
-        for step in range(100):
-            if step < 30:
+        # 5-phase movement demonstration:
+        #   Phase 0 (  0- 49): Move forward to table, open gripper
+        #   Phase 1 ( 50- 99): Lower to table surface, close gripper
+        #   Phase 2 (100-149): Lift up from table, keep gripper closed
+        #   Phase 3 (150-199): Move to side position, open gripper
+        #   Phase 4 (200-249): Return to home position
+        total_steps = 250
+
+        for step in range(total_steps):
+            if step < 50:
+                # Phase 0: Move forward
+                alpha = step / 50.0
+                target_pos = (1 - alpha) * home_pos + alpha * forward_pos
                 gripper_action = OPEN
-            elif step < 60:
+            elif step < 100:
+                # Phase 1: Lower down
+                alpha = (step - 50) / 50.0
+                target_pos = (1 - alpha) * forward_pos + alpha * lower_pos
                 gripper_action = CLOSE
+            elif step < 150:
+                # Phase 2: Lift up
+                alpha = (step - 100) / 50.0
+                target_pos = (1 - alpha) * lower_pos + alpha * lift_pos
+                gripper_action = CLOSE
+            elif step < 200:
+                # Phase 3: Move to side
+                alpha = (step - 150) / 50.0
+                target_pos = (1 - alpha) * lift_pos + alpha * side_pos
+                gripper_action = OPEN
             else:
+                # Phase 4: Return home
+                alpha = (step - 200) / 50.0
+                target_pos = (1 - alpha) * side_pos + alpha * home_pos
                 gripper_action = OPEN
 
+            arm_action = torch.cat([target_pos, euler], dim=-1).clone()
             action = {"arm": arm_action, "gripper": gripper_action}
             obs, reward, terminated, truncated, info = env.step(action)
 
-            # Sample finger positions near the end of each phase to give
-            # the controller time to reach the target.
-            gripper_obs = obs["franka"]["gripper"]
-            finger_pos = gripper_obs["joint_position"]  # shape (2,)
+            # Log progress at key points
+            if step % 50 == 0:
+                arm_obs = obs["franka"]["arm"]
+                actual_pos = arm_obs["eef_position"]
+                err = torch.norm(actual_pos - target_pos).item()
+                print(f"Episode {episode}, Step {step:3d}: target=({target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f}), "
+                      f"actual=({actual_pos[0]:.3f}, {actual_pos[1]:.3f}, {actual_pos[2]:.3f}), err={err:.4f}")
 
     env.close()
 
     # EpisodeVideoWrapper names files episode_{n}_step_{cumulative_step}.mp4
     for episode in range(N_VIDEOS):
-        step = episode * 100
+        step = episode * total_steps
         video_path = os.path.join(VIDEO_DIR, f"episode_{episode}_step_{step}.mp4")
         assert os.path.exists(video_path), f"Video not saved to {video_path}"
         print(f"Video saved to: {video_path}")
