@@ -18,6 +18,7 @@ from genesis.utils.geom import (
     transform_quat_by_quat,
     transform_by_quat,
 )
+from unienv_genesis_collection.asset_path import get_asset_path
 
 VIDEO_DIR = os.path.join(os.path.dirname(__file__), "videos_grasp_env_official")
 os.makedirs(VIDEO_DIR, exist_ok=True)
@@ -253,7 +254,7 @@ class Manipulator:
 
         material = gs.materials.Rigid()
         morph = gs.morphs.MJCF(
-            file="xml/franka_emika_panda/panda.xml",
+            file=get_asset_path("robots", "franka_emika_panda", "panda.xml"),
             pos=(0.0, 0.0, 0.0),
             quat=(1.0, 0.0, 0.0, 0.0),
         )
@@ -264,12 +265,13 @@ class Manipulator:
         self._init()
 
     def set_pd_gains(self):
-        self._robot_entity.set_dofs_kp(torch.tensor([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]))
-        self._robot_entity.set_dofs_kv(torch.tensor([450, 450, 350, 350, 200, 200, 200, 10, 10]))
-        self._robot_entity.set_dofs_force_range(
-            torch.tensor([-87, -87, -87, -87, -12, -12, -12, -100, -100]),
-            torch.tensor([87, 87, 87, 87, 12, 12, 12, 100, 100]),
-        )
+        # self._robot_entity.set_dofs_kp(torch.tensor([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]))
+        # self._robot_entity.set_dofs_kv(torch.tensor([450, 450, 350, 350, 200, 200, 200, 10, 10]))
+        # self._robot_entity.set_dofs_force_range(
+        #     torch.tensor([-87, -87, -87, -87, -12, -12, -12, -100, -100]),
+        #     torch.tensor([87, 87, 87, 87, 12, 12, 12, 100, 100]),
+        # )
+        pass
 
     def _init(self):
         self._arm_dof_dim = self._robot_entity.n_dofs - 2
@@ -307,11 +309,19 @@ class Manipulator:
             quat=goal_pose[:, 3:7],
             dofs_idx_local=self._arm_dof_idx,
         )
+        self._robot_entity.control_dofs_position(
+            q_pos[:, self._arm_dof_idx],
+            dofs_idx_local=self._arm_dof_idx,
+        )
         if open_gripper:
             q_pos[:, self._fingers_dof] = self._gripper_open_dof
         else:
             q_pos[:, self._fingers_dof] = self._gripper_close_dof
-        self._robot_entity.control_dofs_position(position=q_pos)
+        # self._robot_entity.control_dofs_position(position=q_pos)
+        self._robot_entity.control_dofs_position(
+            q_pos[:, self._fingers_dof],
+            dofs_idx_local=self._fingers_dof,
+        )
 
     @property
     def ee_pose(self):

@@ -131,22 +131,6 @@ class EndEffectorPoseController(
             dtype=torch.float32,
             device=world.device,
         )
-        self.observation_space['last_ik_solved_position'] = BoxSpace(
-            PyTorchComputeBackend,
-            low=-torch.inf,
-            high=torch.inf,
-            shape=get_batch_aware_shape(batch_size, 3),
-            dtype=torch.float32,
-            device=world.device,
-        )
-        self.observation_space['last_ik_solved_quaternion'] = BoxSpace(
-            PyTorchComputeBackend,
-            low=-torch.inf,
-            high=torch.inf,
-            shape=get_batch_aware_shape(batch_size, 4),
-            dtype=torch.float32,
-            device=world.device,
-        )
         self.observation_space['last_ik_solved_error'] = BoxSpace(
             PyTorchComputeBackend,
             low=-torch.inf,
@@ -159,8 +143,8 @@ class EndEffectorPoseController(
 
     def _resolve_links(self) -> None:
         """Re-resolve target_link and base_frame from the current entity by name."""
-        self.target_link = self.entity.get_link(self._target_link_name)
-        self.base_frame = self.entity.get_link(self._base_frame_name) if self._base_frame_name is not None else None
+        self.target_link : RigidLink = self.entity.get_link(self._target_link_name)
+        self.base_frame : Optional[RigidLink] = self.entity.get_link(self._base_frame_name) if self._base_frame_name is not None else None
 
     def reload(self, mask: Optional[PyTorchArrayType] = None) -> None:
         self._resolve_links()
@@ -207,7 +191,7 @@ class EndEffectorPoseController(
             target_rotation_base = None
         return target_position_base, target_rotation_base
 
-    def solve_ik_absolute(self, target_position : Optional[PyTorchArrayType], target_quaternion : Optional[PyTorchArrayType]) -> Tuple[PyTorchArrayType, PyTorchArrayType, PyTorchArrayType, PyTorchArrayType]:
+    def solve_ik_absolute(self, target_position : Optional[PyTorchArrayType], target_quaternion : Optional[PyTorchArrayType]) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
         """
         Solve IK for the target end-effector position and rotation
         Args:
@@ -215,8 +199,6 @@ class EndEffectorPoseController(
             target_quaternion: (batch_size, 4) tensor of target end-effector rotations in quaternion format
         Returns:
             target_joint_positions: (batch_size, n_dof) tensor of target joint positions
-            achieved_position: (batch_size, 3) tensor of achieved end-effector positions
-            achieved_quaternion: (batch_size, 4) tensor of achieved end-effector rotations in quaternion format
             achieved_error: (batch_size, 6) tensor of end-effector pose error (position error + rotation error), where position error = target_position - achieved_position, rotation error = quat_to_rotvec(achieved_quaternion^{-1} * target_quaternion)
         """
         # This is a placeholder implementation. You should replace this with your actual IK solver.
@@ -239,24 +221,9 @@ class EndEffectorPoseController(
             target_joint_positions = full_target_joint_positions
         
         
-        achieved_position_alllinks, achieved_quaternion_alllinks = self.entity.forward_kinematics(
-            target_joint_positions
-        )
-        
-        link_idx_local = self.target_link.idx - self.entity.link_start
-        achieved_position = index_batch_dimension(
-            achieved_position_alllinks,
-            link_idx_local,
-            batch_size=self.world.batch_size,
-        )
-        achieved_quaternion = index_batch_dimension(
-            achieved_quaternion_alllinks,
-            link_idx_local,
-            batch_size=self.world.batch_size,
-        )
-        return target_joint_positions, achieved_position, achieved_quaternion, achieved_error
+        return target_joint_positions, achieved_error
 
-    def solve_ik_base(self, target_position : Optional[PyTorchArrayType], target_quaternion : Optional[PyTorchArrayType]) -> Tuple[PyTorchArrayType, PyTorchArrayType, PyTorchArrayType, PyTorchArrayType]:
+    def solve_ik_base(self, target_position : Optional[PyTorchArrayType], target_quaternion : Optional[PyTorchArrayType]) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
         """
         Solve IK for the target end-effector position and rotation in the end-effector's base frame
         Args:
@@ -264,13 +231,10 @@ class EndEffectorPoseController(
             target_quaternion: (batch_size, 4) tensor of target end-effector rotations in quaternion format in the end-effector's base frame
         Returns:
             target_joint_positions: (batch_size, n_dof) tensor of target joint positions
-            achieved_position: (batch_size, 3) tensor of achieved end-effector positions in the end-effector's base frame
-            achieved_quaternion: (batch_size, 4) tensor of achieved end-effector rotations in quaternion format in the end-effector's base frame
             achieved_error: (batch_size, 6) tensor of end-effector pose error (position error + rotation error), where position error = target_position - achieved_position, rotation error = quat_to_rotvec(achieved_quaternion^{-1} * target_quaternion)
         """
         target_position_absolute, target_quaternion_absolute = self.convert_base_to_absolute(target_position, target_quaternion)
-        target_joint_positions, achieved_position_absolute, achieved_quaternion_absolute, achieved_error_absolute = self.solve_ik_absolute(target_position_absolute, target_quaternion_absolute)
-        achieved_position_base, achieved_quaternion_base = self.convert_absolute_to_base(achieved_position_absolute, achieved_quaternion_absolute)
+        target_joint_positions, achieved_error_absolute = self.solve_ik_absolute(target_position_absolute, target_quaternion_absolute)
         
         base_transform = self.get_base_transform()
         if base_transform is None:
@@ -280,7 +244,7 @@ class EndEffectorPoseController(
             achieved_position_error = quaternion_apply(quaternion_invert(base_quaternion), achieved_error_absolute[..., :3])
             achieved_rotation_error = achieved_error_absolute[..., 3:]
             achieved_error = torch.cat([achieved_position_error, achieved_rotation_error], dim=-1)
-        return target_joint_positions, achieved_position_base, achieved_quaternion_base, achieved_error
+        return target_joint_positions, achieved_error
 
     def get_eef_pose_absolute(self) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
         achieved_position_absolute, achieved_quaternion_absolute = self.target_link.get_pos(), self.target_link.get_quat()
@@ -296,8 +260,6 @@ class EndEffectorPoseController(
         eef_pos_base, eef_quat_base = self.get_eef_pose_base()
         obs['eef_position'] = eef_pos_base
         obs['eef_quaternion'] = eef_quat_base
-        obs['last_ik_solved_position'] = self._last_ik_result.get('achieved_position', eef_pos_base)
-        obs['last_ik_solved_quaternion'] = self._last_ik_result.get('achieved_quaternion', eef_quat_base)
         if 'achieved_error' in self._last_ik_result:
             obs['last_ik_solved_error'] = self._last_ik_result['achieved_error']
         else:
@@ -310,14 +272,12 @@ class EndEffectorPoseController(
         if self.normalize_rotation_action:
             target_rot = AbsoluteRotationConventionUtils.unnormalize_action(self.rotation_representation, target_rot)
         target_rot_quat = AbsoluteRotationConventionUtils.to_quaternion(self.rotation_representation, target_rot)
-        target_joint_positions, achieved_position, achieved_quaternion, achieved_error = self.solve_ik_base(
+        target_joint_positions, achieved_error = self.solve_ik_base(
             target_pos, target_rot_quat
         ) # (batch_size, n_dof), (batch_size, 3), (batch_size, 4), (batch_size, 6)
         
         super().apply_action(target_joint_positions)
         self._last_ik_result = {
             'target_joint_positions': target_joint_positions,
-            'achieved_position': achieved_position,
-            'achieved_quaternion': achieved_quaternion,
             'achieved_error': achieved_error,
         }

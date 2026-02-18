@@ -99,8 +99,7 @@ class FrankaFR3WithHand(RobotDescriptionNode):
 
         super().__init__(
             world=world,
-            # description_file=get_asset_path("robots", "franka_emika_panda", "panda.xml"),
-            description_file="xml/franka_emika_panda/panda.xml",
+            description_file=get_asset_path("robots", "franka_emika_panda", "panda.xml"),
             name=name,
             keyframes=self.keyframes,
             fix_root=True,
