@@ -41,6 +41,17 @@ class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
 
     controller_type = "combined"
 
+    @property
+    def entity(self) -> gs_entities.RigidEntity:
+        return self._entity
+
+    @entity.setter  
+    def entity(self, value: gs_entities.RigidEntity) -> None:
+        self._entity = value
+        # Also update entity reference for all sub-controllers
+        for ctrl in self._sub_controllers.values():
+            ctrl.entity = value
+
     def __init__(
         self,
         world: GenesisWorld,
