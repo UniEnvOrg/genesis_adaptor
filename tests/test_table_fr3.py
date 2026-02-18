@@ -14,7 +14,7 @@ from unienv_genesis_collection.robots.franka_fr3 import FrankaFR3
 from unienv_interface.world import WorldEnv
 from unienv_interface.wrapper.video_record import EpisodeVideoWrapper
 
-VIDEO_DIR = os.path.join(os.path.dirname(__file__), "videos")
+VIDEO_DIR = os.path.join(os.path.dirname(__file__), "videos_fr3")
 
 def test_table_and_fr3():
     """Test scene with two tables, a Franka FR3 robot, and a floor plane.

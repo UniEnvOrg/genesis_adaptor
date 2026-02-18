@@ -166,7 +166,6 @@ class RobotDescriptionNode(EntityNode[
         **kwargs
     ) -> None:
         if priority == 50:
-            assert os.path.exists(self.description_file), f"Description file not found: {self.description_file}"
             self.entity = self.initialize_entity_from_description_file(self.description_file)
     
     def reset(self, *, priority = 0, seed = None, mask = None, **kwargs):

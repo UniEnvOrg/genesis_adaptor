@@ -193,7 +193,7 @@ class MimicJointPositionController(JointPositionController):
             self._clip_low,
             self._clip_high,
         )
-        super().apply_action(actual)
+        # super().apply_action(actual)
 
 
 class MimicJointVelocityController(JointVelocityController):
