@@ -135,6 +135,7 @@ class TableBuilder(WorldNode):
         quat: tuple = (1.0, 0.0, 0.0, 0.0),
         texture_path: Optional[Path] = None,
         leg_color: Optional[tuple] = None,
+        batch_fixed_verts: bool = False,
     ) -> EntityGroup:
         """Static method to create a table directly without instantiating TableBuilder.
 
@@ -150,6 +151,9 @@ class TableBuilder(WorldNode):
             quat: Orientation quaternion (w, x, y, z)
             texture_path: Path to the tabletop texture image. If None, a random texture is used.
             leg_color: RGBA colour tuple for the legs. If None, a random colour is chosen.
+            batch_fixed_verts: If True, enables per-environment position overrides for
+                fixed entities in a batched world (required by Genesis when calling
+                ``set_pos`` with env-specific values on ``fixed=True`` morphs).
 
         Returns:
             ``EntityGroup`` whose anchor is the table surface center.
@@ -177,6 +181,7 @@ class TableBuilder(WorldNode):
                 quat=top_world_quat.tolist(),
                 fixed=True,
                 decimate=False,
+                batch_fixed_verts=batch_fixed_verts,
             ),
             surface=tabletop_surface,
             name=f"{name}_top",
@@ -204,6 +209,7 @@ class TableBuilder(WorldNode):
                     pos=leg_world_pos.tolist(),
                     quat=leg_world_quat.tolist(),
                     fixed=True,
+                    batch_fixed_verts=batch_fixed_verts,
                 ),
                 surface=gs.surfaces.Metal(
                     color=resolved_leg_color,
@@ -228,6 +234,7 @@ class TableBuilder(WorldNode):
                 quat=self.quat,
                 texture_path=self.texture_path,
                 leg_color=self.leg_color,
+                batch_fixed_verts=False,
             )
 
     def reset(self, *, priority: int = 0, seed: Optional[int] = None, mask=None, **kwargs):
