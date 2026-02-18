@@ -118,17 +118,20 @@ def test_table_and_fr3_with_hand():
         # Define movement targets (relative to initial position)
         home_pos = eef_pos.clone()
         # Reach forward toward the empty table
+        # FR3+Hand has a shorter effective reach than the Panda, so we use a
+        # more conservative 0.15 m step to stay comfortably inside the workspace.
         forward_pos = home_pos.clone()
-        forward_pos[0] += 0.3  # Move +x (toward table)
-        # Lower position (down to table surface)
+        forward_pos[0] += 0.15  # Move +x (toward table)
+        # Lower position — stop 22 cm above the table surface (vs 15 cm for the
+        # Panda) to avoid the joint-limit boundary at full forward extension.
         lower_pos = forward_pos.clone()
-        lower_pos[2] = TABLE_SURFACE_Z + 0.15  # 15cm above table
+        lower_pos[2] = TABLE_SURFACE_Z + 0.22  # 22cm above table
         # Lift position (above table)
         lift_pos = lower_pos.clone()
         lift_pos[2] += 0.15
         # Side position (move to the side)
         side_pos = home_pos.clone()
-        side_pos[1] += 0.2  # Move +y (to the side)
+        side_pos[1] += 0.15  # Move +y (to the side)
 
         OPEN = torch.tensor([-1.0])
         CLOSE = torch.tensor([1.0])
