@@ -1,8 +1,7 @@
-"""Franka Research FR3 robot descriptor with Franka Hand gripper.
+"""Franka Emika Panda robot descriptor with Franka Hand gripper.
 
 MJCF sources (Apache 2.0):
-  Arm:     https://github.com/google-deepmind/mujoco_menagerie/tree/main/franka_fr3
-  Gripper: https://github.com/google-deepmind/mujoco_menagerie/tree/main/franka_emika_panda
+  Full robot: https://github.com/google-deepmind/mujoco_menagerie/tree/main/franka_emika_panda
 """
 
 import torch
@@ -12,7 +11,7 @@ from unienv_genesis.nodes.entities.robot_node import RobotKeyframe, RobotDescrip
 from unienv_genesis.nodes.entities.entity_controllers import CONTROL_MODE_T
 from unienv_genesis_collection.asset_path import get_asset_path
 
-# Default home joint positions for FR3 arm (7 DOF) + Franka Hand (2 DOF, fully open)
+# Default home joint positions for Panda arm (7 DOF) + Franka Hand (2 DOF, fully open)
 HOME_JOINT_POSITIONS = torch.tensor([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853, 0.04, 0.04])
 
 # End-effector link name for IK control
@@ -22,12 +21,12 @@ EE_LINK_NAME = "hand"
 _DEFAULT_SUB_CONTROLLERS = {
     "arm": {
         "controller_type": "eef_pose",
-        "joint_indexes": list(range(7)),   # fr3_joint1 … fr3_joint7
+        "joint_indexes": list(range(7)),   # joint1 … joint7
         "target_link": EE_LINK_NAME,
     },
     "gripper": {
         "controller_type": "mimic_joint_position",
-        "joint_indexes": [7, 8],           # fr3_finger_joint1, fr3_finger_joint2
+        "joint_indexes": [7, 8],           # finger_joint1, finger_joint2
         # Gripper action convention: -1 = fully open (0.04 m), +1 = fully closed (0.0 m)
         # Mapping applied by the mimic_joint_position controller:
         #   finger_position = action * GRIPPER_MULTIPLIER + GRIPPER_SHIFT
@@ -39,11 +38,10 @@ _DEFAULT_SUB_CONTROLLERS = {
 }
 
 
-class FrankaFR3WithHand(RobotDescriptionNode):
-    """Franka Research FR3 7-DOF arm with Franka Hand gripper.
+class FrankaEmikaPanda(RobotDescriptionNode):
+    """Franka Emika Panda 7-DOF arm with Franka Hand gripper.
 
-    The arm MJCF comes from the mujoco_menagerie ``franka_fr3`` model; the
-    gripper comes from the mujoco_menagerie ``franka_emika_panda/hand.xml``.
+    The MJCF comes from the mujoco_menagerie ``franka_emika_panda`` model.
 
     Default controller is ``"combined"``:
       - ``"arm"``     sub-controller: ``eef_pose`` (IK-based end-effector control)
@@ -67,10 +65,10 @@ class FrankaFR3WithHand(RobotDescriptionNode):
     Example::
 
         from unienv_genesis import GenesisWorld
-        from unienv_genesis_collection.robots.franka_fr3 import FrankaFR3
+        from unienv_genesis_collection.robots.franka_emika_panda import FrankaEmikaPanda
 
         world = GenesisWorld()
-        robot = FrankaFR3(world, name="franka")
+        robot = FrankaEmikaPanda(world, name="franka")
 
         # Action dict expected by the default combined controller:
         # {

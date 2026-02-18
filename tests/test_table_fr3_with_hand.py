@@ -1,4 +1,4 @@
-"""Test: load a table with random texture and a Franka FR3 robot using WorldEnv.
+"""Test: load a table with random texture and a Franka FR3 + Hand robot using WorldEnv.
 
 Gripper control verification
 -----------------------------
@@ -31,8 +31,8 @@ from unienv_interface.wrapper.video_record import EpisodeVideoWrapper
 VIDEO_DIR = os.path.join(os.path.dirname(__file__), "videos_fr3_with_hand")
 
 
-def test_table_and_fr3_hand():
-    """Test scene with two tables, a Franka FR3 robot, and a floor plane.
+def test_table_and_fr3_with_hand():
+    """Test scene with two tables, a Franka FR3 + Hand robot, and a floor plane.
 
     Scene layout (top-down, X axis points right):
 
@@ -190,4 +190,4 @@ def test_table_and_fr3_hand():
         print(f"Video saved to: {video_path}")
 
 if __name__ == "__main__":
-    test_table_and_fr3_hand()
+    test_table_and_fr3_with_hand()
