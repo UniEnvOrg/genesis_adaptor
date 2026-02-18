@@ -13,6 +13,44 @@ from unienv_genesis.utils.batch_dim_utils import (
 )
 from ..base import EntityNode, EntityType, ContextType, ObsType, ActType
 
+
+def resolve_joint_indexes(
+    entity: gs_entities.RigidEntity,
+    joint_indexes: Optional[Sequence[int]] = None,
+    joint_names: Optional[Sequence[str]] = None,
+) -> Optional[Sequence[int]]:
+    """Resolve joint selection to numeric DOF indexes.
+
+    Users may specify joints either by index (``joint_indexes``) or by name
+    (``joint_names``).  At most one may be provided.  If neither is given the
+    function returns ``None``, which conventionally means *all joints*.
+
+    Args:
+        entity: The rigid entity whose joints are queried.
+        joint_indexes: Numeric DOF indexes (passed through unchanged).
+        joint_names: Joint names to look up on the entity.
+
+    Returns:
+        A list of integer DOF indexes, or ``None``.
+
+    Raises:
+        ValueError: If both ``joint_indexes`` and ``joint_names`` are given,
+            or if any name in ``joint_names`` is not found on the entity.
+    """
+    if joint_names is not None and joint_indexes is not None:
+        raise ValueError("Specify joint_indexes or joint_names, not both")
+    if joint_names is not None:
+        name_to_idx = {j.name: j.dof_idx_local for j in entity.joints}
+        missing = [n for n in joint_names if n not in name_to_idx]
+        if missing:
+            raise ValueError(
+                f"Joint names not found on entity: {missing}. "
+                f"Available joints: {list(name_to_idx.keys())}"
+            )
+        joint_indexes = [name_to_idx[n] for n in joint_names]
+    return joint_indexes
+
+
 class EntityController(
     abc.ABC,
     Generic[EntityType, ObsType, ActType]
@@ -65,7 +103,9 @@ class DiscreteEntityController(
         entity : gs_entities.RigidEntity,
         joint_indexes : Optional[Sequence[int]] = None,
         action_space : Optional[Space[ActType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]] = None,
+        joint_names : Optional[Sequence[str]] = None,
     ) -> None:
+        joint_indexes = resolve_joint_indexes(entity, joint_indexes, joint_names)
         n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
         batch_size = world.batch_size
         

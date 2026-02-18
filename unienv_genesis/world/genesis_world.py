@@ -3,7 +3,6 @@
 from typing import Optional, Any, Dict, Union
 import time
 import genesis as gs
-import genesis.engine.entities as gs_entities
 import torch
 from unienv_interface.backends.pytorch import (
     PyTorchComputeBackend,
@@ -56,7 +55,11 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     
     def create_scene(
         self,
+        disable_viewer: bool = False,
     ) -> gs.Scene:
+        if disable_viewer and "show_viewer" in self.scene_init_kwargs:
+            self.scene_init_kwargs["show_viewer"] = False
+        
         scene = gs.Scene(
             **self.scene_init_kwargs
         )
@@ -150,6 +153,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         *,
         seed: Optional[int] = None,
         mask: Optional[PyTorchArrayType] = None,
+        disable_viewer: bool = False,
         **kwargs
     ) -> None:
         """Prepare scene for reloading. Clears old entities but does NOT compile.
@@ -165,7 +169,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         if self.scene.is_built:
             self.scene.destroy()
         
-        self.scene = self.create_scene()
+        self.scene = self.create_scene(disable_viewer=disable_viewer)
     
     def after_reload(
         self,

@@ -11,7 +11,7 @@ from unienv_genesis.utils.batch_dim_utils import (
     get_batch_aware_shape,
     is_batched,
 )
-from .base import DiscreteEntityController, EntityType, ActType
+from .base import DiscreteEntityController, EntityType, ActType, resolve_joint_indexes
 
 class JointPositionAndVelocityController(
     DiscreteEntityController[
@@ -29,7 +29,9 @@ class JointPositionAndVelocityController(
         joint_indexes : Optional[Sequence[int]] = None,
         min_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
+        joint_names : Optional[Sequence[str]] = None,
     ) -> None:
+        joint_indexes = resolve_joint_indexes(entity, joint_indexes, joint_names)
         n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
         batch_size = world.batch_size
 

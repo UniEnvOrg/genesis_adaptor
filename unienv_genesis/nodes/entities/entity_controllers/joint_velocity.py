@@ -23,8 +23,9 @@ class JointVelocityController(
         joint_indexes : Optional[Sequence[int]] = None,
         min_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
+        joint_names : Optional[Sequence[str]] = None,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names)
         self.action_space = self.action_space['target_joint_velocity']
 
     def apply_action(self, action):

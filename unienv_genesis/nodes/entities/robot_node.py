@@ -118,11 +118,11 @@ class RobotDescriptionNode(EntityNode[
         # immediately, giving real (non-None) action/observation spaces before
         # WorldEnv is constructed.  The scene is rebuilt properly (with all nodes)
         # during the first WorldEnv.reload() call.
-        self.world.reload()             # fresh scene (destroys any prior built scene)
-        self.reload(priority=50)        # add this entity to the fresh scene
-        self.world.after_reload()       # compile scene
-        self.after_reload(priority=50)  # init controller — real spaces now available
-        self.world.reload()             # restore fresh unbuilt scene for subsequent nodes
+        self.world.reload(disable_viewer=True) # fresh scene (destroys any prior built scene)
+        self.reload(priority=50)               # add this entity to the fresh scene
+        self.world.after_reload()              # compile scene
+        self.after_reload(priority=50)         # init controller — real spaces now available
+        self.world.reload()                    # restore fresh unbuilt scene for subsequent nodes
 
         self._last_observation = None
         self._next_action = None

@@ -82,9 +82,10 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
         velocity_shift: Union[float, PyTorchArrayType] = 0.0,
         velocity_control_low: Optional[Union[float, PyTorchArrayType]] = None,
         velocity_control_high: Optional[Union[float, PyTorchArrayType]] = None,
+        joint_names: Optional[Sequence[str]] = None,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel)
-        n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
+        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names)
+        n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
         self._pos_multiplier = _prepare_1d(position_multiplier, n_dofs, "position_multiplier", dev)
@@ -166,9 +167,10 @@ class MimicJointPositionController(JointPositionController):
         shift: Union[float, PyTorchArrayType] = 0.0,
         control_low: Optional[Union[float, PyTorchArrayType]] = None,
         control_high: Optional[Union[float, PyTorchArrayType]] = None,
+        joint_names: Optional[Sequence[str]] = None,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes)
-        n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
+        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names)
+        n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
         self._multiplier = _prepare_1d(multiplier, n_dofs, "multiplier", dev)
@@ -229,9 +231,10 @@ class MimicJointVelocityController(JointVelocityController):
         shift: Union[float, PyTorchArrayType] = 0.0,
         control_low: Optional[Union[float, PyTorchArrayType]] = None,
         control_high: Optional[Union[float, PyTorchArrayType]] = None,
+        joint_names: Optional[Sequence[str]] = None,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel)
-        n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
+        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names)
+        n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
         self._multiplier = _prepare_1d(multiplier, n_dofs, "multiplier", dev)

@@ -1,5 +1,5 @@
 from typing import Literal
-from .base import EntityController, DiscreteEntityController
+from .base import EntityController, DiscreteEntityController, resolve_joint_indexes
 from .joint_position_velocity_control import JointPositionAndVelocityController
 from .joint_position import JointPositionController
 from .joint_velocity import JointVelocityController
@@ -33,6 +33,7 @@ CONTROL_MODE_MAP = {
 }
 
 __all__ = [
+    "resolve_joint_indexes",
     "EntityController",
     "DiscreteEntityController",
     "JointPositionAndVelocityController",

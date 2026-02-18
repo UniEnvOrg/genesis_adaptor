@@ -99,9 +99,10 @@ class EndEffectorPoseController(
         joint_indexes : Optional[Sequence[int]] = None,
         rotation_representation : str = "euler", # "euler", "quat", "rot6d"
         normalize_rotation_action : bool = False,
+        joint_names : Optional[Sequence[str]] = None,
         **ik_kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names)
         self._target_link_name = target_link
         self._base_frame_name = base_frame
         self._resolve_links()
