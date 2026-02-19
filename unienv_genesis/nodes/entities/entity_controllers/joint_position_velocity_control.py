@@ -107,16 +107,12 @@ class JointPositionAndVelocityController(
         else:
             self._Kd_expanded = None
 
-    def reload(self, mask = None):
-        if mask is not None:
-            env_idx = torch.nonzero(mask)[0]
-        else:
-            env_idx = None
+    def reload(self):
         # Set the controller for the entity
         if self._Kp_expanded is not None:
-            self.entity.set_dofs_kp(self._Kp_expanded, dofs_idx_local=self.joint_indexes, envs_idx=env_idx)
+            self.entity.set_dofs_kp(self._Kp_expanded, dofs_idx_local=self.joint_indexes)
         if self._Kd_expanded is not None:
-            self.entity.set_dofs_kv(self._Kd_expanded, dofs_idx_local=self.joint_indexes, envs_idx=env_idx)
+            self.entity.set_dofs_kv(self._Kd_expanded, dofs_idx_local=self.joint_indexes)
 
     def apply_action(self, action):
         self.entity.control_dofs_position_velocity(

@@ -10,6 +10,9 @@ from xbarray.transformations.rotation_conversions.pytorch import (
     matrix_to_quaternion,
     quaternion_apply,
     quaternion_invert,
+    quaternion_to_matrix,
+    matrix_to_euler_angles,
+    matrix_to_rotation_6d,
 )
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
@@ -83,6 +86,18 @@ class AbsoluteRotationConventionUtils:
             action = action / torch.clip(torch.norm(action, dim=-1, keepdim=True), min=1e-6) # normalize to unit quaternion
         return action
 
+    @staticmethod
+    def from_quaternion(representation: AVAILABLE_REPRESENTATIONS_T, quaternion: PyTorchArrayType) -> PyTorchArrayType:
+        """Convert a quaternion ``(w, x, y, z)`` to the given rotation representation."""
+        if representation == "euler":
+            return matrix_to_euler_angles(quaternion_to_matrix(quaternion), "XYZ")
+        elif representation == "quat":
+            return quaternion
+        elif representation == "rot6d":
+            return matrix_to_rotation_6d(quaternion_to_matrix(quaternion))
+        else:
+            raise ValueError(f"Unsupported rotation representation: {representation}")
+
 class EndEffectorPoseController(
     JointPositionController
 ):
@@ -147,9 +162,9 @@ class EndEffectorPoseController(
         self.target_link : RigidLink = self.entity.get_link(self._target_link_name)
         self.base_frame : Optional[RigidLink] = self.entity.get_link(self._base_frame_name) if self._base_frame_name is not None else None
 
-    def reload(self, mask: Optional[PyTorchArrayType] = None) -> None:
+    def reload(self) -> None:
         self._resolve_links()
-        super().reload(mask=mask)
+        super().reload()
 
     def reset(self, mask: Optional[PyTorchArrayType] = None) -> None:
         """Reset the controller's IK result cache."""
@@ -255,6 +270,38 @@ class EndEffectorPoseController(
         achieved_position_absolute, achieved_quaternion_absolute = self.get_eef_pose_absolute()
         achieved_position_base, achieved_quaternion_base = self.convert_absolute_to_base(achieved_position_absolute, achieved_quaternion_absolute)
         return achieved_position_base, achieved_quaternion_base
+
+    def get_action_world(
+        self,
+        pos: PyTorchArrayType,
+        quat: PyTorchArrayType,
+    ) -> PyTorchArrayType:
+        """Convert a world-frame target pose to this controller's action format.
+
+        This is the inverse of the transformation applied inside
+        :meth:`apply_action`: it converts an absolute (world-frame) position
+        and quaternion into the ``[pos_base, rot_repr]`` action tensor that the
+        controller expects, accounting for the base frame and the configured
+        rotation representation.
+
+        Args:
+            pos: ``(..., 3)`` target position in world frame.
+            quat: ``(..., 4)`` target quaternion ``(w, x, y, z)`` in world
+                frame.
+
+        Returns:
+            action: ``(..., 3 + rot_dim)`` action tensor suitable for
+                :meth:`apply_action` or ``set_next_action``.
+        """
+        pos_base, quat_base = self.convert_absolute_to_base(pos, quat)
+        rot = AbsoluteRotationConventionUtils.from_quaternion(
+            self.rotation_representation, quat_base,
+        )
+        if self.normalize_rotation_action:
+            rot = AbsoluteRotationConventionUtils.normalize_action(
+                self.rotation_representation, rot,
+            )
+        return torch.cat([pos_base, rot], dim=-1)
 
     def get_observation(self):
         obs = super().get_observation()

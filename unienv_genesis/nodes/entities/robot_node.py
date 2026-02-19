@@ -215,9 +215,9 @@ class RobotDescriptionNode(EntityNode[
                 self.controller = self.init_controller()
             else:
                 self.controller.entity = self.entity
-            self.controller.reload(mask=mask)
+            self.controller.reload()
             self._apply_rest(mask=mask)
-            self.controller.after_reload(mask=mask)
+            self.controller.after_reload()
             self.update_observation()
         elif priority == 0:
             if self.controller is not None:

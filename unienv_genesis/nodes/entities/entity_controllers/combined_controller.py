@@ -92,6 +92,16 @@ class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
 
         super().__init__(world, entity, observation_space, action_space)
 
+    def __getitem__(self, name: str) -> EntityController:
+        """Access a sub-controller by name.
+
+        Example::
+
+            arm_ctrl = combined_controller["arm"]
+            action = arm_ctrl.get_action_world(target_pos, target_quat)
+        """
+        return self._sub_controllers[name]
+
     def get_observation(self) -> Optional[dict]:
         result = {}
         for name, ctrl in self._sub_controllers.items():
@@ -104,17 +114,17 @@ class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
         for name, ctrl in self._sub_controllers.items():
             ctrl.apply_action(action[name])
 
-    def reload(self, mask: Optional[PyTorchArrayType] = None) -> None:
+    def reload(self) -> None:
         for ctrl in self._sub_controllers.values():
-            ctrl.reload(mask)
+            ctrl.reload()
 
     def reset(self, mask: Optional[PyTorchArrayType] = None) -> None:
         for ctrl in self._sub_controllers.values():
             ctrl.reset(mask)
 
-    def after_reload(self, mask: Optional[PyTorchArrayType] = None) -> None:
+    def after_reload(self) -> None:
         for ctrl in self._sub_controllers.values():
-            ctrl.after_reload(mask)
+            ctrl.after_reload()
 
     def after_reset(self, mask: Optional[PyTorchArrayType] = None) -> None:
         for ctrl in self._sub_controllers.values():

@@ -77,13 +77,13 @@ class EntityController(
     def apply_action(self, action : ActType) -> None:
         raise NotImplementedError
     
-    def reload(self, mask : Optional[PyTorchArrayType] = None) -> None:
+    def reload(self) -> None:
         pass
 
     def reset(self, mask : Optional[PyTorchArrayType] = None) -> None:
         pass
 
-    def after_reload(self, mask : Optional[PyTorchArrayType] = None) -> None:
+    def after_reload(self) -> None:
         pass
 
     def after_reset(self, mask : Optional[PyTorchArrayType] = None) -> None:
