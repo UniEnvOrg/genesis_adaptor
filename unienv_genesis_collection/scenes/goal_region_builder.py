@@ -33,7 +33,7 @@ class GoalRegionBuilder(WorldNode):
         >>>
         >>> world = GenesisWorld()
         >>>
-        >>> # Goal region with radius 0.02m, centered at origin
+        >>> # Goal region with radius 0.03m, centered at origin
         >>> goal_region = GoalRegionBuilder(world, name="goal", radius=0.02, pos=(0, 0, 0))
     """
 
