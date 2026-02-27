@@ -481,6 +481,60 @@
        CONTACT EXCLUSIONS
        ====================================================================== -->
   <contact>
+    <!-- Base link exclusions (main SRS base with arm bases and early links) -->
+    <exclude body1="base_link" body2="left_base_link"/>
+    <exclude body1="base_link" body2="right_base_link"/>
+    <exclude body1="base_link" body2="left_link1"/>
+    <exclude body1="base_link" body2="left_link2"/>
+    <exclude body1="base_link" body2="left_link3"/>
+    <exclude body1="base_link" body2="right_link1"/>
+    <exclude body1="base_link" body2="right_link2"/>
+    <exclude body1="base_link" body2="right_link3"/>
+
+    <!-- Left arm base with all its links -->
+    <exclude body1="left_base_link" body2="left_link1"/>
+    <exclude body1="left_base_link" body2="left_link2"/>
+    <exclude body1="left_base_link" body2="left_link3"/>
+    <exclude body1="left_base_link" body2="left_link4"/>
+
+    <!-- Left arm: adjacent link self-collision exclusions -->
+    <exclude body1="left_link1" body2="left_link2"/>
+    <exclude body1="left_link2" body2="left_link3"/>
+    <exclude body1="left_link3" body2="left_link4"/>
+    <exclude body1="left_link4" body2="left_link5"/>
+    <exclude body1="left_link5" body2="left_link6"/>
+    <exclude body1="left_link6" body2="left_link7"/>
+    <exclude body1="left_link7" body2="lg_base"/>
+
+    <!-- Left arm: skip-one-link exclusions (for links that can touch when folded) -->
+    <exclude body1="left_link1" body2="left_link3"/>
+    <exclude body1="left_link2" body2="left_link4"/>
+    <exclude body1="left_link3" body2="left_link5"/>
+    <exclude body1="left_link4" body2="left_link6"/>
+    <exclude body1="left_link5" body2="left_link7"/>
+
+    <!-- Right arm base with all its links -->
+    <exclude body1="right_base_link" body2="right_link1"/>
+    <exclude body1="right_base_link" body2="right_link2"/>
+    <exclude body1="right_base_link" body2="right_link3"/>
+    <exclude body1="right_base_link" body2="right_link4"/>
+
+    <!-- Right arm: adjacent link self-collision exclusions -->
+    <exclude body1="right_link1" body2="right_link2"/>
+    <exclude body1="right_link2" body2="right_link3"/>
+    <exclude body1="right_link3" body2="right_link4"/>
+    <exclude body1="right_link4" body2="right_link5"/>
+    <exclude body1="right_link5" body2="right_link6"/>
+    <exclude body1="right_link6" body2="right_link7"/>
+    <exclude body1="right_link7" body2="rg_base"/>
+
+    <!-- Right arm: skip-one-link exclusions -->
+    <exclude body1="right_link1" body2="right_link3"/>
+    <exclude body1="right_link2" body2="right_link4"/>
+    <exclude body1="right_link3" body2="right_link5"/>
+    <exclude body1="right_link4" body2="right_link6"/>
+    <exclude body1="right_link5" body2="right_link7"/>
+
     <!-- Left gripper self-collision exclusions -->
     <exclude body1="lg_base" body2="lg_left_driver"/>
     <exclude body1="lg_base" body2="lg_right_driver"/>
@@ -496,10 +550,6 @@
     <exclude body1="rg_base" body2="rg_right_spring_link"/>
     <exclude body1="rg_right_coupler" body2="rg_right_follower"/>
     <exclude body1="rg_left_coupler" body2="rg_left_follower"/>
-
-    <!-- Arm-gripper collision exclusions -->
-    <exclude body1="left_link7" body2="lg_base"/>
-    <exclude body1="right_link7" body2="rg_base"/>
   </contact>
 
   <!-- ======================================================================
