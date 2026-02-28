@@ -101,6 +101,13 @@ class AbsoluteRotationConventionUtils:
 class EndEffectorPoseController(
     JointPositionController
 ):
+    """End-effector pose controller using inverse kinematics.
+
+    Converts Cartesian end-effector targets (position + rotation) into joint
+    positions via the Genesis damped-least-squares IK solver, then delegates to
+    the underlying :class:`JointPositionController` for PD tracking.
+    """
+
     controller_type = "eef_pose"
 
     def __init__(
@@ -208,23 +215,51 @@ class EndEffectorPoseController(
         return target_position_base, target_rotation_base
 
     def solve_ik_absolute(self, target_position : Optional[PyTorchArrayType], target_quaternion : Optional[PyTorchArrayType]) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
-        """
-        Solve IK for the target end-effector position and rotation
+        """Solve IK for the target end-effector position and rotation.
+
+        Seeds the solver with the current joint positions to ensure solution
+        continuity across frames.  See the class docstring for details on why
+        this matters.
+
         Args:
-            target_position: (batch_size, 3) tensor of target end-effector positions
-            target_quaternion: (batch_size, 4) tensor of target end-effector rotations in quaternion format
+            target_position: ``(3,)`` or ``(batch_size, 3)`` target EEF positions.
+            target_quaternion: ``(4,)`` or ``(batch_size, 4)`` target EEF orientations (w, x, y, z).
+
         Returns:
-            target_joint_positions: (batch_size, n_dof) tensor of target joint positions
-            achieved_error: (batch_size, 6) tensor of end-effector pose error (position error + rotation error), where position error = target_position - achieved_position, rotation error = quat_to_rotvec(achieved_quaternion^{-1} * target_quaternion)
+            target_joint_positions: ``(n_dof,)`` or ``(batch_size, n_dof)`` solved joint positions.
+            achieved_error: ``(6,)`` or ``(batch_size, 6)`` pose error
+                ``[pos_err_x, pos_err_y, pos_err_z, rot_err_x, rot_err_y, rot_err_z]``.
+        
+        .. note:: **IK solver seeding and solution continuity**
+
+        Genesis's IK solver (``entity.inverse_kinematics``) uses an iterative DLS method.  
+        When the solver cannot reach the target within tolerance with the initial joint configuration, 
+        it enters a **random-restart loop** (``max_samples`` attempts, default 50),
+        each time drawing a new random initial joint configuration.  
+        The best result across all attempts is returned.
+
+        For unreachable targets this causes **frame-to-frame oscillation**: each
+        call discovers a *different* local minimum because the random seeds
+        differ, so the PD controller chases a flickering joint target.
+
+        To avoid this, this controller defaults ``max_samples`` to **1** (no random restarts).  
+        This guarantees that the returned solution is
+        always the closest reachable configuration to the current state,
+        producing smooth, continuous behaviour even when the target is out of
+        reach.  Both defaults can be overridden via ``ik_kwargs``.
         """
-        # This is a placeholder implementation. You should replace this with your actual IK solver.
+        # Build IK kwargs: seed with current joint positions and default to
+        # max_samples=1 (no random restarts) unless the caller overrides.
+        ik_call_kwargs = {"max_samples": 1}
+        ik_call_kwargs.update(self.ik_kwargs)
+
         full_target_joint_positions, achieved_error = self.entity.inverse_kinematics(
             self.target_link,
             target_position,
             target_quaternion,
             return_error=True,
             dofs_idx_local=self.joint_indexes,
-            **self.ik_kwargs,
+            **ik_call_kwargs,
         )
 
         if self.joint_indexes is not None:
