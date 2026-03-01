@@ -129,7 +129,7 @@ class CachedTableBuilder(WorldNode):
         # Persistent RNGs — reseeded when an explicit seed is provided,
         # otherwise their state carries over across reload/reset calls.
         self.np_rng: np.random.Generator = np.random.default_rng()
-        self.rng: torch.Generator = torch.Generator()
+        self.rng: torch.Generator = torch.Generator(device=world.device)
         self.rng.seed()  # seed from OS entropy
 
         # Populated during reload().

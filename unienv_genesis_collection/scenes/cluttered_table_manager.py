@@ -139,7 +139,8 @@ class ClutteredTableManager(WorldNode):
             )
 
         # RNG state — reseeded when an explicit seed is provided.
-        self.rng: torch.Generator = torch.Generator()
+        # Use the world's device so that torch.rand/randint work on GPU backends.
+        self.rng: torch.Generator = torch.Generator(device=world.device)
         self.rng.seed()
 
         # Pre-tensorise static avoid spaces (XY only), inverse-rotated into
