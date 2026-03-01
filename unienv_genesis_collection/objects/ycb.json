@@ -1,0 +1,952 @@
+{
+    "002_master_chef_can": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.01
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.01
+            ],
+            "dtype": "torch.float32"
+        },
+        "grasp_offset_workspace2": {
+            "low": [
+                0.0,
+                0.0,
+                0.025
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.025
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis":[0,1,0],
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false, 
+        "size_low": 0.8, 
+        "size_high": 0.8
+    },
+    
+    "005_tomato_soup_can": {
+      "grasp_offset_workspace": {
+          "low": [0.0, 0.0, 0.015],
+          "high": [0.0, 0.0, 0.015],
+          "dtype": "torch.float32"
+      },
+      "preferred_closing_axis": null,
+      "preferred_closing_axis_2": null,
+      "need_coacd_decomposition": false, 
+      "size_low":0.8, 
+      "size_high":0.8
+    },
+    "007_tuna_fish_can": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false, 
+        "size_low":0.8, 
+        "size_high":0.8
+    },
+    "008_pudding_box": {
+        "grasp_offset_workspace": {
+            "low": [
+                -0.035,
+                -0.04,
+                -0.01
+            ],
+            "high": [
+                -0.01,
+                0.03,
+                0.02
+            ],
+            "dtype": "torch.float32"
+        },
+        "grasp_offset_workspace2": {
+            "low": [
+                0.01,
+                -0.04,
+                -0.01
+            ],
+            "high": [
+                0.035,
+                0.03,
+                0.02
+            ],
+            "dtype": "torch.float32"
+        },
+        "orthogonal_grasp": false,
+        "preferred_closing_axis": [0, 1, 0],
+        "preferred_closing_axis_2": [0, 0, 1],
+        "need_coacd_decomposition": false, 
+        "size_low":1.4,
+        "size_high":1.5
+    },
+    "009_gelatin_box": {
+       "grasp_offset_workspace": {
+            "low": [
+                -0.04,
+                -0.025,
+                -0.01
+            ],
+            "high": [
+                0.04,
+                -0.01,
+                0.02
+            ],
+            "dtype": "torch.float32"
+        },
+        "grasp_offset_workspace2": {
+            "low": [
+                -0.04,
+                0.01,
+                -0.01
+            ],
+            "high": [
+                0.04,
+                0.025,
+                0.02
+            ],
+            "dtype": "torch.float32"
+        },
+        "orthogonal_grasp": false,
+        "preferred_closing_axis": [1, 0, 0],
+        "preferred_closing_axis_2": [0, 0, 1],
+        "need_coacd_decomposition": false, 
+        "size_low":1.4,
+        "size_high":1.5
+    },
+    "010_potted_meat_can": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.005
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.01
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [0,1,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false, 
+        "size_low":0.8, 
+        "size_high":0.8
+    },
+    "011_banana": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0, 
+                -0.02, 
+                0.0
+            ],
+            "high": [
+                0.0, 
+                -0.02, 
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "grasp_offset_workspace2": {
+            "low": [
+                0.0, 
+                0.03, 
+                0.0
+            ],
+            "high": [
+                0.0, 
+                0.03, 
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false
+    },
+    "012_strawberry": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "013_apple": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false, 
+        "size_low":0.8, 
+        "size_high":0.8
+    },
+    "014_lemon": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false, 
+        "size_low":0.9, 
+        "size_high":0.9
+    },
+    "015_peach": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false,
+        "size_low":0.8, 
+        "size_high":0.8
+    },
+    "016_pear": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false, 
+        "size_low":0.8, 
+        "size_high":0.8
+    },
+    "017_orange": {
+      "grasp_offset_workspace": null,
+      "preferred_closing_axis": null,
+      "preferred_closing_axis_2": null,
+      "need_coacd_decomposition": false, 
+      "size_low":0.9,
+      "size_high":0.9
+    },
+    "018_plum": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "024_bowl": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.073,
+                0.0,
+                0.01
+            ],
+            "high": [
+                0.073,
+                0.0,
+                0.01
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "025_mug": {
+      "grasp_offset_workspace": {
+          "low": [0.045, -0.04, -0.000],
+          "high": [0.045, -0.04, -0.000],
+          "dtype": "torch.float32"
+      },
+      "preferred_closing_axis": [-0.70710678118, -0.70710678118,0],
+      "preferred_closing_axis_2": [0, 0, 1],
+      "need_coacd_decomposition": false
+    },
+    "028_skillet_lid": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "030_fork": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                -0.005
+            ],
+            "high": [
+                0.0,
+                0.0,
+                -0.005
+            ],
+            "dtype": "torch.float32"
+        },
+        "grasp_offset_workspace2": {
+            "low": [
+                0.05,
+                0.0,
+                -0.005
+            ],
+            "high": [
+                0.05,
+                0.0,
+                -0.005
+            ],
+            "dtype": "torch.float32"
+        },
+        "second_arm_rotate": false,
+        "preferred_closing_axis": [0,1,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false, 
+        "size_low":2.0,
+        "size_high":2.0
+    },
+    "031_spoon": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                -0.005
+            ],
+            "high": [
+                0.0,
+                0.0,
+                -0.005
+            ],
+            "dtype": "torch.float32"
+        },
+        "grasp_offset_workspace2": {
+            "low": [
+                0.05,
+                0.0,
+                -0.005
+            ],
+            "high": [
+                0.05,
+                0.0,
+                -0.005
+            ],
+            "dtype": "torch.float32"
+        },
+        "second_gripper_rotate": false,
+        "preferred_closing_axis": [0,1,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false,
+        "size_low":2.0,
+        "size_high":2.0
+    },
+    "032_knife": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                -0.005
+            ],
+            "high": [
+                0.0,
+                0.0,
+                -0.005
+            ],
+            "dtype": "torch.float32"
+        },
+        "grasp_offset_workspace2": {
+            "low": [
+                0.05,
+                0.0,
+                -0.005
+            ],
+            "high": [
+                0.05,
+                0.0,
+                -0.005
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [0,1,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false,
+        "size_low":2.0,
+        "size_high":2.0
+    },
+    "033_spatula": {
+        "grasp_offset_workspace": {
+            "low": [
+                -0.07, 
+                0.0, 
+                0.001
+            ],
+            "high": [
+                -0.07, 0.0, 0.001],
+            "dtype": "torch.float32"
+        },
+        "grasp_offset_workspace2": {
+            "low": [
+                0.0, 
+                0.0, 
+                0.003
+            ],
+            "high": [
+                0.0, 
+                0.0, 
+                0.003
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [0,1,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false, 
+        "size_low":1.2,
+        "size_high":1.2
+    },
+    "035_power_drill": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.04,
+                -0.02,
+                -0.1
+            ],
+            "high": [
+                0.04,
+                0.005,
+                -0.1
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false,
+        "size_low":0.8,
+        "size_high":0.8
+    },
+    "038_padlock": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.01,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.01,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [0, 1, 0],
+        "preferred_closing_axis_2": [0, 0, 1],
+        "need_coacd_decomposition": false
+    },
+    "040_large_marker": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false
+    },
+    "043_phillips_screwdriver": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.02,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.05,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [0,1,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false
+    },
+    "044_flat_screwdriver": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.02,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.05,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [0,1,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false
+    },
+    "048_hammer": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.02,
+                -0.07,
+                0.0
+            ],
+            "high": [
+                0.02,
+                -0.07,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "grasp_offset_workspace2": {
+            "low": [
+                0.01,
+                0.03,
+                0.0
+            ],
+            "high": [
+                0.01,
+                0.03,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false,
+        "size_low":0.8, 
+        "size_high":0.8
+    },
+    "050_medium_clamp": {
+        "grasp_offset_workspace": {
+            "low": [
+                -0.014,
+                0,
+                0.0
+            ],
+            "high": [
+                -0.012,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [0, 1, 0],
+        "preferred_closing_axis_2": [0, 0, 1],
+        "need_coacd_decomposition": false
+    },
+    "053_mini_soccer_ball": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false, 
+        "size_low":0.9,
+        "size_high":0.9
+    },
+    "054_softball": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false, 
+        "size_low":0.8,
+        "size_high":0.8
+    },
+    "055_baseball": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false, 
+        "size_low":0.9,
+        "size_high":0.9
+    },
+    "056_tennis_ball": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false, 
+        "size_low":0.9,
+        "size_high":0.9
+    },
+    "057_racquetball": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false,
+        "size_low":0.8,
+        "size_high":0.8
+    },
+    "058_golf_ball": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "061_foam_brick": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false,
+        "size_low": 0.6, 
+        "size_high": 0.8
+    },
+    "062_dice": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false,
+        "size_low": 1.0, 
+        "size_high": 1.5
+    },
+    "063-b_marbles": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "065-c_cups": {
+        "grasp_offset_workspace": {
+            "low": [0.0, 0.0, 0.0],
+            "high": [0.0, 0.0, 0.0],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false, 
+        "size_low": 0.5, 
+        "size_high": 0.7
+    },
+    "065-d_cups": {
+        "grasp_offset_workspace": {
+            "low": [0.0, 0.0, 0.0],
+            "high": [0.0, 0.0, 0.0],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false, 
+        "size_low": 0.5, 
+        "size_high": 0.7
+    },
+    "065-i_cups": {
+        "grasp_offset_workspace": {
+            "low": [0.0, 0.0, 0.0],
+            "high": [0.0, 0.0, 0.0],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false, 
+        "size_low": 0.5, 
+        "size_high": 0.7
+    },
+    "065-j_cups": {
+        "grasp_offset_workspace": {
+            "low": [0.0, 0.0, 0.0],
+            "high": [0.0, 0.0, 0.0],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false, 
+        "size_low": 0.5, 
+        "size_high": 0.7
+    },
+    "070-a_colored_wood_blocks": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.008
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.008
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false, 
+        "size_low":0.8, 
+        "size_high":0.8
+    },
+    "070-b_colored_wood_blocks": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "072-b_toy_airplane": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.035,
+                0.0,
+                -0.1
+            ],
+            "high": [
+                0.035,
+                0.0,
+                -0.1
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false
+    },
+    "072-c_toy_airplane": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.003
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.003
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "072-d_toy_airplane": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "072-e_toy_airplane": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "073-a_lego_duplo": {
+      "grasp_offset_workspace": {
+          "low": [0.0, 0.0, 0.0],
+          "high": [0.0, 0.0, 0.0],
+          "dtype": "torch.float32"
+      },
+      "preferred_closing_axis": [0,1,0],
+      "preferred_closing_axis_2": [0,0,1],
+      "need_coacd_decomposition": false
+    },
+    "073-b_lego_duplo": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "073-c_lego_duplo": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false
+    },
+    "073-d_lego_duplo": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false
+    },
+    "073-e_lego_duplo": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "high": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2": [0,0,1],
+        "need_coacd_decomposition": false
+    },
+    "073-f_lego_duplo": {
+        "grasp_offset_workspace": null,
+        "preferred_closing_axis": null,
+        "preferred_closing_axis_2": null,
+        "need_coacd_decomposition": false
+    },
+    "073-g_lego_duplo": {
+        "grasp_offset_workspace": {
+            "low": [
+                0.0,
+                -0.03,
+                0.0
+            ],
+            "high": [
+                0.0,
+                -0.03,
+                0.0
+            ],
+            "dtype": "torch.float32"
+        },
+        "preferred_closing_axis": [1,0,0],
+        "preferred_closing_axis_2":[0,0,1],
+        "need_coacd_decomposition": false, 
+        "size_low":0.9, 
+        "size_high":0.9
+    },
+    "077_rubiks_cube": {
+      "grasp_offset_workspace": {
+          "low": [0.0, 0.0, 0.005],
+          "high": [0.0, 0.0, 0.005],
+          "dtype": "torch.float32"
+      },
+      "preferred_closing_axis": null,
+      "preferred_closing_axis_2": null,
+      "need_coacd_decomposition": false, 
+      "size_low":0.9, 
+      "size_high":0.9
+    }}

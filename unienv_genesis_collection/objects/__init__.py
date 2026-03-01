@@ -32,6 +32,8 @@ from unienv_genesis_collection.objects.primitive_objects import (
     CylinderObject,
 )
 from unienv_genesis_collection.objects.mesh_object import MeshObject
+from unienv_genesis_collection.objects.pick_place_objs import YCBManipulatableObject
+from unienv_genesis_collection.objects.ycb_parser import YCBParser
 from unienv_genesis_collection.objects.base_tool import (
     ManipulatableTool,
     FunctionalPoint,
@@ -55,6 +57,8 @@ __all__ = [
     "CylinderObject",
     # Mesh
     "MeshObject",
+    "YCBManipulatableObject",
+    "YCBParser",
     # Tool
     "ManipulatableTool",
     "FunctionalPoint",

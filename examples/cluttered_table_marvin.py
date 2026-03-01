@@ -28,6 +28,7 @@ from unienv_genesis.nodes.sensors.camera_node import (
     CameraSensorNode,
     CameraSensorNodeOptions,
 )
+from unienv_genesis_collection.objects.ycb_parser import YCBParser
 from unienv_genesis_collection.objects import BoxObject, SphereObject, CylinderObject
 from unienv_genesis_collection.objects.base_object import (
     ManipulatableObject,
@@ -349,6 +350,8 @@ class CubeRelocateTask(WorldNode):
 def main():
     world = GenesisWorld()
 
+    ycb_parser = YCBParser()
+
     # -- Floor --
     plane = PlaneBuilder(world, name="floor", height=0.0)
 
@@ -370,8 +373,8 @@ def main():
 
     # -- Distractor objects --
     distractor_pool = [
-        BoxObject(size=(0.05, 0.03, 0.06), name="green_box", color=(0, 0.8, 0.2, 1)),
-        SphereObject(radius=0.025, name="blue_ball", color=(0, 0.3, 1, 1)),
+        # BoxObject(size=(0.05, 0.03, 0.06), name="green_box", color=(0, 0.8, 0.2, 1)),
+        # SphereObject(radius=0.025, name="blue_ball", color=(0, 0.3, 1, 1)),
         SphereObject(radius=0.02, name="yellow_ball", color=(1, 1, 0, 1)),
         CylinderObject(
             radius=0.02, height=0.08, name="orange_can", color=(1, 0.5, 0, 1),
@@ -379,6 +382,8 @@ def main():
         CylinderObject(
             radius=0.015, height=0.06, name="purple_peg", color=(0.6, 0, 0.8, 1),
         ),
+        ycb_parser.create(model_id='048_hammer'),
+        ycb_parser.create(model_id='030_fork')
     ]
 
     clutter = ClutteredTableManager(
