@@ -10,6 +10,7 @@ from xbarray.transformations.rotation_conversions.pytorch import (
     matrix_to_quaternion,
     quaternion_apply,
     quaternion_invert,
+    quaternion_multiply,
     quaternion_to_matrix,
     matrix_to_euler_angles,
     matrix_to_rotation_6d,
@@ -122,6 +123,8 @@ class EndEffectorPoseController(
         rotation_representation : str = "euler", # "euler", "quat", "rot6d"
         normalize_rotation_action : bool = False,
         joint_names : Optional[Sequence[str]] = None,
+        eef_offset_pos : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
+        eef_offset_quat : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
         **ik_kwargs,
     ) -> None:
         super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names)
@@ -131,6 +134,24 @@ class EndEffectorPoseController(
         self.rotation_representation = rotation_representation
         self.normalize_rotation_action = normalize_rotation_action
         self.ik_kwargs = ik_kwargs
+
+        # EEF pose offset: translates the virtual EEF point away from the
+        # physical target_link origin.  Stored in the target_link's local frame.
+        if eef_offset_pos is not None:
+            self._eef_offset_pos = torch.as_tensor(
+                eef_offset_pos, dtype=torch.float32, device=world.device,
+            )
+            if eef_offset_quat is not None:
+                self._eef_offset_quat = torch.as_tensor(
+                    eef_offset_quat, dtype=torch.float32, device=world.device,
+                )
+            else:
+                self._eef_offset_quat = torch.tensor(
+                    [1.0, 0.0, 0.0, 0.0], device=world.device,
+                )
+        else:
+            self._eef_offset_pos = None
+            self._eef_offset_quat = None
         
         batch_size = world.batch_size
         
@@ -172,6 +193,34 @@ class EndEffectorPoseController(
     def reload(self) -> None:
         self._resolve_links()
         super().reload()
+
+    # ------------------------------------------------------------------
+    # EEF offset transforms
+    # ------------------------------------------------------------------
+
+    def _link_to_virtual(
+        self,
+        link_pos: PyTorchArrayType,
+        link_quat: PyTorchArrayType,
+    ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
+        """Forward offset: physical target_link pose -> virtual EEF pose."""
+        if self._eef_offset_pos is None:
+            return link_pos, link_quat
+        virt_pos = link_pos + quaternion_apply(link_quat, self._eef_offset_pos)
+        virt_quat = quaternion_multiply(link_quat, self._eef_offset_quat)
+        return virt_pos, virt_quat
+
+    def _virtual_to_link(
+        self,
+        virt_pos: PyTorchArrayType,
+        virt_quat: PyTorchArrayType,
+    ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
+        """Inverse offset: virtual EEF pose -> physical target_link pose."""
+        if self._eef_offset_pos is None:
+            return virt_pos, virt_quat
+        link_quat = quaternion_multiply(virt_quat, quaternion_invert(self._eef_offset_quat))
+        link_pos = virt_pos - quaternion_apply(link_quat, self._eef_offset_pos)
+        return link_pos, link_quat
 
     def reset(self, mask: Optional[PyTorchArrayType] = None) -> None:
         """Reset the controller's IK result cache."""
@@ -253,10 +302,15 @@ class EndEffectorPoseController(
         ik_call_kwargs = {"max_samples": 1}
         ik_call_kwargs.update(self.ik_kwargs)
 
+        # Transform virtual EEF target to physical target_link frame.
+        link_position, link_quaternion = self._virtual_to_link(
+            target_position, target_quaternion,
+        )
+
         full_target_joint_positions, achieved_error = self.entity.inverse_kinematics(
             self.target_link,
-            target_position,
-            target_quaternion,
+            link_position,
+            link_quaternion,
             return_error=True,
             dofs_idx_local=self.joint_indexes,
             **ik_call_kwargs,
@@ -298,8 +352,8 @@ class EndEffectorPoseController(
         return target_joint_positions, achieved_error
 
     def get_eef_pose_absolute(self) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
-        achieved_position_absolute, achieved_quaternion_absolute = self.target_link.get_pos(), self.target_link.get_quat()
-        return achieved_position_absolute, achieved_quaternion_absolute
+        link_pos, link_quat = self.target_link.get_pos(), self.target_link.get_quat()
+        return self._link_to_virtual(link_pos, link_quat)
 
     def get_eef_pose_base(self) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
         achieved_position_absolute, achieved_quaternion_absolute = self.get_eef_pose_absolute()

@@ -36,11 +36,13 @@ _DEFAULT_SUB_CONTROLLERS = {
         "controller_type": "eef_pose",
         "joint_names": LEFT_ARM_JOINT_NAMES,
         "target_link": LEFT_EE_LINK_NAME,
+        "eef_offset_pos": [0.0, 0.0, 0.18],
     },
     "right_arm": {
         "controller_type": "eef_pose",
         "joint_names": RIGHT_ARM_JOINT_NAMES,
         "target_link": RIGHT_EE_LINK_NAME,
+        "eef_offset_pos": [0.0, 0.0, 0.18],
     },
     "left_gripper": {
         "controller_type": "mimic_joint_position",
