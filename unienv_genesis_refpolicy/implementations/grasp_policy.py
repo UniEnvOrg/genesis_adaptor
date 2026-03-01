@@ -183,15 +183,12 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
 
         if n_candidates == 0:
             # No valid grasps — mark as failed.
-            print(f"  [GraspPolicy] No grasp candidates found — marking as failed")
             self._zero_counters(mask)
             if mask is not None:
                 self._failed[mask] = True
             else:
                 self._failed.fill_(True)
             return
-
-        print(f"  [GraspPolicy] Found {n_candidates} grasp candidates")
 
         # 2. Select the best candidate per env using IK error.
         #    Compute EEF quaternions for ALL candidates: ([B], N, 4).
@@ -207,17 +204,10 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         #    Pick the candidate with the lowest error per env.
         best_idx = pos_errors.argmin(dim=-1)  # () or (B,)
 
-        print(f"  [GraspPolicy] IK pos errors per candidate: {pos_errors.tolist()}")
-        if not is_batched(batch_size):
-            print(f"  [GraspPolicy] Best candidate idx={best_idx.item()}, "
-                  f"pos_error={pos_errors[best_idx].item():.6f}")
-
         # IK quality gate: fail early if best candidate is unreachable.
         if not is_batched(batch_size):
             best_error = pos_errors[best_idx]
             if best_error.item() > self.ik_error_threshold:
-                print(f"  [GraspPolicy] Best IK error {best_error.item():.4f} > "
-                      f"threshold {self.ik_error_threshold} — unreachable")
                 self._zero_counters(mask)
                 if mask is not None:
                     self._failed[mask] = True
@@ -229,7 +219,6 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             unreachable = best_error > self.ik_error_threshold
             fail_mask = unreachable if mask is None else (mask & unreachable)
             if fail_mask.any():
-                print(f"  [GraspPolicy] IK quality gate: {fail_mask.sum().item()} envs unreachable")
                 self._failed = self._failed | fail_mask
 
         if is_batched(batch_size):
@@ -253,14 +242,6 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         eef_pos, eef_quat = self._eef_ctrl.get_eef_pose_absolute()
         eef_pos = eef_pos.detach().float()
         eef_quat = eef_quat.detach().float()
-
-        if not is_batched(batch_size):
-            print(f"  [GraspPolicy] EEF current  pos={eef_pos.tolist()}")
-            print(f"  [GraspPolicy] EEF current quat={eef_quat.tolist()}")
-            print(f"  [GraspPolicy] Grasp target pos={grasp_pos.tolist()}")
-            print(f"  [GraspPolicy] Grasp target quat={grasp_quat.tolist()}")
-            print(f"  [GraspPolicy] Pre-grasp    pos={pre_grasp_pos.tolist()}")
-            print(f"  [GraspPolicy] Approach dir    ={approach_dir.tolist()}")
 
         # 6. Store targets and zero counters.
         if mask is not None:
@@ -307,17 +288,6 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             quat_dist < self.orientation_threshold
         )
 
-        _PHASE_NAMES = ["OPEN_GRIPPER", "PRE_GRASP", "APPROACH", "CLOSE_GRIPPER", "DONE"]
-        if not is_batched(self.world.batch_size):
-            phase_idx = self._phase.item()
-            step_in = self._step_in_phase.item()
-            if step_in % 10 == 0 or reached.item():
-                print(f"  [GraspPolicy] phase={_PHASE_NAMES[phase_idx]} "
-                      f"step_in_phase={step_in} "
-                      f"pos_err={pos_err.item():.4f} "
-                      f"quat_dist={quat_dist.item():.4f} "
-                      f"reached={reached.item()}")
-
         # 4. Phase transitions.
         #    Only one transition per step() call to avoid cascading: after a
         #    transition the ``reached`` flag is stale (computed against the old
@@ -334,38 +304,22 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             & (self._phase == GraspPhase.OPEN_GRIPPER)
             & (self._step_in_phase >= self.open_gripper_steps)
         )
-        if not is_batched(self.world.batch_size) and trans_open.item():
-            print(f"  [GraspPolicy] TRANSITION: OPEN_GRIPPER -> PRE_GRASP")
         self._advance(trans_open, GraspPhase.PRE_GRASP)
         transitioned = transitioned | trans_open
 
         # PRE_GRASP → APPROACH
         in_pre = alive & ~transitioned & (self._phase == GraspPhase.PRE_GRASP)
         trans_pre = in_pre & reached
-        if not is_batched(self.world.batch_size) and trans_pre.item():
-            print(f"  [GraspPolicy] TRANSITION: PRE_GRASP -> APPROACH")
         self._advance(trans_pre, GraspPhase.APPROACH)
         transitioned = transitioned | trans_pre
         # patience failure
         fail_pre = in_pre & ~reached & (self._step_in_phase >= self.phase_patience)
-        if not is_batched(self.world.batch_size) and fail_pre.item():
-            print(f"  [GraspPolicy] FAILURE: PRE_GRASP patience exceeded "
-                  f"(step_in_phase={self._step_in_phase.item()}, "
-                  f"pos_err={pos_err.item():.4f}, quat_dist={quat_dist.item():.4f})")
-            print(f"  [GraspPolicy]   eef_pos={eef_pos.tolist()}")
-            print(f"  [GraspPolicy]   target ={target_pos.tolist()}")
         self._failed = self._failed | fail_pre
 
         # APPROACH → CLOSE_GRIPPER  (on reach OR patience timeout — try closing anyway)
         in_app = alive & ~transitioned & (self._phase == GraspPhase.APPROACH)
         timed_out_app = in_app & ~reached & (self._step_in_phase >= self.phase_patience)
         trans_app = in_app & (reached | timed_out_app)
-        if not is_batched(self.world.batch_size) and trans_app.item():
-            if timed_out_app.item():
-                print(f"  [GraspPolicy] TRANSITION: APPROACH -> CLOSE_GRIPPER (patience timeout, "
-                      f"pos_err={pos_err.item():.4f} — will verify grasp)")
-            else:
-                print(f"  [GraspPolicy] TRANSITION: APPROACH -> CLOSE_GRIPPER")
         self._advance(trans_app, GraspPhase.CLOSE_GRIPPER)
         transitioned = transitioned | trans_app
 
@@ -381,10 +335,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 # Grasp verification available — succeed only if contact detected.
                 if not is_batched(self.world.batch_size):
                     if grasping_result:
-                        print(f"  [GraspPolicy] TRANSITION: CLOSE_GRIPPER -> DONE (grasp verified)")
                         self._advance(trans_close, GraspPhase.DONE)
                     else:
-                        print(f"  [GraspPolicy] FAILURE: CLOSE_GRIPPER grasp verification failed")
                         self._failed = self._failed | trans_close
                 else:
                     grasped = _to_bool_tensor(grasping_result, trans_close)
@@ -392,8 +344,6 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                     self._failed = self._failed | (trans_close & ~grasped)
             else:
                 # No verification — backwards compatible.
-                if not is_batched(self.world.batch_size) and trans_close.item():
-                    print(f"  [GraspPolicy] TRANSITION: CLOSE_GRIPPER -> DONE (no verification)")
                 self._advance(trans_close, GraspPhase.DONE)
 
     # ------------------------------------------------------------------

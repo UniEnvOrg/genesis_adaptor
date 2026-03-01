@@ -192,10 +192,8 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         if policy.get_success():
             next_name = self._success_map.get(node_name)
             if next_name is not None:
-                print(f"  [GraphPolicy] Node '{node_name}' succeeded -> transitioning to '{next_name}'")
                 self._transition_to_unbatched(next_name)
             else:
-                print(f"  [GraphPolicy] Node '{node_name}' succeeded -> GRAPH SUCCESS (no outgoing success edge)")
                 self._terminal_success.fill_(True)
             return
 
@@ -206,10 +204,8 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
             reason = "failed" if failed else "timed out"
             next_name = self._fail_map.get(node_name)
             if next_name is not None:
-                print(f"  [GraphPolicy] Node '{node_name}' {reason} -> transitioning to '{next_name}'")
                 self._transition_to_unbatched(next_name)
             else:
-                print(f"  [GraphPolicy] Node '{node_name}' {reason} -> GRAPH FAILURE (no outgoing fail edge)")
                 self._terminal_failure.fill_(True)
 
     def _transition_to_unbatched(self, next_name: str) -> None:
