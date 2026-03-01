@@ -83,8 +83,9 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
         velocity_control_low: Optional[Union[float, PyTorchArrayType]] = None,
         velocity_control_high: Optional[Union[float, PyTorchArrayType]] = None,
         joint_names: Optional[Sequence[str]] = None,
+        is_grasping_fn = None,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn)
         n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
@@ -168,8 +169,9 @@ class MimicJointPositionController(JointPositionController):
         control_low: Optional[Union[float, PyTorchArrayType]] = None,
         control_high: Optional[Union[float, PyTorchArrayType]] = None,
         joint_names: Optional[Sequence[str]] = None,
+        is_grasping_fn = None,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names, is_grasping_fn=is_grasping_fn)
         n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
@@ -232,8 +234,9 @@ class MimicJointVelocityController(JointVelocityController):
         control_low: Optional[Union[float, PyTorchArrayType]] = None,
         control_high: Optional[Union[float, PyTorchArrayType]] = None,
         joint_names: Optional[Sequence[str]] = None,
+        is_grasping_fn = None,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn)
         n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 

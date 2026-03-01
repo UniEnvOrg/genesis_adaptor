@@ -30,19 +30,61 @@ RIGHT_ARM_JOINT_NAMES = [f"right_joint{i}" for i in range(1, 8)]
 LEFT_GRIPPER_DRIVER_NAMES = ["lg_left_driver_joint", "lg_right_driver_joint"]
 RIGHT_GRIPPER_DRIVER_NAMES = ["rg_left_driver_joint", "rg_right_driver_joint"]
 
+# Pad link names per gripper (used for grasp contact detection)
+LEFT_GRIPPER_PAD_LINK_NAMES = ["lg_left_pad", "lg_right_pad"]
+RIGHT_GRIPPER_PAD_LINK_NAMES = ["rg_left_pad", "rg_right_pad"]
+
+
+def _make_is_grasping(pad_link_names):
+    """Create a grasp-detection callable checking contacts on specific pad links."""
+    _cached_pad_indices = {}  # id(entity) -> tensor of global link indices
+
+    def is_grasping(robot_entity, target_entity):
+        # Lazily resolve pad link global indices (cached per entity instance).
+        key = id(robot_entity)
+        if key not in _cached_pad_indices:
+            indices = []
+            for link in robot_entity.links:
+                if link.name in pad_link_names:
+                    indices.append(link.idx)
+            _cached_pad_indices[key] = torch.tensor(indices, dtype=torch.long)
+        pad_indices = _cached_pad_indices[key]
+
+        contacts = robot_entity.get_contacts(with_entity=target_entity)
+
+        # Check if any contact involves a pad link on the robot side.
+        link_a = contacts["link_a"]  # (n_contacts,) or (B, n_contacts)
+        link_b = contacts["link_b"]
+        is_pad = (
+            (link_a.unsqueeze(-1) == pad_indices).any(dim=-1)
+            | (link_b.unsqueeze(-1) == pad_indices).any(dim=-1)
+        )  # (n_contacts,) or (B, n_contacts)
+
+        if contacts["force_a"].dim() == 2:
+            # Unbatched: (n_contacts, 3) — is_pad is (n_contacts,)
+            return is_pad.any()
+        else:
+            # Batched: valid_mask is (B, n_contacts)
+            return (contacts["valid_mask"] & is_pad).any(dim=-1)
+
+    return is_grasping
+
+
 # Default combined sub-controller configuration
 _DEFAULT_SUB_CONTROLLERS = {
     "left_arm": {
         "controller_type": "eef_pose",
         "joint_names": LEFT_ARM_JOINT_NAMES,
         "target_link": LEFT_EE_LINK_NAME,
-        "eef_offset_pos": [0.0, 0.0, 0.18],
+        "eef_offset_pos": [0.0, 0.0, 0.247],
+        "is_grasping_fn": _make_is_grasping(LEFT_GRIPPER_PAD_LINK_NAMES),
     },
     "right_arm": {
         "controller_type": "eef_pose",
         "joint_names": RIGHT_ARM_JOINT_NAMES,
         "target_link": RIGHT_EE_LINK_NAME,
-        "eef_offset_pos": [0.0, 0.0, 0.18],
+        "eef_offset_pos": [0.0, 0.0, 0.247],
+        "is_grasping_fn": _make_is_grasping(RIGHT_GRIPPER_PAD_LINK_NAMES),
     },
     "left_gripper": {
         "controller_type": "mimic_joint_position",
@@ -53,6 +95,7 @@ _DEFAULT_SUB_CONTROLLERS = {
         "shift": 0.45,
         "control_low": -1,
         "control_high": 1,
+        "is_grasping_fn": _make_is_grasping(LEFT_GRIPPER_PAD_LINK_NAMES),
     },
     "right_gripper": {
         "controller_type": "mimic_joint_position",
@@ -61,6 +104,7 @@ _DEFAULT_SUB_CONTROLLERS = {
         "shift": 0.45,
         "control_low": -1,
         "control_high": 1,
+        "is_grasping_fn": _make_is_grasping(RIGHT_GRIPPER_PAD_LINK_NAMES),
     },
 }
 

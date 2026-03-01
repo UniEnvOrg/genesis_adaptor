@@ -105,6 +105,7 @@ class DiscreteEntityController(
         joint_indexes : Optional[Sequence[int]] = None,
         action_space : Optional[Space[ActType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]] = None,
         joint_names : Optional[Sequence[str]] = None,
+        is_grasping_fn = None,
     ) -> None:
         joint_indexes = resolve_joint_indexes(entity, joint_indexes, joint_names)
         n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
@@ -169,13 +170,25 @@ class DiscreteEntityController(
         )
         
         super().__init__(world, entity, obs_space, action_space)
-        
+
         # Store the broadcasted limits as attributes
         self.joint_position_low = joint_position_low
         self.joint_position_high = joint_position_high
         self.joint_force_low = joint_force_low
         self.joint_force_high = joint_force_high
         self.joint_indexes = joint_indexes
+
+        self._is_grasping_fn = is_grasping_fn
+
+    def is_grasping(self, target_entity):
+        """Check if this controller's entity is grasping the target.
+
+        Returns ``None`` if no ``is_grasping`` function was configured.
+        The callable signature is ``(robot_entity, target_entity) -> bool | Tensor[bool]``.
+        """
+        if self._is_grasping_fn is None:
+            return None
+        return self._is_grasping_fn(self.entity, target_entity)
 
     def get_observation(self):
         qpos = self.entity.get_dofs_position(dofs_idx_local=self.joint_indexes)

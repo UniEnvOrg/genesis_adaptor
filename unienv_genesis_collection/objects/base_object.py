@@ -489,7 +489,11 @@ class ManipulatableObject(ABC, Generic[EntityT]):
                     continue
                 half_ext = dims[j] / 2.0
                 approach_dir = axes[j]
-                offset = (half_ext - gripper_depth) * axes[j]
+                # Clamp depth so the grasp point never goes past the
+                # object centre — prevents fingers overshooting into
+                # whatever is behind the object (e.g. a table).
+                effective_depth = min(gripper_depth, half_ext)
+                offset = (half_ext - effective_depth) * axes[j]
                 for sign_a in (+1, -1):       # forward & reverse approach
                     pos = center + sign_a * offset
                     for sign_o in (+1, -1):   # both opening directions

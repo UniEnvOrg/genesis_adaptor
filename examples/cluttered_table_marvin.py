@@ -1,9 +1,10 @@
-"""Example: Tianji Marvin with Robotiq grippers on a cluttered table.
+"""Example: Tianji Marvin grasping and lifting on a cluttered table.
 
 Loads a Marvin dual-arm robot, a table, a ``CubeRelocateTask`` (target red
 cube placed at a random position with a random goal), and a
 ``ClutteredTableManager`` with primitive shape distractors that avoids the
-target cube.  Renders a video of the robot reaching toward the target cube.
+target cube.  Uses ``BoxGripperGraspPolicy`` to grasp the cube and
+``GoToRefPolicy`` to lift it, chained via ``GraphRefPolicy``.
 
 Usage::
 
@@ -46,12 +47,49 @@ from unienv_interface.backends.pytorch import PyTorchComputeBackend
 from unienv_interface.space import BoxSpace, DictSpace
 from unienv_interface.world import WorldEnv
 from unienv_interface.world.node import WorldNode
-from unienv_interface.wrapper.video_record import EpisodeVideoWrapper
+from unienv_interface.wrapper.video_record import EpisodeVideoWrapper, EpisodeRenderStackWrapper
+
+import numpy as np
 
 if TYPE_CHECKING:
     from unienv_genesis.world.genesis_world import GenesisWorld as GenesisWorldT
 
 VIDEO_DIR = os.path.join(os.path.dirname(__file__), "videos_cluttered_marvin")
+
+
+class TiledVideoWrapper(EpisodeVideoWrapper):
+    """Video wrapper that tiles multiple camera views side-by-side.
+
+    When the environment has multiple cameras, ``render()`` returns a dict
+    of frames.  This wrapper horizontally concatenates them into a single
+    frame before storing, so the standard ``EpisodeVideoWrapper`` video
+    pipeline works unchanged.
+    """
+
+    def _tile_frame(self, frame):
+        if not isinstance(frame, dict):
+            return frame
+        arrays = []
+        for v in frame.values():
+            if hasattr(v, "numpy"):
+                v = v.numpy()
+            if isinstance(v, np.ndarray):
+                arrays.append(v)
+        if not arrays:
+            return frame
+        # Pad to same height if needed, then hstack.
+        max_h = max(a.shape[0] for a in arrays)
+        padded = []
+        for a in arrays:
+            if a.shape[0] < max_h:
+                pad = np.zeros((max_h - a.shape[0], a.shape[1], a.shape[2]), dtype=a.dtype)
+                a = np.concatenate([a, pad], axis=0)
+            padded.append(a)
+        return np.concatenate(padded, axis=1)
+
+    def _post_step_render(self) -> None:
+        self._step_frame = self._tile_frame(self.env.render())
+        self.episodic_frames.append(self._step_frame)
 
 # ---------------------------------------------------------------------------
 # Scene constants
@@ -359,7 +397,12 @@ class CubeRelocateTask(WorldNode):
 
 
 def main():
-    world = GenesisWorld()
+    world = GenesisWorld(
+        scene_init_kwargs={
+            "sim_options": gs.options.SimOptions(substeps=5),
+            "rigid_options": gs.options.RigidOptions(box_box_detection=True),
+        },
+    )
 
     # -- Floor --
     plane = PlaneBuilder(world, name="floor", height=0.0)
@@ -419,7 +462,7 @@ def main():
         success_threshold=0.03,
     )
 
-    # -- Camera -- facing the robot
+    # -- Camera -- facing the robot (front)
     cam_pos = (1.0, 0.0, 1.4)
     cam_lookat = (0.0, 0.0, 0.6)
     camera = CameraSensorNode(
@@ -434,22 +477,47 @@ def main():
         render_rgb=True,
     )
 
+    # -- Side camera -- perpendicular view for lift verification
+    side_cam_pos = (0.0, 1.2, 1.0)
+    side_cam_lookat = (0.0, 0.0, 0.6)
+    side_camera = CameraSensorNode(
+        world,
+        name="side_camera",
+        option=CameraSensorNodeOptions(
+            pos=side_cam_pos,
+            quat=CameraSensorNodeOptions.quat_from_lookat(side_cam_pos, side_cam_lookat),
+            res=(640, 480),
+            fov=60,
+        ),
+        render_rgb=True,
+    )
+
     # -- Environment --
-    # Node order: plane(100) > table(100) > robot(50) > task(26) > clutter(25) > camera(-50)
-    env = EpisodeVideoWrapper(
+    # Node order: plane(100) > table(100) > robot(50) > task(26) > clutter(25) > cameras(-50)
+    env = TiledVideoWrapper(
         WorldEnv(
             world,
-            [plane, table, tianji, task, clutter, camera],
+            [plane, table, tianji, task, clutter, camera, side_camera],
             render_mode="auto",
         ),
         store_dir=VIDEO_DIR,
         format="mp4",
     )
 
-    from xbarray.transformations.rotation_conversions.pytorch import (
-        quaternion_to_matrix,
-        matrix_to_euler_angles,
+    from unienv_genesis_refpolicy.implementations.grasp_policy import (
+        BoxGripperGraspPolicy,
     )
+    from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
+    from unienv_genesis_refpolicy.implementations.repeat_action_policy import (
+        RepeatActionRefPolicy,
+    )
+    from unienv_genesis_refpolicy.implementations.combined_policy import (
+        CombinedRefPolicy,
+    )
+    from unienv_genesis_refpolicy.implementations.graph_policy import GraphRefPolicy
+
+    OPEN = torch.tensor([-1.0])
+    CLOSE = torch.tensor([1.0])
 
     for episode in range(N_EPISODES):
         context, obs, info = env.reset(seed=episode, reload=True)
@@ -463,79 +531,82 @@ def main():
             f"target={target_pos.tolist()}  goal={goal_pos.tolist()}"
         )
 
-        # Read home EEF state (left arm only — single-arm reach demo).
-        left_obs = obs["tianji"]["left_arm"]
-        right_obs = obs["tianji"]["right_arm"]
+        # -- Sub-controllers --
+        left_eef = tianji.controller["left_arm"]
+        left_grip = tianji.controller["left_gripper"]
+        right_eef = tianji.controller["right_arm"]
 
-        left_home = left_obs["eef_position"].clone()
-        left_euler = matrix_to_euler_angles(
-            quaternion_to_matrix(left_obs["eef_quaternion"].clone()), "XYZ",
-        )
-        right_home = right_obs["eef_position"].clone()
-        right_euler = matrix_to_euler_angles(
-            quaternion_to_matrix(right_obs["eef_quaternion"].clone()), "XYZ",
+        # Right arm: hold at current pose throughout.
+        right_home_pos, right_home_quat = right_eef.get_eef_pose_absolute()
+        right_hold = right_eef.get_action_world(
+            right_home_pos.detach(), right_home_quat.detach(),
         )
 
-        # Left arm will reach toward the target cube.
-        # Hover 10 cm above the target position.
-        left_target = target_pos.clone()
-        left_target[2] = TABLE_SURFACE_Z + 0.10
+        # -- Grasp policy (left arm + left gripper) --
+        grasp_policy = BoxGripperGraspPolicy(
+            world=world,
+            eef_controller=left_eef,
+            gripper_controller=left_grip,
+            target_object=target_cube,
+            target_entity=task._target_entity,
+            approach_axis=torch.tensor([0.0, 0.0, 1.0]),
+            open_axis=torch.tensor([0.0, 1.0, 0.0]),
+            gripper_width=0.085,
+            gripper_depth=0.035,
+            eef_name="left_arm",
+            gripper_name="left_gripper",
+        )
 
-        # Gripper orientation: pointing down (-Z).
-        left_euler_down = torch.tensor([0, math.pi / 2, 0], dtype=torch.float32)
-        right_euler_fwd = torch.tensor([0, math.pi / 2, 0], dtype=torch.float32)
+        # -- Lift factory (created lazily when grasp succeeds) --
+        def make_lift_policy():
+            eef_pos, eef_quat = left_eef.get_eef_pose_absolute()
+            lift_pos = eef_pos.detach().clone()
+            lift_pos[..., 2] += 0.15  # lift 15 cm
+            return CombinedRefPolicy(
+                world,
+                {
+                    "left_arm": GoToRefPolicy(
+                        world, left_eef, lift_pos, eef_quat.detach().clone(),
+                    ),
+                    "left_gripper": RepeatActionRefPolicy(world, CLOSE, steps=0),
+                },
+                success_keys=["left_arm"],
+            )
 
-        # Right arm stays at a safe hover position.
-        right_table = right_home.clone()
-        right_table[0] = right_home[0] + 0.30
-        right_table[1] = right_home[1] * 0.4
-        right_table[2] = TABLE_SURFACE_Z + 0.10
-
-        OPEN = torch.tensor([-1.0])
-        CLOSE = torch.tensor([1.0])
+        # -- Graph: grasp → lift --
+        graph = GraphRefPolicy(
+            world=world,
+            nodes={"grasp": grasp_policy, "lift": make_lift_policy},
+            success_edges=[("grasp", "lift")],
+            fail_edges=[],
+            initial="grasp",
+            static_actions={"right_arm": right_hold, "right_gripper": OPEN},
+        )
+        graph.reset()
 
         for step in range(TOTAL_STEPS):
-            if step < 150:
-                # Phase 0: left arm reaches toward cube, right arm to hover
-                alpha = step / 150.0
-                l_pos = (1 - alpha) * left_home + alpha * left_target
-                l_euler = (1 - alpha) * left_euler + alpha * left_euler_down
-                r_pos = (1 - alpha) * right_home + alpha * right_table
-                r_euler = (1 - alpha) * right_euler + alpha * right_euler_fwd
-                lg, rg = OPEN, OPEN
-            elif step < 250:
-                # Phase 1: hold above target, close left gripper
-                l_pos = left_target
-                l_euler = left_euler_down
-                r_pos = right_table
-                r_euler = right_euler_fwd
-                lg, rg = CLOSE, OPEN
-            else:
-                # Phase 2: return home, open grippers
-                alpha = (step - 250) / 100.0
-                l_pos = (1 - alpha) * left_target + alpha * left_home
-                l_euler = (1 - alpha) * left_euler_down + alpha * left_euler
-                r_pos = (1 - alpha) * right_table + alpha * right_home
-                r_euler = (1 - alpha) * right_euler_fwd + alpha * right_euler
-                lg, rg = OPEN, OPEN
-
-            action = {
-                "left_arm": torch.cat([l_pos, l_euler]),
-                "right_arm": torch.cat([r_pos, r_euler]),
-                "left_gripper": lg,
-                "right_gripper": rg,
-            }
+            action = graph.get_action(obs)
             obs, reward, terminated, truncated, info = env.step(action)
+            graph.step()
 
-            if step % 50 == 0:
+            if step % 25 == 0:
                 cur_target = obs["task"]["target_position"]
+                eef_pos, eef_quat = left_eef.get_eef_pose_absolute()
                 dist_to_goal = torch.linalg.norm(
                     cur_target - goal_pos,
                 ).item()
                 print(
                     f"  Step {step:3d} | "
+                    f"eef={[f'{x:.3f}' for x in eef_pos.tolist()]}  "
                     f"reward={reward:.4f}  dist_to_goal={dist_to_goal:.4f}"
                 )
+
+            if graph.get_success():
+                print(f"  Grasp + lift succeeded at step {step}!")
+                break
+            if graph.get_failure():
+                print(f"  Grasp failed at step {step}.")
+                break
 
     env.close()
 

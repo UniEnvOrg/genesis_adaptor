@@ -125,9 +125,10 @@ class EndEffectorPoseController(
         joint_names : Optional[Sequence[str]] = None,
         eef_offset_pos : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
         eef_offset_quat : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
+        is_grasping_fn = None,
         **ik_kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names, is_grasping_fn=is_grasping_fn)
         self._target_link_name = target_link
         self._base_frame_name = base_frame
         self._resolve_links()
@@ -152,7 +153,7 @@ class EndEffectorPoseController(
         else:
             self._eef_offset_pos = None
             self._eef_offset_quat = None
-        
+
         batch_size = world.batch_size
         
         # Action space: 3D position + rotation (depends on representation)
