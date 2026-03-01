@@ -482,20 +482,20 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             torch.tensor([0.0, 0.0, 1.0]),
         ]
         for i, opening_dir in enumerate(axes):
-            if dims[i] >= gripper_width or dims[i] < gripper_depth:
+            if dims[i] >= gripper_width:
                 continue
             for j in range(3):
                 if j == i:
                     continue
+                half_ext = dims[j] / 2.0
                 approach_dir = axes[j]
-                # Forward approach
-                positions.append(center)
-                approach_dirs.append(approach_dir)
-                opening_dirs.append(opening_dir)
-                # Reverse approach
-                positions.append(center)
-                approach_dirs.append(-approach_dir)
-                opening_dirs.append(opening_dir)
+                offset = (half_ext - gripper_depth) * axes[j]
+                for sign_a in (+1, -1):       # forward & reverse approach
+                    pos = center + sign_a * offset
+                    for sign_o in (+1, -1):   # both opening directions
+                        positions.append(pos)
+                        approach_dirs.append(sign_a * approach_dir)
+                        opening_dirs.append(sign_o * opening_dir)
 
         if not positions:
             result = GraspCandidates.empty()

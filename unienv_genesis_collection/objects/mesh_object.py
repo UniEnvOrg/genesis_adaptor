@@ -122,7 +122,7 @@ class MeshObject(ManipulatableObject):
         for i in range(len(points)):
             for j in range(i + 1, len(points)):
                 dist = float(np.linalg.norm(points[i] - points[j]))
-                if dist > gripper_width or dist < gripper_depth:
+                if dist > gripper_width:
                     continue
                 # Check roughly antipodal normals
                 dot = float(np.dot(normals[i], normals[j]))
@@ -139,9 +139,11 @@ class MeshObject(ManipulatableObject):
                     approach_dir = np.cross(opening_dir, np.array([0.0, 1.0, 0.0]))
                 approach_dir = approach_dir / np.linalg.norm(approach_dir)
 
-                local_positions.append(midpoint)
-                local_approaches.append(approach_dir)
-                local_openings.append(opening_dir)
+                # Both opening directions (flipped = 180° rotation around approach)
+                for sign_o in (+1, -1):
+                    local_positions.append(midpoint)
+                    local_approaches.append(approach_dir)
+                    local_openings.append(sign_o * opening_dir)
 
         if not local_positions:
             # Fall back to bounding-box-based generation
