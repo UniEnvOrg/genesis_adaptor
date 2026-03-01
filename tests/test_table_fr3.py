@@ -1,5 +1,6 @@
 """Test: load a table with random texture and a Franka FR3 robot using WorldEnv."""
 
+import math
 import os
 import torch
 import genesis as gs
@@ -45,7 +46,7 @@ def test_table_and_fr3():
     # Empty table: fixed at (0, 0), rotated 90° around Z so the long side runs
     # along Y and the robot faces across the narrow depth (0.6 m).
     # NOTE: always keep pos x,y = (0, 0).
-    table = TableBuilder(world, name="table", pos=(0, 0, TABLE_SURFACE_Z), quat=(0.7071068, 0, 0, 0.7071068))
+    table = TableBuilder(world, name="table", pos=(0, 0, TABLE_SURFACE_Z), yaw=math.pi / 2)
     # Robot's mounting table at negative x; inner edge at x = -0.5 (0.2 m clear of the
     # rotated empty table's left edge at x = -0.3).
     table2 = TableBuilder(world, name="table2", pos=(-1.0, 0, TABLE_SURFACE_Z))

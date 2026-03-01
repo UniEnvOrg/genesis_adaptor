@@ -46,6 +46,7 @@ Example::
 
 from __future__ import annotations
 
+import math
 import logging
 from typing import Optional, List, Tuple, TYPE_CHECKING
 
@@ -81,7 +82,7 @@ class ClutteredTableManager(WorldNode):
         n_objects_range: ``(min, max)`` number of objects per reset.
         table_size: Placement region ``(width_x, depth_y)`` in metres.
         table_pos: Table surface centre ``(x, y, z)``.
-        table_quat: Table orientation ``(w, x, y, z)``.
+        table_yaw: Rotation of the table around the Z axis in radians.
         avoid_spaces: Regions where objects must NOT be placed.  Each entry
             is ``((cx, cy, cz), radius)`` — a sphere exclusion zone checked
             during rejection sampling alongside inter-object overlap.
@@ -111,7 +112,7 @@ class ClutteredTableManager(WorldNode):
         n_objects_range: Tuple[int, int] = (3, 8),
         table_size: Tuple[float, float] = (1.0, 0.6),
         table_pos: Tuple[float, float, float] = (0.0, 0.0, 0.65),
-        table_quat: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+        table_yaw: float = 0.0,
         avoid_spaces: Optional[List[Tuple[Tuple[float, float, float], float]]] = None,
         placement_margin: float = 0.05,
         max_placement_attempts: int = 100,
@@ -123,7 +124,9 @@ class ClutteredTableManager(WorldNode):
         self.n_objects_range = n_objects_range
         self.table_size = table_size
         self.table_pos = table_pos
-        self.table_quat = table_quat
+        self.table_yaw = table_yaw
+        self._cos_yaw = math.cos(table_yaw)
+        self._sin_yaw = math.sin(table_yaw)
         self.avoid_spaces = list(avoid_spaces) if avoid_spaces else []
         self.placement_margin = placement_margin
         self.max_placement_attempts = max_placement_attempts
@@ -139,12 +142,22 @@ class ClutteredTableManager(WorldNode):
         self.rng: torch.Generator = torch.Generator()
         self.rng.seed()
 
-        # Pre-tensorise static avoid spaces (XY only).
+        # Pre-tensorise static avoid spaces (XY only), inverse-rotated into
+        # the table's local frame so placement sampling stays axis-aligned.
         if self.avoid_spaces:
-            self._static_avoid_xy = torch.tensor(
+            world_xy = torch.tensor(
                 [[c[0], c[1]] for c, _r in self.avoid_spaces],
                 dtype=torch.float32,
             )  # (n_static, 2)
+            # Inverse-rotate world → local table frame.
+            offset = world_xy - torch.tensor(
+                [table_pos[0], table_pos[1]], dtype=torch.float32,
+            )
+            c_y, s_y = self._cos_yaw, self._sin_yaw
+            self._static_avoid_xy = torch.stack([
+                offset[:, 0] * c_y + offset[:, 1] * s_y,
+                -offset[:, 0] * s_y + offset[:, 1] * c_y,
+            ], dim=-1)  # (n_static, 2)
             self._static_avoid_r = torch.tensor(
                 [r for _c, r in self.avoid_spaces],
                 dtype=torch.float32,
@@ -358,7 +371,7 @@ class ClutteredTableManager(WorldNode):
                 self._static_avoid_r.unsqueeze(0).expand(n_reset, -1)
             )
 
-        # Per-env avoid spaces from kwargs.
+        # Per-env avoid spaces from kwargs (expected in world frame).
         if extra is not None:
             ext_xy, ext_r = extra  # (n_envs_full, n_extra, 2|3), (n_envs_full, n_extra)
             # Slice XY only if 3D centres were provided.
@@ -368,7 +381,17 @@ class ClutteredTableManager(WorldNode):
             if reset_idx is not None:
                 ext_xy = ext_xy[reset_idx]
                 ext_r = ext_r[reset_idx]
-            parts_xy.append(ext_xy.float())
+            # Inverse-rotate world → local table frame.
+            tp = torch.tensor(
+                [self.table_pos[0], self.table_pos[1]], dtype=torch.float32,
+            )
+            offset = ext_xy.float() - tp
+            c_y, s_y = self._cos_yaw, self._sin_yaw
+            local_xy = torch.stack([
+                offset[..., 0] * c_y + offset[..., 1] * s_y,
+                -offset[..., 0] * s_y + offset[..., 1] * c_y,
+            ], dim=-1)
+            parts_xy.append(local_xy)
             parts_r.append(ext_r.float())
 
         if parts_xy:
@@ -500,11 +523,11 @@ class ClutteredTableManager(WorldNode):
                     ).any(dim=0)
 
                 # Check avoid-space exclusion zones (per-env aware).
+                # Both cand and avoid_xy are in the table's local frame.
                 if n_avoid > 0:
-                    abs_xy = table_pos[:2].unsqueeze(0) + cand  # (n_envs, 2)
-                    abs_expanded = abs_xy.unsqueeze(1)  # (n_envs, 1, 2)
+                    cand_expanded = cand.unsqueeze(1)  # (n_envs, 1, 2)
                     adist = torch.sqrt(
-                        ((avoid_xy - abs_expanded) ** 2).sum(dim=-1)
+                        ((avoid_xy - cand_expanded) ** 2).sum(dim=-1)
                     )  # (n_envs, n_avoid)
                     amin = obj_fp_r.unsqueeze(1) + avoid_r  # (n_envs, n_avoid)
                     overlap = overlap | (adist < amin).any(dim=1)
@@ -523,9 +546,10 @@ class ClutteredTableManager(WorldNode):
             if not success.any():
                 continue
 
-            # --- World positions --------------------------------------
-            wx = table_pos[0] + best_xy[:, 0]
-            wy = table_pos[1] + best_xy[:, 1]
+            # --- World positions (forward-rotate local → world) ---------
+            c_y, s_y = self._cos_yaw, self._sin_yaw
+            wx = table_pos[0] + best_xy[:, 0] * c_y - best_xy[:, 1] * s_y
+            wy = table_pos[1] + best_xy[:, 0] * s_y + best_xy[:, 1] * c_y
             wz = table_pos[2] + obj_dims[:, 2] / 2.0 - obj_ctrs[:, 2]
 
             # --- Write via advanced indexing (no Python env loop) ------

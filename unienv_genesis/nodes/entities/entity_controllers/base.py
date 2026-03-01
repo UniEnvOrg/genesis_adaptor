@@ -40,14 +40,15 @@ def resolve_joint_indexes(
     if joint_names is not None and joint_indexes is not None:
         raise ValueError("Specify joint_indexes or joint_names, not both")
     if joint_names is not None:
-        name_to_idx = {j.name: j.dof_idx_local for j in entity.joints}
+        name_to_idx = {j.name: j.dofs_idx_local for j in entity.joints}
         missing = [n for n in joint_names if n not in name_to_idx]
         if missing:
             raise ValueError(
                 f"Joint names not found on entity: {missing}. "
                 f"Available joints: {list(name_to_idx.keys())}"
             )
-        joint_indexes = [name_to_idx[n] for n in joint_names]
+        # dofs_idx_local returns a list per joint; flatten into a single list.
+        joint_indexes = [idx for n in joint_names for idx in name_to_idx[n]]
     return joint_indexes
 
 

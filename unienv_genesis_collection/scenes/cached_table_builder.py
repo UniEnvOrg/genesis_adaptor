@@ -1,6 +1,7 @@
 """CachedTableBuilder: pre-builds N table variants at reload time and selects
 one per environment each reset, without recompiling the scene."""
 
+import math
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -13,11 +14,13 @@ from unienv_interface.world.node import WorldNode
 from unienv_genesis_collection.scenes.table_builder import (
     TableBuilder,
     list_all_table_textures,
+    yaw_to_quat,
     _LEG_COLORS,
     DEFAULT_TABLE_SIZE,
     DEFAULT_TABLE_HEIGHT,
     DEFAULT_LEG_RADIUS,
 )
+from xbarray.transformations.rotation_conversions.pytorch import quaternion_multiply
 
 # Entities of inactive variants are parked far below the scene so they do not
 # interfere with physics or rendering.
@@ -52,7 +55,7 @@ class CachedTableBuilder(WorldNode):
         n_variants: Number of distinct table variants to pre-build. Default 10.
         pos: Target world position ``(x, y, z)`` of the active table's anchor
             (surface centre, matching :class:`TableBuilder`'s convention).
-        quat: Target orientation quaternion ``(w, x, y, z)`` of the active table.
+        yaw: Rotation around the Z axis in radians. Default is 0 (no rotation).
         size_range: Optional ``((min_w, max_w), (min_d, max_d))`` in metres.
             Tabletop thickness is always fixed at ``size[2]``.
             If ``None``, all variants use the fixed ``size`` parameter.
@@ -96,7 +99,7 @@ class CachedTableBuilder(WorldNode):
         name: str = "table",
         n_variants: int = 10,
         pos: tuple = (0.0, 0.0, 0.0),
-        quat: tuple = (1.0, 0.0, 0.0, 0.0),
+        yaw: float = 0.0,
         size_range: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None,
         size: tuple = DEFAULT_TABLE_SIZE,
         height_range: Optional[Tuple[float, float]] = None,
@@ -109,7 +112,12 @@ class CachedTableBuilder(WorldNode):
         self._name = name
         self.n_variants = n_variants
         self.pos = pos
-        self.quat = quat
+        self.yaw = yaw
+        self.quat = yaw_to_quat(yaw)
+        self._cos_yaw = math.cos(yaw)
+        self._sin_yaw = math.sin(yaw)
+        self._pos_t = torch.tensor(pos, dtype=torch.float32)
+        self._quat_t = torch.tensor(self.quat, dtype=torch.float32)
         self.size_range = size_range
         self.size = size
         self.height_range = height_range
@@ -150,6 +158,52 @@ class CachedTableBuilder(WorldNode):
         if self._chosen_indices is None:
             return None
         return self._variants[self._chosen_indices[0]]
+
+    def placement_world_pose(
+        self,
+        local_pos: torch.Tensor,
+        local_quat: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Convert a table-local position/quaternion to world frame.
+
+        The local frame origin is at the table surface center (``self.pos``),
+        with X/Y axes rotated by ``self.yaw`` around Z.
+
+        Args:
+            local_pos: ``(..., 3)`` or ``(..., 2)`` position in table-local
+                frame.  If 2-D, Z defaults to ``self.pos[2]``.
+            local_quat: ``(..., 4)`` quaternion ``(w, x, y, z)`` in the
+                table-local frame.  If ``None``, uses the table's own
+                orientation.
+
+        Returns:
+            world_pos: ``(..., 3)`` world-frame position.
+            world_quat: ``(..., 4)`` world-frame quaternion ``(w, x, y, z)``.
+        """
+        c, s = self._cos_yaw, self._sin_yaw
+
+        if local_pos.shape[-1] == 2:
+            lx = local_pos[..., 0]
+            ly = local_pos[..., 1]
+            wx = self._pos_t[0] + lx * c - ly * s
+            wy = self._pos_t[1] + lx * s + ly * c
+            wz = torch.full_like(wx, self._pos_t[2].item())
+            world_pos = torch.stack([wx, wy, wz], dim=-1)
+        else:
+            lx = local_pos[..., 0]
+            ly = local_pos[..., 1]
+            lz = local_pos[..., 2]
+            wx = self._pos_t[0] + lx * c - ly * s
+            wy = self._pos_t[1] + lx * s + ly * c
+            wz = self._pos_t[2] + lz
+            world_pos = torch.stack([wx, wy, wz], dim=-1)
+
+        if local_quat is None:
+            world_quat = self._quat_t.expand(world_pos.shape[:-1] + (4,))
+        else:
+            world_quat = quaternion_multiply(self._quat_t, local_quat)
+
+        return world_pos, world_quat
 
     def reload(
         self,
@@ -212,7 +266,7 @@ class CachedTableBuilder(WorldNode):
                 height=variant_height,
                 leg_radius=self.leg_radius,
                 pos=_PARK_POS,
-                quat=_PARK_QUAT,
+                yaw=0.0,
                 texture_path=variant_texture,
                 leg_color=variant_leg_color,
                 batch_fixed_verts=batch_fixed_verts,

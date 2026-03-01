@@ -59,6 +59,7 @@ VIDEO_DIR = os.path.join(os.path.dirname(__file__), "videos_cluttered_marvin")
 TABLE_SURFACE_Z = 0.6
 TABLE_SIZE = (1.0, 0.6)
 TABLE_POS = (0.0, 0.0, TABLE_SURFACE_Z)
+TABLE_YAW = math.pi / 2
 ROBOT_Z = TABLE_SURFACE_Z + 0.35  # base above table for downward reach
 TOTAL_STEPS = 350
 N_EPISODES = 2
@@ -105,6 +106,7 @@ class CubeRelocateTask(WorldNode):
         target_object: ManipulatableObject,
         table_size: Tuple[float, float],
         table_pos: Tuple[float, float, float],
+        table_yaw: float = 0.0,
         placement_margin: float = 0.05,
         success_threshold: float = 0.03,
     ):
@@ -114,6 +116,8 @@ class CubeRelocateTask(WorldNode):
         self.target_object = target_object
         self.table_size = table_size
         self.table_pos_t = torch.tensor(table_pos, dtype=torch.float32)
+        self._cos_yaw = math.cos(table_yaw)
+        self._sin_yaw = math.sin(table_yaw)
         self.placement_margin = placement_margin
         self.success_threshold = success_threshold
 
@@ -156,6 +160,20 @@ class CubeRelocateTask(WorldNode):
     @property
     def name(self) -> str:
         return self._name
+
+    def _local_xy_to_world(self, xy: torch.Tensor) -> torch.Tensor:
+        """Convert local table-frame XY offset(s) to world-frame XY.
+
+        Args:
+            xy: ``(..., 2)`` local XY offset from table centre.
+
+        Returns:
+            ``(..., 2)`` world-frame XY.
+        """
+        c, s = self._cos_yaw, self._sin_yaw
+        wx = self.table_pos_t[0] + xy[..., 0] * c - xy[..., 1] * s
+        wy = self.table_pos_t[1] + xy[..., 0] * s + xy[..., 1] * c
+        return torch.stack([wx, wy], dim=-1)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -220,19 +238,13 @@ class CubeRelocateTask(WorldNode):
         if n_envs is None:
             # Unbatched ------------------------------------------------
             target_xy = (torch.rand(2, generator=self.rng) * 2 - 1) * xy_range
-            target_pos = torch.stack([
-                self.table_pos_t[0] + target_xy[0],
-                self.table_pos_t[1] + target_xy[1],
-                wz,
-            ])
+            target_world_xy = self._local_xy_to_world(target_xy)
+            target_pos = torch.stack([target_world_xy[0], target_world_xy[1], wz])
 
             # Goal — different random XY on the table.
             goal_xy = (torch.rand(2, generator=self.rng) * 2 - 1) * xy_range
-            self._goal_pos = torch.stack([
-                self.table_pos_t[0] + goal_xy[0],
-                self.table_pos_t[1] + goal_xy[1],
-                wz,
-            ])
+            goal_world_xy = self._local_xy_to_world(goal_xy)
+            self._goal_pos = torch.stack([goal_world_xy[0], goal_world_xy[1], wz])
 
             self.target_object.set_pos_3d(
                 self._target_entity,
@@ -241,8 +253,8 @@ class CubeRelocateTask(WorldNode):
                 rng=self.rng,
             )
 
-            # Tell clutter manager to avoid the target area.
-            centres = (target_pos[:2]).unsqueeze(0).unsqueeze(0)  # (1,1,2)
+            # Tell clutter manager to avoid the target area (world frame).
+            centres = target_world_xy.unsqueeze(0).unsqueeze(0)  # (1,1,2)
             radii = torch.tensor([[self._target_fp_r]])           # (1,1)
             self.clutter_manager.set_next_reset_avoid_spaces((centres, radii))
 
@@ -263,16 +275,18 @@ class CubeRelocateTask(WorldNode):
 
             raw_target = torch.rand(n_reset, 2, generator=self.rng) * 2 - 1
             target_xy = raw_target * xy_range.unsqueeze(0)  # (n_reset, 2)
+            target_world_xy = self._local_xy_to_world(target_xy)  # (n_reset, 2)
             target_pos = torch.zeros(n_reset, 3)
-            target_pos[:, 0] = self.table_pos_t[0] + target_xy[:, 0]
-            target_pos[:, 1] = self.table_pos_t[1] + target_xy[:, 1]
+            target_pos[:, 0] = target_world_xy[:, 0]
+            target_pos[:, 1] = target_world_xy[:, 1]
             target_pos[:, 2] = wz
 
             raw_goal = torch.rand(n_reset, 2, generator=self.rng) * 2 - 1
             goal_xy = raw_goal * xy_range.unsqueeze(0)
+            goal_world_xy = self._local_xy_to_world(goal_xy)  # (n_reset, 2)
             goal_pos = torch.zeros(n_reset, 3)
-            goal_pos[:, 0] = self.table_pos_t[0] + goal_xy[:, 0]
-            goal_pos[:, 1] = self.table_pos_t[1] + goal_xy[:, 1]
+            goal_pos[:, 0] = goal_world_xy[:, 0]
+            goal_pos[:, 1] = goal_world_xy[:, 1]
             goal_pos[:, 2] = wz
 
             if self._goal_pos is None or mask is None:
@@ -288,18 +302,16 @@ class CubeRelocateTask(WorldNode):
                 envs_idx=envs_idx,
             )
 
-            # Build avoid spaces for the full env set (clutter indexes
-            # into it via reset_idx internally).
+            # Build avoid spaces for the full env set (world-frame XY;
+            # ClutteredTableManager inverse-rotates them internally).
             all_centres = torch.zeros(n_envs, 1, 2)
-            all_centres[reset_idx, 0, :] = target_xy
-            # For non-reset envs, read current target position.
+            all_centres[reset_idx, 0, :] = target_world_xy
+            # For non-reset envs, read current target position (already world frame).
             if mask is not None:
                 cur_pos = self._target_entity.get_pos().detach()  # (n_envs, 3)
                 non_reset = torch.ones(n_envs, dtype=torch.bool)
                 non_reset[reset_idx] = False
-                all_centres[non_reset, 0, :] = (
-                    cur_pos[non_reset, :2] - self.table_pos_t[:2].unsqueeze(0)
-                )
+                all_centres[non_reset, 0, :] = cur_pos[non_reset, :2]
             all_radii = torch.full((n_envs, 1), self._target_fp_r)
             self.clutter_manager.set_next_reset_avoid_spaces(
                 (all_centres, all_radii),
@@ -357,14 +369,14 @@ def main():
         world,
         name="table",
         pos=TABLE_POS,
-        quat=(0.7071068, 0, 0, 0.7071068),
+        yaw=TABLE_YAW,
     )
 
     # -- Robot --
     tianji = TianjiMarvinWithRobotiq2F85(
         world,
         name="tianji",
-        pos=(-0.7, 0, ROBOT_Z),
+        pos=(-0.5, 0, ROBOT_Z),
         quat=(1, 0, 0, 0),
     )
 
@@ -388,6 +400,7 @@ def main():
         n_objects_range=(3, 5),
         table_size=TABLE_SIZE,
         table_pos=TABLE_POS,
+        table_yaw=TABLE_YAW,
         random_quaternion=True,
     )
 
@@ -402,6 +415,7 @@ def main():
         target_object=target_cube,
         table_size=TABLE_SIZE,
         table_pos=TABLE_POS,
+        table_yaw=TABLE_YAW,
         success_threshold=0.03,
     )
 

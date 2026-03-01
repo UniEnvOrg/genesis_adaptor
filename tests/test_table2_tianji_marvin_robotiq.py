@@ -29,7 +29,7 @@ def test_table_and_tianji_marvin_robotiq():
     table = TableBuilder(
         world, name="table",
         pos=(0, 0, TABLE_SURFACE_Z),
-        quat=(0.7071068, 0, 0, 0.7071068),
+        yaw=math.pi / 2,
     )
 
     table2 = TableBuilder(world, name="table2", pos=(-1.0, 0.3, TABLE_SURFACE_Z))

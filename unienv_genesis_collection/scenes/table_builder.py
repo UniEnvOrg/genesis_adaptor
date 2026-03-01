@@ -1,15 +1,18 @@
 """Table builder for simulation scenes."""
 
+import math
 import random
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
+import torch
 import genesis as gs
 
 from unienv_genesis import GenesisWorld
 from unienv_genesis.utils.entity_group import EntityGroup
 from unienv_interface.world.node import WorldNode
 from unienv_genesis_collection.asset_path import get_asset_path
+from xbarray.transformations.rotation_conversions.pytorch import quaternion_multiply
 
 # Default table dimensions (in meters)
 DEFAULT_TABLE_SIZE = (1.0, 0.6, 0.02)  # width, depth, thickness
@@ -52,6 +55,13 @@ def get_random_leg_color() -> tuple:
     """Return a random realistic table-leg RGBA colour."""
     return random.choice(_LEG_COLORS)
 
+
+def yaw_to_quat(yaw: float) -> Tuple[float, float, float, float]:
+    """Convert a Z-axis yaw angle (radians) to a quaternion ``(w, x, y, z)``."""
+    half = yaw / 2.0
+    return (math.cos(half), 0.0, 0.0, math.sin(half))
+
+
 class TableBuilder(WorldNode):
     """Builder for creating tables in simulation scenes.
 
@@ -69,7 +79,7 @@ class TableBuilder(WorldNode):
         height: Table height (distance from table surface down to the floor) in meters
         leg_radius: Radius of table legs in meters
         pos: Position of the table surface center as (x, y, z) in world coordinates
-        quat: Orientation quaternion (w, x, y, z). Default is identity (no rotation).
+        yaw: Rotation around the Z axis in radians. Default is 0 (no rotation).
         texture_path: Path to the tabletop texture image. If None, a random texture
             is selected during each reload.
         leg_color: RGBA colour tuple for the legs. If None, a random colour is chosen
@@ -103,7 +113,7 @@ class TableBuilder(WorldNode):
         height: float = DEFAULT_TABLE_HEIGHT,
         leg_radius: float = DEFAULT_LEG_RADIUS,
         pos: tuple = (0.0, 0.0, 0.0),
-        quat: tuple = (1.0, 0.0, 0.0, 0.0),
+        yaw: float = 0.0,
         texture_path: Optional[Path] = None,
         leg_color: Optional[tuple] = None,
     ):
@@ -113,7 +123,12 @@ class TableBuilder(WorldNode):
         self.height = height
         self.leg_radius = leg_radius
         self.pos = pos
-        self.quat = quat
+        self.yaw = yaw
+        self.quat = yaw_to_quat(yaw)
+        self._cos_yaw = math.cos(yaw)
+        self._sin_yaw = math.sin(yaw)
+        self._pos_t = torch.tensor(pos, dtype=torch.float32)
+        self._quat_t = torch.tensor(self.quat, dtype=torch.float32)
         self.texture_path = texture_path
         self.leg_color = leg_color
 
@@ -132,7 +147,7 @@ class TableBuilder(WorldNode):
         height: float = DEFAULT_TABLE_HEIGHT,
         leg_radius: float = DEFAULT_LEG_RADIUS,
         pos: tuple = (0.0, 0.0, 0.0),
-        quat: tuple = (1.0, 0.0, 0.0, 0.0),
+        yaw: float = 0.0,
         texture_path: Optional[Path] = None,
         leg_color: Optional[tuple] = None,
         batch_fixed_verts: bool = False,
@@ -148,7 +163,7 @@ class TableBuilder(WorldNode):
             height: Table height (surface to floor) in meters
             leg_radius: Radius of table legs in meters
             pos: Position of table surface center as (x, y, z)
-            quat: Orientation quaternion (w, x, y, z)
+            yaw: Rotation around the Z axis in radians. Default is 0.
             texture_path: Path to the tabletop texture image. If None, a random texture is used.
             leg_color: RGBA colour tuple for the legs. If None, a random colour is chosen.
             batch_fixed_verts: If True, enables per-environment position overrides for
@@ -158,6 +173,7 @@ class TableBuilder(WorldNode):
         Returns:
             ``EntityGroup`` whose anchor is the table surface center.
         """
+        quat = yaw_to_quat(yaw)
         # The tabletop uses a UV-mapped mesh (box_with_uv.obj) so that
         # ImageTexture renders correctly.  gs.morphs.Box lacks UV coordinates
         # and would silently show white when a texture is applied.
@@ -222,6 +238,52 @@ class TableBuilder(WorldNode):
 
         return group
 
+    def placement_world_pose(
+        self,
+        local_pos: torch.Tensor,
+        local_quat: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Convert a table-local position/quaternion to world frame.
+
+        The local frame origin is at the table surface center (``self.pos``),
+        with X/Y axes rotated by ``self.yaw`` around Z.
+
+        Args:
+            local_pos: ``(..., 3)`` or ``(..., 2)`` position in table-local
+                frame.  If 2-D, Z defaults to ``self.pos[2]``.
+            local_quat: ``(..., 4)`` quaternion ``(w, x, y, z)`` in the
+                table-local frame.  If ``None``, uses the table's own
+                orientation.
+
+        Returns:
+            world_pos: ``(..., 3)`` world-frame position.
+            world_quat: ``(..., 4)`` world-frame quaternion ``(w, x, y, z)``.
+        """
+        c, s = self._cos_yaw, self._sin_yaw
+
+        if local_pos.shape[-1] == 2:
+            lx = local_pos[..., 0]
+            ly = local_pos[..., 1]
+            wx = self._pos_t[0] + lx * c - ly * s
+            wy = self._pos_t[1] + lx * s + ly * c
+            wz = torch.full_like(wx, self._pos_t[2].item())
+            world_pos = torch.stack([wx, wy, wz], dim=-1)
+        else:
+            lx = local_pos[..., 0]
+            ly = local_pos[..., 1]
+            lz = local_pos[..., 2]
+            wx = self._pos_t[0] + lx * c - ly * s
+            wy = self._pos_t[1] + lx * s + ly * c
+            wz = self._pos_t[2] + lz
+            world_pos = torch.stack([wx, wy, wz], dim=-1)
+
+        if local_quat is None:
+            world_quat = self._quat_t.expand(world_pos.shape[:-1] + (4,))
+        else:
+            world_quat = quaternion_multiply(self._quat_t, local_quat)
+
+        return world_pos, world_quat
+
     def reload(self, *, priority: int = 0, seed: Optional[int] = None, mask=None, **kwargs):
         if priority == 100:
             self.group = self.create_table(
@@ -231,7 +293,7 @@ class TableBuilder(WorldNode):
                 height=self.height,
                 leg_radius=self.leg_radius,
                 pos=self.pos,
-                quat=self.quat,
+                yaw=self.yaw,
                 texture_path=self.texture_path,
                 leg_color=self.leg_color,
                 batch_fixed_verts=False,

@@ -21,7 +21,7 @@ from unienv_genesis_collection.scenes.cached_table_builder import CachedTableBui
 from unienv_interface.world import WorldEnv
 
 _TABLE_POS = (0.0, 0.0, 0.65)
-_TABLE_QUAT = (1.0, 0.0, 0.0, 0.0)
+_TABLE_YAW = 0.0
 _SIZE_RANGE = ((0.8, 1.2), (0.5, 0.7))
 _HEIGHT_RANGE = (0.55, 0.75)
 _N_VARIANTS = 8
@@ -39,7 +39,7 @@ def test_cached_table_builder():
         name="table",
         n_variants=_N_VARIANTS,
         pos=_TABLE_POS,
-        quat=_TABLE_QUAT,
+        yaw=_TABLE_YAW,
         size_range=_SIZE_RANGE,
         height_range=_HEIGHT_RANGE,
     )
@@ -132,7 +132,7 @@ def test_cached_table_builder_batched():
         name="table",
         n_variants=_N_VARIANTS,
         pos=_TABLE_POS,
-        quat=_TABLE_QUAT,
+        yaw=_TABLE_YAW,
     )
     env = WorldEnv(world, [plane, table], render_mode=None)
 
