@@ -12,9 +12,10 @@ Bounding boxes are represented as ``BoxSpace`` instances from
 ``low`` / ``high`` of the box correspond to the min / max corners of the
 axis-aligned bounding box in the object's local frame.
 
-Grasp candidates are returned in **world coordinates**.  The grasp methods
-take a loaded Genesis entity so they can query the current pose at runtime —
-important for articulated objects whose links move during simulation.
+Grasp candidates are computed in the **object's local frame** (and cached)
+via ``list_box_gripper_grasping_candidates_local``.  The world-frame
+accessor ``list_box_gripper_grasping_candidates`` applies the entity's
+current pose transform on every call.
 """
 
 from __future__ import annotations
@@ -96,8 +97,8 @@ def bbox_half_extents(bbox: BoxSpace) -> torch.Tensor:
 class GraspCandidates:
     """A batched collection of candidate grasp poses for a parallel-jaw gripper.
 
-    All positions and directions are in **world coordinates** (transformed
-    from the object's local frame using the entity's current pose).
+    Positions and directions may be in either the **object's local frame**
+    or **world coordinates**, depending on context.
 
     Every field shares the same ``*batch_shape`` prefix.  The most common
     layout is ``batch_shape = (N,)`` where *N* is the number of candidates.
@@ -420,8 +421,8 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         """Check if the object can be grasped by a parallel-jaw gripper.
 
         Default implementation delegates to
-        :meth:`list_box_gripper_grasping_candidates` and returns ``True`` if
-        any candidates exist.
+        :meth:`list_box_gripper_grasping_candidates_local` and returns
+        ``True`` if any candidates exist.  No world transform is needed.
 
         Args:
             entity: The loaded Genesis entity (used to query current pose).
@@ -431,36 +432,42 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         Returns:
             ``True`` if at least one grasp candidate exists.
         """
-        return len(self.list_box_gripper_grasping_candidates(
+        return len(self.list_box_gripper_grasping_candidates_local(
             entity, gripper_width, gripper_depth=gripper_depth,
         )) > 0
 
-    def list_box_gripper_grasping_candidates(
+    def list_box_gripper_grasping_candidates_local(
         self,
         entity: EntityT,
         gripper_width: float,
         gripper_depth: float = 0.01,
     ) -> GraspCandidates:
-        """Return candidate grasp poses for a parallel-jaw gripper.
+        """Return candidate grasp poses in the **object's local frame**.
+
+        Results are cached on first call (keyed by ``gripper_width`` and
+        ``gripper_depth``).  Subsequent calls with the same parameters
+        return the cached value immediately.
 
         The default implementation generates axis-aligned grasps from the
-        bounding box, then transforms them to **world coordinates** using
-        the entity's current pose.
-
-        Subclasses can override for more sophisticated analysis (e.g.
-        mesh-based antipodal sampling).
+        local bounding box.  Subclasses can override for more sophisticated
+        analysis (e.g. mesh-based antipodal sampling).
 
         Args:
-            entity: The loaded Genesis entity (``entity.get_pos()`` and
-                ``entity.get_quat()`` are called to obtain the current
-                world pose).
+            entity: The loaded Genesis entity.
             gripper_width: Maximum gripper opening in metres.
             gripper_depth: Depth of the gripper fingers in metres.
 
         Returns:
-            :class:`GraspCandidates` in world coordinates,
-            shape ``(N, ...)`` where *N* is the number of candidates.
+            :class:`GraspCandidates` in the object's local frame,
+            shape ``(N, 3)`` where *N* is the number of candidates.
         """
+        if not hasattr(self, "_local_grasp_cache"):
+            self._local_grasp_cache: dict[tuple, GraspCandidates] = {}
+
+        key = (gripper_width, gripper_depth)
+        if key in self._local_grasp_cache:
+            return self._local_grasp_cache[key]
+
         bbox = self.get_local_bounding_box(entity)
         center = bbox_center(bbox)
         dims = bbox_size(bbox)
@@ -491,15 +498,46 @@ class ManipulatableObject(ABC, Generic[EntityT]):
                 opening_dirs.append(opening_dir)
 
         if not positions:
-            return GraspCandidates.empty()
+            result = GraspCandidates.empty()
+        else:
+            result = GraspCandidates(
+                position=torch.stack(positions),
+                approach_direction=torch.stack(approach_dirs),
+                opening_direction=torch.stack(opening_dirs),
+            )
 
-        local = GraspCandidates(
-            position=torch.stack(positions),
-            approach_direction=torch.stack(approach_dirs),
-            opening_direction=torch.stack(opening_dirs),
+        self._local_grasp_cache[key] = result
+        return result
+
+    def list_box_gripper_grasping_candidates(
+        self,
+        entity: EntityT,
+        gripper_width: float,
+        gripper_depth: float = 0.01,
+    ) -> GraspCandidates:
+        """Return candidate grasp poses for a parallel-jaw gripper.
+
+        Delegates to :meth:`list_box_gripper_grasping_candidates_local`
+        for the local-frame candidates (cached), then transforms them to
+        **world coordinates** using the entity's current pose.
+
+        Args:
+            entity: The loaded Genesis entity (``entity.get_pos()`` and
+                ``entity.get_quat()`` are called to obtain the current
+                world pose).
+            gripper_width: Maximum gripper opening in metres.
+            gripper_depth: Depth of the gripper fingers in metres.
+
+        Returns:
+            :class:`GraspCandidates` in world coordinates,
+            shape ``([B], N, ...)`` where *N* is the number of candidates and *B* is the batch size (if the world is batched).
+        """
+        local = self.list_box_gripper_grasping_candidates_local(
+            entity, gripper_width, gripper_depth=gripper_depth,
         )
+        if len(local) == 0:
+            return local
 
-        # Transform to world coordinates (batched-env aware)
         pos = entity.get_pos().detach().float()
         quat = entity.get_quat().detach().float()
         return _local_to_world_candidates(local, pos, quat)

@@ -2,7 +2,7 @@
 
 Uses **trimesh** (lazy import) for offline bounding-box computation and
 grasp-candidate analysis.  The mesh file is loaded on first call to
-:meth:`get_local_bounding_box` or :meth:`list_box_gripper_grasping_candidates`
+:meth:`get_local_bounding_box` or :meth:`list_box_gripper_grasping_candidates_local`
 and cached for subsequent calls.
 """
 
@@ -13,12 +13,12 @@ from typing import Optional, Tuple, List, Union, TYPE_CHECKING
 
 import numpy as np
 import torch
+from genesis.engine import entities as gs_entities
 
 from unienv_genesis_collection.objects.base_object import (
     ManipulatableObject,
     GraspCandidates,
     make_bbox,
-    _local_to_world_candidates,
 )
 
 if TYPE_CHECKING:
@@ -86,22 +86,29 @@ class MeshObject(ManipulatableObject):
     # Grasp analysis (mesh-based antipodal sampling)
     # ------------------------------------------------------------------
 
-    def list_box_gripper_grasping_candidates(
+    def list_box_gripper_grasping_candidates_local(
         self,
-        entity,
+        entity: gs_entities.RigidEntity,
         gripper_width: float,
         gripper_depth: float = 0.01,
         n_samples: int = 100,
     ) -> GraspCandidates:
-        """Generate grasp candidates via mesh surface sampling.
+        """Generate grasp candidates via mesh surface sampling (local frame).
 
         Samples surface points, finds antipodal pairs whose distance is
         within ``[gripper_depth, gripper_width]``, and returns midpoint
-        grasps in **world coordinates**.
+        grasps in the **object's local frame**.  Results are cached.
 
         Falls back to the bounding-box-based method from the base class if
         no antipodal pairs are found.
         """
+        if not hasattr(self, "_local_grasp_cache"):
+            self._local_grasp_cache: dict[tuple, GraspCandidates] = {}
+
+        key = (gripper_width, gripper_depth, n_samples)
+        if key in self._local_grasp_cache:
+            return self._local_grasp_cache[key]
+
         mesh = self._load_trimesh()
 
         # Sample surface points and their normals (numpy)
@@ -138,20 +145,19 @@ class MeshObject(ManipulatableObject):
 
         if not local_positions:
             # Fall back to bounding-box-based generation
-            return super().list_box_gripper_grasping_candidates(
+            result = super().list_box_gripper_grasping_candidates_local(
                 entity, gripper_width, gripper_depth=gripper_depth,
             )
+            self._local_grasp_cache[key] = result
+            return result
 
-        local = GraspCandidates(
+        result = GraspCandidates(
             position=torch.from_numpy(np.stack(local_positions).astype(np.float32)),
             approach_direction=torch.from_numpy(np.stack(local_approaches).astype(np.float32)),
             opening_direction=torch.from_numpy(np.stack(local_openings).astype(np.float32)),
         )
-
-        # Transform to world coordinates (batched-env aware)
-        pos = entity.get_pos().detach().float()
-        quat = entity.get_quat().detach().float()
-        return _local_to_world_candidates(local, pos, quat)
+        self._local_grasp_cache[key] = result
+        return result
 
     # ------------------------------------------------------------------
     # Scene loading
