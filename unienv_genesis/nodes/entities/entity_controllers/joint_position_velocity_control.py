@@ -31,6 +31,7 @@ class JointPositionAndVelocityController(
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         joint_names : Optional[Sequence[str]] = None,
         is_grasping_fn = None,
+        **kwargs,
     ) -> None:
         joint_indexes = resolve_joint_indexes(entity, joint_indexes, joint_names)
         n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
@@ -70,7 +71,7 @@ class JointPositionAndVelocityController(
             },
             device=joint_limit_low.device,
         )
-        super().__init__(world, entity, joint_indexes, action_space, is_grasping_fn=is_grasping_fn)
+        super().__init__(world, entity, joint_indexes, action_space, is_grasping_fn=is_grasping_fn, **kwargs)
         self.Kp = Kp
         self.Kd = Kd
 

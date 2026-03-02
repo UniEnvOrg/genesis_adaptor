@@ -126,15 +126,16 @@ class EndEffectorPoseController(
         eef_offset_pos : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
         eef_offset_quat : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
         is_grasping_fn = None,
-        **ik_kwargs,
+        ik_kwargs: Optional[dict] = None,
+        **kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names, is_grasping_fn=is_grasping_fn)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
         self._target_link_name = target_link
         self._base_frame_name = base_frame
         self._resolve_links()
         self.rotation_representation = rotation_representation
         self.normalize_rotation_action = normalize_rotation_action
-        self.ik_kwargs = ik_kwargs
+        self.ik_kwargs = ik_kwargs or {}
 
         # EEF pose offset: translates the virtual EEF point away from the
         # physical target_link origin.  Stored in the target_link's local frame.

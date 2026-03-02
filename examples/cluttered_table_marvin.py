@@ -549,10 +549,6 @@ def main():
             gripper_controller=left_grip,
             target_object=target_cube,
             target_entity=task._target_entity,
-            approach_axis=torch.tensor([0.0, 0.0, 1.0]),
-            open_axis=torch.tensor([0.0, 1.0, 0.0]),
-            gripper_width=0.085,
-            gripper_depth=0.035,
             eef_name="left_arm",
             gripper_name="left_gripper",
         )

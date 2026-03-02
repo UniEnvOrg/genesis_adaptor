@@ -60,16 +60,19 @@ class EntityController(
     controller_type : str
 
     def __init__(
-        self, 
+        self,
         world : GenesisWorld,
         entity: EntityType,
         observation_space : Optional[Space[ObsType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]],
         action_space : Space[ActType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType],
+        **kwargs,
     ):
         self.world = world
         self.entity = entity
         self.observation_space = observation_space
         self.action_space = action_space
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
     def get_observation(self) -> Optional[ObsType]:
         return None
@@ -106,6 +109,7 @@ class DiscreteEntityController(
         action_space : Optional[Space[ActType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]] = None,
         joint_names : Optional[Sequence[str]] = None,
         is_grasping_fn = None,
+        **kwargs,
     ) -> None:
         joint_indexes = resolve_joint_indexes(entity, joint_indexes, joint_names)
         n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
@@ -169,7 +173,7 @@ class DiscreteEntityController(
             device=joint_position_low.device,
         )
         
-        super().__init__(world, entity, obs_space, action_space)
+        super().__init__(world, entity, obs_space, action_space, **kwargs)
 
         # Store the broadcasted limits as attributes
         self.joint_position_low = joint_position_low

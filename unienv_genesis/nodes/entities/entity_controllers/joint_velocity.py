@@ -25,8 +25,9 @@ class JointVelocityController(
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         joint_names : Optional[Sequence[str]] = None,
         is_grasping_fn = None,
+        **kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
         self.action_space = self.action_space['target_joint_velocity']
 
     def apply_action(self, action):

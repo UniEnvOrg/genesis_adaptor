@@ -71,9 +71,15 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         gripper_open_action: Gripper action value for fully open.
         gripper_close_action: Gripper action value for fully closed.
         approach_axis: ``(3,)`` direction in the **EEF frame** that should
-            align with the grasp approach direction.
+            align with the grasp approach direction. If ``None``, read from
+            ``gripper_controller.approach_direction``.
         open_axis: ``(3,)`` direction in the **EEF frame** that should
-            align with the gripper opening direction.
+            align with the gripper opening direction. If ``None``, read from
+            ``gripper_controller.open_direction``.
+        gripper_width: Maximum opening width in metres. If ``None``, read from
+            ``gripper_controller.gripper_width``.
+        gripper_depth: Finger depth in metres. If ``None``, read from
+            ``gripper_controller.gripper_depth``.
     """
 
     def __init__(
@@ -83,10 +89,10 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         gripper_controller: EntityController,
         target_object: ManipulatableObject,
         target_entity,
-        approach_axis: torch.Tensor,
-        open_axis: torch.Tensor,
-        gripper_width: float,
-        gripper_depth: float = 0.01,
+        approach_axis: Optional[torch.Tensor] = None,
+        open_axis: Optional[torch.Tensor] = None,
+        gripper_width: Optional[float] = None,
+        gripper_depth: Optional[float] = None,
         approach_distance: float = 0.10,
         position_threshold: float = 0.01,
         orientation_threshold: float = 0.05,
@@ -106,8 +112,6 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._gripper_ctrl = gripper_controller
         self.target_object = target_object
         self.target_entity = target_entity
-        self.gripper_width = gripper_width
-        self.gripper_depth = gripper_depth
         self.approach_distance = approach_distance
         self.position_threshold = position_threshold
         self.orientation_threshold = orientation_threshold
@@ -120,6 +124,19 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self.gripper_open_action = gripper_open_action
         self.gripper_close_action = gripper_close_action
         self.ik_error_threshold = ik_error_threshold
+
+        # Resolve optional parameters from gripper controller attributes.
+        if gripper_width is None:
+            gripper_width = gripper_controller.gripper_width
+        if gripper_depth is None:
+            gripper_depth = gripper_controller.gripper_depth
+        if approach_axis is None:
+            approach_axis = torch.tensor(gripper_controller.approach_direction, dtype=torch.float32)
+        if open_axis is None:
+            open_axis = torch.tensor(gripper_controller.open_direction, dtype=torch.float32)
+
+        self.gripper_width = gripper_width
+        self.gripper_depth = gripper_depth
 
         batch_size = world.batch_size
         device = world.device
@@ -330,7 +347,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             & (self._step_in_phase >= self.close_gripper_steps)
         )
         if trans_close.any():
-            grasping_result = self._eef_ctrl.is_grasping(self.target_entity)
+            grasping_result = self._gripper_ctrl.is_grasping(self.target_entity)
             if grasping_result is not None:
                 # Grasp verification available — succeed only if contact detected.
                 if not is_batched(self.world.batch_size):

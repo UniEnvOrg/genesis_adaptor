@@ -77,14 +77,12 @@ _DEFAULT_SUB_CONTROLLERS = {
         "joint_names": LEFT_ARM_JOINT_NAMES,
         "target_link": LEFT_EE_LINK_NAME,
         "eef_offset_pos": [0.0, 0.0, 0.247],
-        "is_grasping_fn": _make_is_grasping(LEFT_GRIPPER_PAD_LINK_NAMES),
     },
     "right_arm": {
         "controller_type": "eef_pose",
         "joint_names": RIGHT_ARM_JOINT_NAMES,
         "target_link": RIGHT_EE_LINK_NAME,
         "eef_offset_pos": [0.0, 0.0, 0.247],
-        "is_grasping_fn": _make_is_grasping(RIGHT_GRIPPER_PAD_LINK_NAMES),
     },
     "left_gripper": {
         "controller_type": "mimic_joint_position",
@@ -96,6 +94,11 @@ _DEFAULT_SUB_CONTROLLERS = {
         "control_low": -1,
         "control_high": 1,
         "is_grasping_fn": _make_is_grasping(LEFT_GRIPPER_PAD_LINK_NAMES),
+        # Grasp frame directions in the EEF frame (z=approach, y=opening).
+        "approach_direction": [0.0, 0.0, 1.0],
+        "open_direction": [0.0, 1.0, 0.0],
+        "gripper_width": 0.085,
+        "gripper_depth": 0.035,
     },
     "right_gripper": {
         "controller_type": "mimic_joint_position",
@@ -105,6 +108,10 @@ _DEFAULT_SUB_CONTROLLERS = {
         "control_low": -1,
         "control_high": 1,
         "is_grasping_fn": _make_is_grasping(RIGHT_GRIPPER_PAD_LINK_NAMES),
+        "approach_direction": [0.0, 0.0, 1.0],
+        "open_direction": [0.0, 1.0, 0.0],
+        "gripper_width": 0.085,
+        "gripper_depth": 0.035,
     },
 }
 
