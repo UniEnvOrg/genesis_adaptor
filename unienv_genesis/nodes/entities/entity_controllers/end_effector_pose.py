@@ -107,6 +107,21 @@ class EndEffectorPoseController(
     Converts Cartesian end-effector targets (position + rotation) into joint
     positions via the Genesis damped-least-squares IK solver, then delegates to
     the underlying :class:`JointPositionController` for PD tracking.
+
+    .. note:: **Virtual EEF point convention**
+
+       When ``eef_offset_pos`` is provided, all poses reported by
+       :meth:`get_eef_pose_absolute` / :meth:`get_eef_pose_base` and all
+       targets accepted by :meth:`solve_ik_absolute` /
+       :meth:`get_action_world` refer to a *virtual* EEF point, **not** the
+       physical ``target_link`` origin.
+
+       The offset should place this virtual point at the **gripper fingertip**
+       — i.e. the farthest extent along the approach direction, centred in
+       the opening direction.  Grasp candidate generators (e.g.
+       ``base_object.list_box_gripper_grasping_candidates_local``) assume the
+       EEF position is at the fingertip so that the fingers wrap around the
+       object correctly.
     """
 
     controller_type = "eef_pose"
@@ -139,6 +154,8 @@ class EndEffectorPoseController(
 
         # EEF pose offset: translates the virtual EEF point away from the
         # physical target_link origin.  Stored in the target_link's local frame.
+        # Convention: place the virtual point at the gripper fingertip
+        # (farthest extent along approach direction, centred in open direction).
         if eef_offset_pos is not None:
             self._eef_offset_pos = torch.as_tensor(
                 eef_offset_pos, dtype=torch.float32, device=world.device,

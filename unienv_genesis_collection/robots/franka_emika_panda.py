@@ -17,12 +17,53 @@ HOME_JOINT_POSITIONS = torch.tensor([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7
 # End-effector link name for IK control
 EE_LINK_NAME = "hand"
 
+# Finger link names for grasp contact detection
+FINGER_PAD_LINK_NAMES = ["left_finger", "right_finger"]
+
+
+def _make_is_grasping(pad_link_names):
+    """Create a grasp-detection callable checking contacts on specific pad links."""
+    _cached_pad_indices = {}  # id(entity) -> tensor of global link indices
+
+    def is_grasping(robot_entity, target_entity):
+        key = id(robot_entity)
+        if key not in _cached_pad_indices:
+            indices = []
+            for link in robot_entity.links:
+                if link.name in pad_link_names:
+                    indices.append(link.idx)
+            _cached_pad_indices[key] = torch.tensor(indices, dtype=torch.long)
+        pad_indices = _cached_pad_indices[key]
+
+        contacts = robot_entity.get_contacts(with_entity=target_entity)
+
+        link_a = contacts["link_a"]
+        link_b = contacts["link_b"]
+        is_pad = (
+            (link_a.unsqueeze(-1) == pad_indices).any(dim=-1)
+            | (link_b.unsqueeze(-1) == pad_indices).any(dim=-1)
+        )
+
+        if contacts["force_a"].dim() == 2:
+            return is_pad.any()
+        else:
+            return (contacts["valid_mask"] & is_pad).any(dim=-1)
+
+    return is_grasping
+
+
 # Default combined sub-controller configuration
 _DEFAULT_SUB_CONTROLLERS = {
     "arm": {
         "controller_type": "eef_pose",
         "joint_indexes": list(range(7)),   # joint1 … joint7
         "target_link": EE_LINK_NAME,
+        # Virtual EEF offset from the target_link (hand) origin to the
+        # fingertip along the approach direction, centred in the open
+        # direction.  This point is where grasp candidates place the EEF
+        # (see base_object.list_box_gripper_grasping_candidates_local).
+        #   finger base z = 0.0584 m + finger pad extent z = 0.053 m
+        "eef_offset_pos": [0.0, 0.0, 0.1114],
     },
     "gripper": {
         "controller_type": "mimic_joint_position",
@@ -34,6 +75,15 @@ _DEFAULT_SUB_CONTROLLERS = {
         "shift": 0.02,
         "control_low": -1,
         "control_high": 1,
+        "is_grasping_fn": _make_is_grasping(FINGER_PAD_LINK_NAMES),
+        # Grasp frame directions in the EEF frame (hand body frame).
+        # approach_direction: axis along which the gripper approaches the
+        #   object (fingertip direction); eef_offset is measured along this.
+        # open_direction: axis along which the fingers separate.
+        "approach_direction": [0.0, 0.0, 1.0],
+        "open_direction": [0.0, 1.0, 0.0],
+        "gripper_width": 0.08,    # 2 × 0.04 m max finger opening
+        "gripper_depth": 0.02,    # fingertip pad depth
     },
 }
 

@@ -516,6 +516,15 @@ def main():
     )
     from unienv_genesis_refpolicy.implementations.graph_policy import GraphRefPolicy
 
+    def top_down_filter(candidates):
+        """Keep only grasps that approach from above (EEF z-axis points down).
+
+        In the grasp candidate convention, ``approach_direction`` is the
+        direction the EEF z-axis points in world frame.  For a top-down
+        grasp the z-component must be negative (pointing downward).
+        """
+        return candidates.approach_direction[..., 2] < 0
+
     OPEN = torch.tensor([-1.0])
     CLOSE = torch.tensor([1.0])
 
@@ -551,6 +560,7 @@ def main():
             target_entity=task._target_entity,
             eef_name="left_arm",
             gripper_name="left_gripper",
+            filter_candidate_fn=top_down_filter,
         )
 
         # -- Lift factory (created lazily when grasp succeeds) --

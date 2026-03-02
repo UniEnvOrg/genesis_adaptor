@@ -1,6 +1,6 @@
 """BoxGripperGraspPolicy — grasp a ManipulatableObject with a parallel-jaw gripper."""
 
-from typing import Dict, Optional, Union
+from typing import Callable, Dict, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -20,7 +20,7 @@ from unienv_genesis.utils.batch_dim_utils import (
     get_batch_aware_shape,
     broadcast_to_batch,
 )
-from unienv_genesis_collection.objects.base_object import ManipulatableObject
+from unienv_genesis_collection.objects.base_object import ManipulatableObject, GraspCandidates
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
 from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
 
@@ -48,7 +48,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
     The best grasp candidate is selected automatically using IK error:
     all candidates from :meth:`ManipulatableObject.list_box_gripper_grasping_candidates`
     are evaluated via :meth:`GoToRefPolicy.check_reachable_error` and the
-    one with the lowest position error is chosen per environment.
+    one with the lowest combined position + orientation error is chosen
+    per environment.
 
     Args:
         world: Genesis world instance.
@@ -80,6 +81,11 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             ``gripper_controller.gripper_width``.
         gripper_depth: Finger depth in metres. If ``None``, read from
             ``gripper_controller.gripper_depth``.
+        filter_candidate_fn: Optional callable
+            ``(GraspCandidates) -> BoolTensor`` that returns a mask over the
+            candidate dimension (``True`` = keep).  Applied in world
+            coordinates before IK evaluation.  Useful to restrict grasps
+            to top-down only, avoid certain orientations, etc.
     """
 
     def __init__(
@@ -105,6 +111,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         gripper_open_action: float = -1.0,
         gripper_close_action: float = 1.0,
         ik_error_threshold: float = 0.05,
+        filter_candidate_fn : Optional[Callable[[GraspCandidates], torch.Tensor]] = None,
     ) -> None:
         super().__init__(world)
 
@@ -124,6 +131,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self.gripper_open_action = gripper_open_action
         self.gripper_close_action = gripper_close_action
         self.ik_error_threshold = ik_error_threshold
+        self._filter_candidate_fn = filter_candidate_fn
+        self._candidate_filter_mask: Optional[torch.Tensor] = None
 
         # Resolve optional parameters from gripper controller attributes.
         if gripper_width is None:
@@ -192,6 +201,22 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             gripper_depth=self.gripper_depth,
         )
 
+        # 1b. Apply optional filter to remove unwanted candidates.
+        if self._filter_candidate_fn is not None:
+            keep = self._filter_candidate_fn(candidates)
+            if not is_batched(batch_size):
+                # keep: (N,) bool → index into candidate dim
+                idx = torch.where(keep)[0]
+                candidates = GraspCandidates(
+                    position=candidates.position[idx],
+                    approach_direction=candidates.approach_direction[idx],
+                    opening_direction=candidates.opening_direction[idx],
+                )
+            else:
+                # Batched filtering: mask out rejected candidates by setting
+                # their error to inf later. Store the mask for use in ranking.
+                self._candidate_filter_mask = keep  # (B, N)
+
         # Number of candidates: unbatched (N, 3) → shape[0], batched (B, N, 3) → shape[1].
         n_candidates = (
             candidates.position.shape[1] if is_batched(batch_size)
@@ -216,14 +241,21 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         ik_errors = GoToRefPolicy.check_reachable_error(
             self._eef_ctrl, candidates.position, all_quats,
         )
-        #    Rank by position error norm: ([B], N).
+        #    Rank by combined position + orientation error: ([B], N).
         pos_errors = torch.norm(ik_errors[..., :3], dim=-1)
-        #    Pick the candidate with the lowest error per env.
-        best_idx = pos_errors.argmin(dim=-1)  # () or (B,)
+        rot_errors = torch.norm(ik_errors[..., 3:], dim=-1)
+        combined_errors = pos_errors + rot_errors
+        #    Apply candidate filter mask (batched path): set rejected
+        #    candidates to inf so they are never selected.
+        if self._candidate_filter_mask is not None:
+            combined_errors[~self._candidate_filter_mask] = float('inf')
+            self._candidate_filter_mask = None  # consumed
+        #    Pick the candidate with the lowest combined error per env.
+        best_idx = combined_errors.argmin(dim=-1)  # () or (B,)
 
         # IK quality gate: fail early if best candidate is unreachable.
         if not is_batched(batch_size):
-            best_error = pos_errors[best_idx]
+            best_error = combined_errors[best_idx]
             if best_error.item() > self.ik_error_threshold:
                 self._zero_counters(mask)
                 if mask is not None:
@@ -232,7 +264,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                     self._failed.fill_(True)
                 return
         else:
-            best_error = pos_errors.gather(-1, best_idx.unsqueeze(-1)).squeeze(-1)
+            best_error = combined_errors.gather(-1, best_idx.unsqueeze(-1)).squeeze(-1)
             unreachable = best_error > self.ik_error_threshold
             fail_mask = unreachable if mask is None else (mask & unreachable)
             if fail_mask.any():

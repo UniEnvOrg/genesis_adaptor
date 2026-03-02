@@ -40,7 +40,7 @@ This means a floor plane is always added to the scene before a robot, and a came
 world  = GenesisWorld()
 plane  = PlaneBuilder(world, name="floor")
 table  = TableBuilder(world, name="table", pos=(0, 0, 0.6))
-franka = FrankaFR3(world,   name="franka", pos=(-0.7, 0, 0.6))
+franka = FrankaFR3WithHand(world, name="franka", pos=(-0.7, 0, 0.6))
 camera = CameraSensorNode(world, name="camera", ...)
 
 env = WorldEnv(world, [plane, table, franka, camera])
