@@ -1,4 +1,4 @@
-"""Tests for GTKeypointFlowSensorNode."""
+"""Tests for KeypointTrackerNode."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from unienv_genesis import GenesisWorld
 from unienv_genesis.nodes.sensors import (
     CameraSensorNode,
     CameraSensorNodeOptions,
-    GTKeypointFlowSensorNode,
+    KeypointTrackerNode,
     UniformSegmentationPointProposer,
 )
 
@@ -103,15 +103,15 @@ def _make_env(render_position: bool, render_depth: bool):
         render_normal=False,
         render_position=render_position,
     )
-    tracker = GTKeypointFlowSensorNode(
+    tracker = KeypointTrackerNode(
         world=world,
         name="gt_flow",
         camera_node=camera,
         max_points=32,
-        tracked_entity_names=["moving_box"],
         point_proposer=UniformSegmentationPointProposer(
             max_points_per_entity=32,
             randomize=False,
+            tracked_entity_names=["moving_box"],
         ),
     )
     env = WorldEnv(world, [moving_box, camera, tracker], render_mode=None)
@@ -121,25 +121,25 @@ def _make_env(render_position: bool, render_depth: bool):
 def _assert_tracking_translation(env: WorldEnv, moving_box: MovingBoxNode):
     _, obs, _ = env.reset(seed=0, reload=True)
     track0 = obs["gt_flow"]
-    valid0 = track0["valid_mask"].bool()
+    valid0 = track0["valid_masks"].bool()
     assert torch.any(valid0), "No keypoints were initialized for moving_box."
 
-    p0 = track0["points_world"][valid0].clone()
+    p0 = track0["point_positions"][valid0].clone()
     delta = moving_box.step_delta
 
     for i in range(1, 4):
         obs, _, _, _, _ = env.step(None)
         track = obs["gt_flow"]
-        valid = track["valid_mask"].bool()
+        valid = track["valid_masks"].bool()
         assert torch.equal(valid, valid0), "Tracked keypoint mask changed unexpectedly."
 
-        flow = track["flow_world"][valid]
+        flow = track["point_movements"][valid]
         expected_flow = delta.unsqueeze(0).expand_as(flow)
         assert torch.allclose(flow, expected_flow, atol=2e-3), (
             f"Flow mismatch at step {i}: got {flow[:3]}, expected {expected_flow[:3]}"
         )
 
-        points = track["points_world"][valid]
+        points = track["point_positions"][valid]
         expected_points = p0 + delta.unsqueeze(0) * i
         assert torch.allclose(points, expected_points, atol=2e-3), (
             f"Point mismatch at step {i}: got {points[:3]}, expected {expected_points[:3]}"
@@ -167,24 +167,37 @@ def test_uniform_segmentation_point_proposer():
         ],
         dtype=torch.bool,
     )
-    seg_to_entity = {1: 10, 2: 11}
-    selected = proposer.propose(
-        segmentation=seg,
-        position=pos,
-        valid_mask=valid,
-        seg_to_entity_idx=seg_to_entity,
-        max_points=3,
-    )
-    assert selected.shape[1] == 2
-    assert selected.shape[0] <= 3
-    for yx in selected:
-        y, x = int(yx[0]), int(yx[1])
-        assert bool(valid[y, x].item())
-        assert int(seg[y, x].item()) in seg_to_entity
+    # Set invalid pixels to NaN so the proposer's internal isfinite check
+    # matches the old valid_mask behavior.
+    pos[~valid] = float("nan")
 
-    seg_values = seg[selected[:, 0], selected[:, 1]]
-    for seg_id in torch.unique(seg_values):
-        assert int((seg_values == seg_id).sum().item()) <= 2
+    # Propose expects batched input: (B, H, W) and (B, H, W, 3).
+    seg_b = seg.unsqueeze(0)
+    pos_b = pos.unsqueeze(0)
+
+    seg_to_entity = {1: 10, 2: 11}
+    entity_names = {10: "entity_a", 11: "entity_b"}
+    max_pts = 3
+    points_world, seg_ids, valid_mask = proposer.propose(
+        camera_obs={"seg": seg_b, "position": pos_b},
+        seg_to_entity_idx=seg_to_entity,
+        entity_names=entity_names,
+        max_points=max_pts,
+    )
+    assert points_world.shape == (1, max_pts, 3)
+    assert seg_ids.shape == (1, max_pts)
+    assert valid_mask.shape == (1, max_pts)
+
+    n_valid = int(valid_mask[0].sum().item())
+    assert n_valid <= max_pts
+    assert n_valid > 0
+
+    valid_seg = seg_ids[0, valid_mask[0]]
+    for i in range(valid_seg.shape[0]):
+        assert int(valid_seg[i].item()) in seg_to_entity
+
+    for seg_id_val in torch.unique(valid_seg):
+        assert int((valid_seg == seg_id_val).sum().item()) <= 2
 
 
 def test_gt_keypoint_flow_sensor_with_position_map():

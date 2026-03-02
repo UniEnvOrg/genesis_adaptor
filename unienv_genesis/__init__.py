@@ -8,7 +8,7 @@ from unienv_genesis.nodes.sensors import (
     CameraSensorNodeOptions,
     PointProposer,
     UniformSegmentationPointProposer,
-    GTKeypointFlowSensorNode,
+    KeypointTrackerNode,
 )
 
 __version__ = "0.0.1a1"
@@ -29,5 +29,5 @@ __all__ = [
     "CameraSensorNodeOptions",
     "PointProposer",
     "UniformSegmentationPointProposer",
-    "GTKeypointFlowSensorNode",
+    "KeypointTrackerNode",
 ]

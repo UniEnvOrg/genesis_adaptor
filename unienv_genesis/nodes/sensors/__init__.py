@@ -2,10 +2,10 @@
 
 from .base import SensorNode
 from .camera_node import CameraSensorNode, CameraSensorNodeOptions
-from .gt_keypoint_flow_node import (
+from .keypoint_tracker_node import (
     PointProposer,
     UniformSegmentationPointProposer,
-    GTKeypointFlowSensorNode,
+    KeypointTrackerNode,
 )
 
 __all__ = [
@@ -14,5 +14,5 @@ __all__ = [
     "CameraSensorNodeOptions",
     "PointProposer",
     "UniformSegmentationPointProposer",
-    "GTKeypointFlowSensorNode",
+    "KeypointTrackerNode",
 ]

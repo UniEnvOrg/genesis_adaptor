@@ -1,6 +1,6 @@
 """Tianji clutter-table demo with GT 3D keypoint flow overlay video.
 
-Builds the Tianji Marvin clutter-table task, adds ``GTKeypointFlowSensorNode``,
+Builds the Tianji Marvin clutter-table task, adds ``KeypointTrackerNode``,
 and writes an MP4 where tracked keypoints are overlaid as flow arrows on the
 front camera image.
 
@@ -20,6 +20,10 @@ import torch
 
 import genesis as gs
 
+from xbarray.transformations.pointcloud.pytorch import (
+    world_to_pixel_coordinate_and_depth,
+)
+
 from cluttered_table_marvin import (
     TABLE_POS,
     TABLE_SIZE,
@@ -32,7 +36,7 @@ from unienv_genesis import GenesisWorld
 from unienv_genesis.nodes.sensors import (
     CameraSensorNode,
     CameraSensorNodeOptions,
-    GTKeypointFlowSensorNode,
+    KeypointTrackerNode,
     UniformSegmentationPointProposer,
 )
 from unienv_genesis_collection.objects import BoxObject, SphereObject, CylinderObject
@@ -158,50 +162,31 @@ def project_points_to_pixels(
         raise ValueError(f"Expected points shape (N, 3), got {tuple(pts.shape)}")
 
     N = pts.shape[0]
-    uv = torch.full((N, 2), -1.0, dtype=torch.float32, device=pts.device)
-    uv_valid = torch.zeros((N,), dtype=torch.bool, device=pts.device)
     if N == 0:
-        return uv, uv_valid
+        return (
+            torch.full((0, 2), -1.0, dtype=torch.float32, device=pts.device),
+            torch.zeros((0,), dtype=torch.bool, device=pts.device),
+        )
 
-    sensor = camera_node.sensor
-    fx = float(sensor.f)
-    cx = float(sensor.cx)
-    cy = float(sensor.cy)
+    obs = camera_node.get_observation()
+    intrinsics = obs["intrinsics_cv"]  # (3, 3)
+    extrinsics = obs["extrinsics_cv"]  # (3, 4) or (B, 3, 4)
+    if extrinsics.ndim == 3:
+        extrinsics = extrinsics[0]
+
     W, H = camera_node.option.res
 
-    camera_transform = torch.as_tensor(
-        sensor.get_transform(),
-        dtype=torch.float32,
-        device=pts.device,
+    pixel_xy, depth = world_to_pixel_coordinate_and_depth(
+        pts.unsqueeze(0),  # (1, N, 3)
+        intrinsics,
+        extrinsics,
     )
-    if camera_transform.ndim == 3:
-        camera_transform = camera_transform[0]
+    uv = pixel_xy[0]  # (N, 2) in (x, y) = (u, v)
+    depth = depth[0]  # (N,)
 
-    T_OPENGL_TO_OPENCV = torch.tensor(
-        [[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
-        dtype=torch.float32,
-        device=pts.device,
-    )
-    cam_pose = camera_transform @ T_OPENGL_TO_OPENCV  # camera->world in OpenCV convention
-    world_to_cam = torch.linalg.inv(cam_pose)
-
-    pts_h = torch.cat([pts, torch.ones((N, 1), dtype=torch.float32, device=pts.device)], dim=-1)
-    cam = pts_h @ world_to_cam.transpose(-1, -2)
-    X = cam[:, 0]
-    Y = cam[:, 1]
-    Z = cam[:, 2]
-
-    finite = torch.isfinite(cam).all(dim=-1)
-    in_front = Z > 1e-6
-    safe_Z = torch.where(in_front, Z, torch.ones_like(Z))
-
-    u = fx * (X / safe_Z) + cx - 0.5
-    v = fx * (Y / safe_Z) + cy - 0.5
-    uv[:, 0] = u
-    uv[:, 1] = v
-
-    in_frame = (u >= 0.0) & (u < float(W)) & (v >= 0.0) & (v < float(H))
-    uv_valid = finite & in_front & in_frame
+    in_front = depth > 0
+    in_frame = (uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)
+    uv_valid = in_front & in_frame & torch.isfinite(uv).all(dim=-1)
     return uv, uv_valid
 
 
@@ -226,10 +211,10 @@ def draw_flow_overlay(
     frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
     H, W = frame_bgr.shape[:2]
 
-    points = torch.as_tensor(flow_obs["points_world"], dtype=torch.float32)
-    flow = torch.as_tensor(flow_obs["flow_world"], dtype=torch.float32)
-    valid = torch.as_tensor(flow_obs["valid_mask"], dtype=torch.bool)
-    entity_idx = torch.as_tensor(flow_obs["entity_idx"], dtype=torch.int64)
+    points = torch.as_tensor(flow_obs["point_positions"], dtype=torch.float32)
+    flow = torch.as_tensor(flow_obs["point_movements"], dtype=torch.float32)
+    valid = torch.as_tensor(flow_obs["valid_masks"], dtype=torch.bool)
+    seg_idx = torch.as_tensor(flow_obs["point_segmentations"], dtype=torch.int64)
     uv_curr = torch.as_tensor(uv_curr, dtype=torch.float32)
     uv_curr_valid = torch.as_tensor(uv_curr_valid, dtype=torch.bool)
     uv_prev = torch.as_tensor(uv_prev, dtype=torch.float32)
@@ -244,7 +229,7 @@ def draw_flow_overlay(
         points = points[0]
         flow = flow[0]
         valid = valid[0]
-        entity_idx = entity_idx[0]
+        seg_idx = seg_idx[0]
     if uv_curr.ndim == 3:
         uv_curr = uv_curr[0]
     if uv_curr_valid.ndim == 2:
@@ -281,7 +266,7 @@ def draw_flow_overlay(
                     continue
                 if not (0 <= u < W and 0 <= v < H):
                     continue
-                e = int(entity_idx[i].item()) if i < entity_idx.shape[0] else -1
+                e = int(seg_idx[i].item()) if i < seg_idx.shape[0] else -1
                 color = palette[e % len(palette)] if e >= 0 else (180, 180, 180)
                 cv2.circle(
                     frame_bgr,
@@ -427,17 +412,16 @@ def build_env() -> Tuple[WorldEnv, CameraSensorNode]:
         "task_target",
     ]
 
-    gt_flow = GTKeypointFlowSensorNode(
+    gt_flow = KeypointTrackerNode(
         world,
         name="gt_flow",
         camera_node=camera,
         max_points=196,
-        tracked_entity_names=tracked_names,
-        tracked_entity_name_prefixes=["clutter_"],
-        allow_articulated=True,
         point_proposer=UniformSegmentationPointProposer(
             max_points_per_entity=24,
             randomize=True,
+            tracked_entity_names=tracked_names,
+            tracked_entity_name_prefixes=["clutter_"],
         ),
     )
 
@@ -522,7 +506,7 @@ def run_episode(
 
     frames: List[np.ndarray] = []
     uv_prev, uv_prev_valid = project_points_to_pixels(
-        torch.as_tensor(obs["gt_flow"]["points_world"], dtype=torch.float32),
+        torch.as_tensor(obs["gt_flow"]["point_positions"], dtype=torch.float32),
         camera,
     )
     first = draw_flow_overlay(
@@ -543,7 +527,7 @@ def run_episode(
         graph.step()
 
         uv_curr, uv_curr_valid = project_points_to_pixels(
-            torch.as_tensor(obs["gt_flow"]["points_world"], dtype=torch.float32),
+            torch.as_tensor(obs["gt_flow"]["point_positions"], dtype=torch.float32),
             camera,
         )
 

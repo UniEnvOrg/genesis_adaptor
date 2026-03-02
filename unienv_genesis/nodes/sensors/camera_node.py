@@ -14,6 +14,9 @@ from xbarray.transformations.rotation_conversions import (
     quaternion_to_matrix,
     matrix_to_quaternion
 )
+from xbarray.transformations.pointcloud.pytorch import (
+    depth_image_to_world,
+)
 from unienv_interface.space import Space, DictSpace, BoxSpace
 from unienv_interface.backends.pytorch import (
     PyTorchComputeBackend,
@@ -30,6 +33,7 @@ from unienv_interface.backends.numpy import (
     NumpyRNGType,
 )
 from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
 
 from .base import SensorNode, ContextType, ObsType
 
@@ -302,48 +306,49 @@ class CameraSensorNode(SensorNode[
         """Update observation after environment step."""
         if priority == 0:
             self.update_observation()
-    
+
     def _get_observation_space(self) -> DictSpace[PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
         """Get the observation space for this camera sensor."""
         spaces: Dict[str, Space] = {}
 
         W, H = self.option.res
+        B = self.world.batch_size
         if self.render_rgb:
             spaces["rgb"] = BoxSpace(
                 PyTorchComputeBackend,
                 low=0,
                 high=255,
-                shape=(H, W, 3),
+                shape=get_batch_aware_shape(B, (H, W, 3)),
                 dtype=torch.uint8,
                 device=self.world.device,
             )
-        
+
         if self.render_depth:
             spaces["depth"] = BoxSpace(
                 PyTorchComputeBackend,
                 low=0.0,
                 high=float("inf"),
-                shape=(H, W),
+                shape=get_batch_aware_shape(B, (H, W)),
                 dtype=torch.float32,
                 device=self.world.device,
             )
-        
+
         if self.render_seg:
             spaces["seg"] = BoxSpace(
                 PyTorchComputeBackend,
                 low=0,
-                high=2**31 - 1,
-                shape=(H, W),
+                high=float("inf"),
+                shape=get_batch_aware_shape(B, (H, W)),
                 dtype=torch.int32,
                 device=self.world.device,
             )
-        
+
         if self.render_normal:
             spaces["normal"] = BoxSpace(
                 PyTorchComputeBackend,
                 low=-1.0,
                 high=1.0,
-                shape=(H, W, 3),
+                shape=get_batch_aware_shape(B, (H, W, 3)),
                 dtype=torch.float32,
                 device=self.world.device,
             )
@@ -353,16 +358,81 @@ class CameraSensorNode(SensorNode[
                 PyTorchComputeBackend,
                 low=-float("inf"),
                 high=float("inf"),
-                shape=(H, W, 3),
+                shape=get_batch_aware_shape(B, (H, W, 3)),
                 dtype=torch.float32,
                 device=self.world.device,
             )
-        
+
+        spaces["intrinsics_cv"] = BoxSpace(
+            PyTorchComputeBackend,
+            low=-float("inf"),
+            high=float("inf"),
+            shape=get_batch_aware_shape(B, (3, 3)),
+            dtype=torch.float32,
+            device=self.world.device,
+        )
+        spaces["extrinsics_cv"] = BoxSpace(
+            PyTorchComputeBackend,
+            low=-float("inf"),
+            high=float("inf"),
+            shape=get_batch_aware_shape(B, (3, 4)),
+            dtype=torch.float32,
+            device=self.world.device,
+        )
+
         return DictSpace(
             PyTorchComputeBackend,
             spaces,
             device=self.world.device,
         )
+
+    def _get_intrinsics(self) -> torch.Tensor:
+        """Build intrinsic matrix in standard OpenCV convention.
+
+        Genesis stores ``cx``/``cy`` with a half-pixel offset (pixel centre at
+        ``u + 0.5``).  The returned matrix follows the OpenCV convention where
+        pixel centres are at integer coordinates.
+
+        Returns ``(3, 3)`` for a single camera, ``(B, 3, 3)`` for batched.
+        """
+        fx = float(self.sensor.f)
+        fy = fx  # Genesis uses a single focal length
+        cx = float(self.sensor.cx) - 0.5
+        cy = float(self.sensor.cy) - 0.5
+        K = torch.tensor(
+            [[fx, 0.0, cx],
+             [0.0, fy, cy],
+             [0.0, 0.0, 1.0]],
+            dtype=torch.float32,
+            device=self.world.device,
+        )
+        B = self.world.batch_size
+        if B is not None:
+            K = K.unsqueeze(0).expand(B, -1, -1)
+        return K
+
+    def _get_extrinsics(self) -> torch.Tensor:
+        """Build ``(..., 3, 4)`` world-to-camera extrinsic matrix (OpenCV).
+
+        Returns the ``[R | t]`` matrix such that ``cam = R @ world + t``.
+        Shape is ``(3, 4)`` for a single camera, ``(B, 3, 4)`` for batched.
+        """
+        camera_transform = torch.as_tensor(
+            self.sensor.get_transform(),
+            dtype=torch.float32,
+            device=self.world.device,
+        )
+        T_OPENGL_TO_OPENCV = torch.tensor(
+            [[1.0, 0.0, 0.0, 0.0],
+             [0.0, -1.0, 0.0, 0.0],
+             [0.0, 0.0, -1.0, 0.0],
+             [0.0, 0.0, 0.0, 1.0]],
+            dtype=torch.float32,
+            device=self.world.device,
+        )
+        cam_to_world = camera_transform @ T_OPENGL_TO_OPENCV
+        world_to_cam = torch.linalg.inv(cam_to_world)
+        return world_to_cam[..., :3, :]
 
     def _depth_to_position_map(self, depth: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
         """Convert per-pixel depth to per-pixel 3D world positions.
@@ -380,55 +450,12 @@ class CameraSensorNode(SensorNode[
         elif depth_t.ndim != 3:
             raise ValueError(f"Depth map must have shape (H, W) or (B, H, W), got {tuple(depth_t.shape)}")
 
-        _, H, W = depth_t.shape
-        v, u = torch.meshgrid(
-            torch.arange(H, dtype=depth_t.dtype, device=depth_t.device),
-            torch.arange(W, dtype=depth_t.dtype, device=depth_t.device),
-            indexing="ij",
-        )
+        intrinsics = self._get_intrinsics()   # (..., 3, 3)
+        extrinsics = self._get_extrinsics()   # (..., 3, 4)
 
-        fx = float(self.sensor.f)
-        cx = float(self.sensor.cx)
-        cy = float(self.sensor.cy)
-
-        world_x = depth_t * ((u + 0.5 - cx) / fx)
-        world_y = depth_t * ((v + 0.5 - cy) / fx)
-        world_z = depth_t
-
-        points = torch.stack(
-            [world_x, world_y, world_z, torch.ones_like(world_z)],
-            dim=-1,
-        )  # (B, H, W, 4)
-
-        camera_transform = torch.as_tensor(
-            self.sensor.get_transform(),
-            dtype=depth_t.dtype,
-            device=depth_t.device,
-        )
-        if camera_transform.ndim == 2:
-            camera_transform = camera_transform.unsqueeze(0)
-        if camera_transform.shape[0] == 1 and depth_t.shape[0] > 1:
-            camera_transform = camera_transform.expand(depth_t.shape[0], -1, -1)
-        if camera_transform.shape[0] != depth_t.shape[0]:
-            raise ValueError(
-                "Camera transform batch dimension does not match depth batch dimension: "
-                f"{camera_transform.shape[0]} vs {depth_t.shape[0]}"
-            )
-
-        T_OPENGL_TO_OPENCV = torch.tensor(
-            [[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
-            dtype=depth_t.dtype,
-            device=depth_t.device,
-        )
-        cam_pose = camera_transform @ T_OPENGL_TO_OPENCV
-        # NOTE:
-        # ``points`` stores camera-frame homogeneous coordinates and we need:
-        #   X_world = T_cam_to_world @ X_cam
-        # (column-vector convention). The einsum below performs this directly.
-        # Using ``cam_pose.transpose(-1, -2)`` would apply the transposed transform
-        # and produce incorrect world coordinates.
-        position_h = torch.einsum("bhwj,bij->bhwi", points, cam_pose)
-        position = position_h[..., :3]
+        # depth_image_to_world returns (..., H, W, 4) with last dim = (x, y, z, valid)
+        world_coords = depth_image_to_world(depth_t, intrinsics, extrinsics)
+        position = world_coords[..., :3]
 
         if squeeze_batch:
             position = position[0]
@@ -452,22 +479,32 @@ class CameraSensorNode(SensorNode[
             normal=self.render_normal,
         )
 
+        device = self.world.device
+
+        def _to_tensor(x, **kwargs):
+            if isinstance(x, torch.Tensor):
+                return x.to(device=device, **kwargs)
+            return torch.from_numpy(np.ascontiguousarray(x)).to(device=device, **kwargs)
+
         obs: Dict[str, PyTorchArrayType] = {}
         if self.render_rgb:
-            obs["rgb"] = rgb
-        
+            obs["rgb"] = _to_tensor(rgb)
+
         if self.render_depth:
-            obs["depth"] = depth
+            obs["depth"] = _to_tensor(depth, dtype=torch.float32)
 
         if self.render_position:
             obs["position"] = self._depth_to_position_map(depth)
-        
+
         if self.render_seg:
-            obs["seg"] = segmentation
-        
+            obs["seg"] = _to_tensor(segmentation)
+
         if self.render_normal:
-            obs["normal"] = normal
-        
+            obs["normal"] = _to_tensor(normal, dtype=torch.float32)
+
+        obs["intrinsics_cv"] = self._get_intrinsics()
+        obs["extrinsics_cv"] = self._get_extrinsics()
+
         self._last_observation = obs
     
     def get_observation(self) -> ObsType:
