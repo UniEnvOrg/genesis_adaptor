@@ -153,6 +153,7 @@ class CameraSensorNode(SensorNode[
         attach_entity_link : Optional[str] = None,
         control_timestep: Optional[float] = None,
         update_timestep: Optional[float] = None,
+        render_position: bool = False,
     ):
         """Initialize camera sensor node.
         
@@ -178,11 +179,17 @@ class CameraSensorNode(SensorNode[
         self.option = option
         self.attach_entity_name = attach_entity_name
         self.attach_entity_link = attach_entity_link
-        assert (render_rgb or render_depth or render_seg or render_normal), "At least one of render_rgb, render_depth, render_seg, or render_normal must be True"
+        assert (render_rgb or render_depth or render_seg or render_normal or render_position), (
+            "At least one of render_rgb, render_depth, render_seg, render_normal, or render_position must be True"
+        )
         self.render_rgb = render_rgb
         self.render_depth = render_depth
         self.render_seg = render_seg
         self.render_normal = render_normal
+        self.render_position = render_position
+        # Position map is derived from depth. We may render depth internally
+        # even when it is not explicitly exposed in observations.
+        self._render_depth_internal = self.render_depth or self.render_position
 
         # Expose render() when RGB is available.
         self.render_mode = "rgb_array" if render_rgb else None
@@ -340,12 +347,97 @@ class CameraSensorNode(SensorNode[
                 dtype=torch.float32,
                 device=self.world.device,
             )
+
+        if self.render_position:
+            spaces["position"] = BoxSpace(
+                PyTorchComputeBackend,
+                low=-float("inf"),
+                high=float("inf"),
+                shape=(H, W, 3),
+                dtype=torch.float32,
+                device=self.world.device,
+            )
         
         return DictSpace(
             PyTorchComputeBackend,
             spaces,
             device=self.world.device,
         )
+
+    def _depth_to_position_map(self, depth: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+        """Convert per-pixel depth to per-pixel 3D world positions.
+
+        Args:
+            depth: Depth map with shape ``(H, W)`` or ``(B, H, W)``.
+
+        Returns:
+            Position map with shape ``(H, W, 3)`` or ``(B, H, W, 3)``.
+        """
+        depth_t = torch.as_tensor(depth, dtype=torch.float32, device=self.world.device)
+        squeeze_batch = depth_t.ndim == 2
+        if squeeze_batch:
+            depth_t = depth_t.unsqueeze(0)
+        elif depth_t.ndim != 3:
+            raise ValueError(f"Depth map must have shape (H, W) or (B, H, W), got {tuple(depth_t.shape)}")
+
+        _, H, W = depth_t.shape
+        v, u = torch.meshgrid(
+            torch.arange(H, dtype=depth_t.dtype, device=depth_t.device),
+            torch.arange(W, dtype=depth_t.dtype, device=depth_t.device),
+            indexing="ij",
+        )
+
+        fx = float(self.sensor.f)
+        cx = float(self.sensor.cx)
+        cy = float(self.sensor.cy)
+
+        world_x = depth_t * ((u + 0.5 - cx) / fx)
+        world_y = depth_t * ((v + 0.5 - cy) / fx)
+        world_z = depth_t
+
+        points = torch.stack(
+            [world_x, world_y, world_z, torch.ones_like(world_z)],
+            dim=-1,
+        )  # (B, H, W, 4)
+
+        camera_transform = torch.as_tensor(
+            self.sensor.get_transform(),
+            dtype=depth_t.dtype,
+            device=depth_t.device,
+        )
+        if camera_transform.ndim == 2:
+            camera_transform = camera_transform.unsqueeze(0)
+        if camera_transform.shape[0] == 1 and depth_t.shape[0] > 1:
+            camera_transform = camera_transform.expand(depth_t.shape[0], -1, -1)
+        if camera_transform.shape[0] != depth_t.shape[0]:
+            raise ValueError(
+                "Camera transform batch dimension does not match depth batch dimension: "
+                f"{camera_transform.shape[0]} vs {depth_t.shape[0]}"
+            )
+
+        T_OPENGL_TO_OPENCV = torch.tensor(
+            [[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+            dtype=depth_t.dtype,
+            device=depth_t.device,
+        )
+        cam_pose = camera_transform @ T_OPENGL_TO_OPENCV
+        # NOTE:
+        # ``points`` stores camera-frame homogeneous coordinates and we need:
+        #   X_world = T_cam_to_world @ X_cam
+        # (column-vector convention). The einsum below performs this directly.
+        # Using ``cam_pose.transpose(-1, -2)`` would apply the transposed transform
+        # and produce incorrect world coordinates.
+        position_h = torch.einsum("bhwj,bij->bhwi", points, cam_pose)
+        position = position_h[..., :3]
+
+        if squeeze_batch:
+            position = position[0]
+
+        return position
+
+    def depth_to_position_map(self, depth: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+        """Public helper to convert depth map to world position map."""
+        return self._depth_to_position_map(depth)
 
     def update_observation(self) -> None:
         """Render and cache camera observations."""
@@ -355,7 +447,7 @@ class CameraSensorNode(SensorNode[
         
         rgb, depth, segmentation, normal = self.sensor.render(
             rgb=self.render_rgb,
-            depth=self.render_depth,
+            depth=self._render_depth_internal,
             segmentation=self.render_seg,
             normal=self.render_normal,
         )
@@ -366,6 +458,9 @@ class CameraSensorNode(SensorNode[
         
         if self.render_depth:
             obs["depth"] = depth
+
+        if self.render_position:
+            obs["position"] = self._depth_to_position_map(depth)
         
         if self.render_seg:
             obs["seg"] = segmentation

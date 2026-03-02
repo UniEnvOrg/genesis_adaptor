@@ -5,6 +5,10 @@ from unienv_genesis.nodes.entities import *
 from unienv_genesis.nodes.sensors import (
     SensorNode,
     CameraSensorNode,
+    CameraSensorNodeOptions,
+    PointProposer,
+    UniformSegmentationPointProposer,
+    GTKeypointFlowSensorNode,
 )
 
 __version__ = "0.0.1a1"
@@ -22,4 +26,8 @@ __all__ = [
     "EndEffectorPoseController",
     "SensorNode",
     "CameraSensorNode",
+    "CameraSensorNodeOptions",
+    "PointProposer",
+    "UniformSegmentationPointProposer",
+    "GTKeypointFlowSensorNode",
 ]
