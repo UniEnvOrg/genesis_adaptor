@@ -10,6 +10,8 @@ import torch
 from unienv_genesis import GenesisWorld
 from unienv_genesis.nodes.entities.robot_node import RobotKeyframe, RobotDescriptionNode
 from unienv_genesis.nodes.entities.entity_controllers import CONTROL_MODE_T
+from unienv_genesis.nodes.sensors.camera_node import CameraSensorNodeOptions
+from unienv_genesis_collection.sensors.cameras.zed import get_zed_mini_camera_options, ZedSupportedResolution
 from unienv_genesis_collection.asset_path import get_asset_path
 
 # Default home joint positions: FR3 arm (7 DOF) + Robotiq 2F-85 (6 passive joints, open)
@@ -27,7 +29,6 @@ GRIPPER_DRIVER_NAMES = ["g_left_driver_joint", "g_right_driver_joint"]
 
 # Pad link names for grasp contact detection
 GRIPPER_PAD_LINK_NAMES = ["g_left_pad", "g_right_pad"]
-
 
 def _make_is_grasping(pad_link_names):
     """Create a grasp-detection callable checking contacts on specific pad links."""
@@ -74,8 +75,8 @@ _DEFAULT_SUB_CONTROLLERS = {
         # the gripper fingertip along the approach direction, centred in
         # the open direction.  This point is where grasp candidates place
         # the EEF (see base_object.list_box_gripper_grasping_candidates_local).
-        #   0.107 m (FR3 flange) + ~0.159 m (Robotiq base to fingertip) = 0.266 m
-        "eef_offset_pos": [0.0, 0.0, 0.266],
+        #   0.107 m (FR3 flange) + ~0.159 m (Robotiq base to fingertip)
+        "eef_offset_pos": [0.0, 0.0, 0.107 + 0.159],
     },
     "gripper": {
         "controller_type": "mimic_joint_position",
@@ -173,4 +174,20 @@ class FrankaFR3WithRobotiq2F85(RobotDescriptionNode):
             quat=quat,
             controller_type=controller_type,
             **controller_kwargs,
+        )
+
+    def get_droid_gripper_cam_options(
+        self,
+        resolution : ZedSupportedResolution,
+        **kwargs
+    ) -> CameraSensorNodeOptions:
+        pos = (-0.06, -0.04, 0.0425 + 0.107)
+        quat = (0.70404461, 0.11489082, 0.12344012, 0.68984334)
+        return get_zed_mini_camera_options(
+            resolution,
+            pos=pos,
+            quat=quat,
+            attach_entity_name=self.name,
+            attach_entity_link=EE_LINK_NAME,
+            **kwargs
         )
