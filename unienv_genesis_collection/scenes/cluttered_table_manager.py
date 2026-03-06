@@ -194,24 +194,22 @@ class ClutteredTableManager(WorldNode):
 
     def set_next_reset_avoid_spaces(
         self,
-        avoid_spaces: Tuple[torch.Tensor, torch.Tensor],
+        centres: torch.Tensor,
+        radii: torch.Tensor
     ) -> None:
         """Queue per-env avoid spaces for the next ``reset()`` call.
 
-        These are merged with any ``avoid_spaces`` passed via ``reset()``
-        kwargs and the static avoid spaces from ``__init__``.  The queued
-        value is automatically consumed (cleared) after the next reset.
+        These are merged with any ``avoid_spaces`` passed via ``reset()`` kwargs and the static avoid spaces from ``__init__``.  The queued value is automatically consumed (cleared) after the next reset.
 
         Args:
-            avoid_spaces: ``(centres, radii)`` where *centres* is
-                ``(n_envs, n_zones, 2)`` or ``(n_envs, n_zones, 3)``
-                and *radii* is ``(n_envs, n_zones)``.
+            centres, shaped `([n_envs], n_zones, 2 or 3)`
+            radii, shaped `([n_envs], n_zones)`.
+        The `n_envs` depends on the number of environments in the world, it's not optional if the world is batched
         """
-        self._pending_avoid_spaces = avoid_spaces
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+        self._pending_avoid_spaces = (
+            centres,
+            radii
+        )
 
     def reload(self, *, priority=0, seed=None, mask=None, **kwargs):
         if priority != 25:
@@ -279,8 +277,8 @@ class ClutteredTableManager(WorldNode):
         if pending is not None:
             if extra is not None:
                 extra = (
-                    torch.cat([extra[0], pending[0]], dim=1),
-                    torch.cat([extra[1], pending[1]], dim=1),
+                    torch.cat([extra[0], pending[0]], dim=-2),
+                    torch.cat([extra[1], pending[1]], dim=-2),
                 )
             else:
                 extra = pending
@@ -348,6 +346,7 @@ class ClutteredTableManager(WorldNode):
         if n_envs is None:
             n_reset = 1
             reset_idx = None
+            extra = (item[None] for item in extra) if extra is not None else None
         elif mask is not None:
             mask_t = (
                 mask if isinstance(mask, torch.Tensor)

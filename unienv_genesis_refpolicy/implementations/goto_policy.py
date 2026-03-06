@@ -10,6 +10,7 @@ from unienv_genesis.nodes.entities.entity_controllers.end_effector_pose import (
 )
 from unienv_genesis.utils.batch_dim_utils import (
     is_batched,
+    try_scalar,
     get_batch_aware_shape,
     broadcast_to_batch,
 )

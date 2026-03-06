@@ -72,6 +72,13 @@ class TableBuilder(WorldNode):
     - ``pos=(0, 0, 0)`` places the table surface center at the origin.
     - The tabletop and legs extend **downward** from ``pos[2]``.
 
+    Runtime parameter contract:
+    - ``default_size``, ``default_height``, ``default_texture_path``, and
+      ``default_leg_color`` store construction defaults.
+    - ``size`` and ``height`` are fixed tensors set once during ``__init__``:
+      ``(3,)`` / scalar in unbatched mode, ``(n_envs, 3)`` / ``(n_envs,)``
+      in batched mode.
+
     Args:
         world: GenesisWorld instance
         name: Name for the table entity
@@ -101,26 +108,37 @@ class TableBuilder(WorldNode):
 
     # Priority for scene building - create table early (before robots)
     reload_priorities = {100}
-    reset_priorities = {0}
-    after_reload_priorities = set()
-    after_reset_priorities = {0}
 
     def __init__(
         self,
         world: GenesisWorld,
         name: str = "table",
-        size: tuple = DEFAULT_TABLE_SIZE,
+        size: tuple[float, float, float] = DEFAULT_TABLE_SIZE,
         height: float = DEFAULT_TABLE_HEIGHT,
         leg_radius: float = DEFAULT_LEG_RADIUS,
-        pos: tuple = (0.0, 0.0, 0.0),
+        pos: tuple[float, float, float] = (0.0, 0.0, 0.0),
         yaw: float = 0.0,
         texture_path: Optional[Path] = None,
         leg_color: Optional[tuple] = None,
     ):
         self.world = world
         self._name = name
-        self.size = size
-        self.height = height
+        self.default_size = tuple(float(v) for v in size)
+        self.default_height = float(height)
+        self.default_texture_path = texture_path
+        self.default_leg_color = (
+            tuple(float(v) for v in leg_color) if leg_color is not None else None
+        )
+
+        size_t = torch.tensor(self.default_size, dtype=torch.float32)
+        height_t = torch.tensor(self.default_height, dtype=torch.float32)
+        if world.batch_size is None:
+            self.size = size_t
+            self.height = height_t
+        else:
+            self.size = size_t.unsqueeze(0).repeat(world.batch_size, 1)
+            self.height = height_t.repeat(world.batch_size)
+
         self.leg_radius = leg_radius
         self.pos = pos
         self.yaw = yaw
@@ -129,11 +147,9 @@ class TableBuilder(WorldNode):
         self._sin_yaw = math.sin(yaw)
         self._pos_t = torch.tensor(pos, dtype=torch.float32)
         self._quat_t = torch.tensor(self.quat, dtype=torch.float32)
-        self.texture_path = texture_path
-        self.leg_color = leg_color
 
-        # EntityGroup is created in reload() once entities exist
-        self.group: Optional[EntityGroup] = None
+        # EntityGroup is created in reload() once entities exist.
+        self._group: Optional[EntityGroup] = None
 
     @property
     def name(self) -> str:
@@ -259,48 +275,61 @@ class TableBuilder(WorldNode):
             world_pos: ``(..., 3)`` world-frame position.
             world_quat: ``(..., 4)`` world-frame quaternion ``(w, x, y, z)``.
         """
-        c, s = self._cos_yaw, self._sin_yaw
+        if local_pos.shape[-1] not in (2, 3):
+            raise ValueError(
+                f"local_pos must have last dimension 2 or 3, got {tuple(local_pos.shape)}"
+            )
 
+        world_xy = self.xy_to_world(local_pos[..., :2])
+        table_pos_z = self._pos_t.to(device=local_pos.device, dtype=local_pos.dtype)[2]
         if local_pos.shape[-1] == 2:
-            lx = local_pos[..., 0]
-            ly = local_pos[..., 1]
-            wx = self._pos_t[0] + lx * c - ly * s
-            wy = self._pos_t[1] + lx * s + ly * c
-            wz = torch.full_like(wx, self._pos_t[2].item())
-            world_pos = torch.stack([wx, wy, wz], dim=-1)
+            world_z = torch.full_like(world_xy[..., 0], table_pos_z)
         else:
-            lx = local_pos[..., 0]
-            ly = local_pos[..., 1]
-            lz = local_pos[..., 2]
-            wx = self._pos_t[0] + lx * c - ly * s
-            wy = self._pos_t[1] + lx * s + ly * c
-            wz = self._pos_t[2] + lz
-            world_pos = torch.stack([wx, wy, wz], dim=-1)
+            world_z = table_pos_z + local_pos[..., 2]
+        world_pos = torch.cat([world_xy, world_z.unsqueeze(-1)], dim=-1)
 
+        table_quat = self._quat_t.to(device=world_pos.device, dtype=world_pos.dtype)
         if local_quat is None:
-            world_quat = self._quat_t.expand(world_pos.shape[:-1] + (4,))
+            world_quat = table_quat.expand(world_pos.shape[:-1] + (4,))
         else:
-            world_quat = quaternion_multiply(self._quat_t, local_quat)
+            world_quat = quaternion_multiply(table_quat, local_quat.to(table_quat))
 
         return world_pos, world_quat
+    
+    def xy_to_world(self, local_xy: torch.Tensor) -> torch.Tensor:
+        """Convert table-local XY coordinates to world-frame XY.
+
+        Args:
+            local_xy: ``(..., 2)`` local XY offset(s) from table centre.
+
+        Returns:
+            ``(..., 2)`` world-frame XY coordinates.
+        """
+        if local_xy.shape[-1] != 2:
+            raise ValueError(
+                f"local_xy must have last dimension 2, got {tuple(local_xy.shape)}"
+            )
+
+        table_xy = self._pos_t[:2].to(device=local_xy.device, dtype=local_xy.dtype)
+        c = torch.as_tensor(self._cos_yaw, device=local_xy.device, dtype=local_xy.dtype)
+        s = torch.as_tensor(self._sin_yaw, device=local_xy.device, dtype=local_xy.dtype)
+
+        wx = table_xy[0] + local_xy[..., 0] * c - local_xy[..., 1] * s
+        wy = table_xy[1] + local_xy[..., 0] * s + local_xy[..., 1] * c
+        return torch.stack([wx, wy], dim=-1)
 
     def reload(self, *, priority: int = 0, seed: Optional[int] = None, mask=None, **kwargs):
         if priority == 100:
-            self.group = self.create_table(
+            self._group = self.create_table(
                 world=self.world,
                 name=self._name,
-                size=self.size,
-                height=self.height,
+                size=self.default_size,
+                height=self.default_height,
                 leg_radius=self.leg_radius,
                 pos=self.pos,
                 yaw=self.yaw,
-                texture_path=self.texture_path,
-                leg_color=self.leg_color,
+                texture_path=self.default_texture_path,
+                leg_color=self.default_leg_color,
                 batch_fixed_verts=False,
             )
-
-    def reset(self, *, priority: int = 0, seed: Optional[int] = None, mask=None, **kwargs):
-        pass
-
-    def get_observation(self):
-        return None
+    

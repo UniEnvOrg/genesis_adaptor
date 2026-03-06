@@ -26,13 +26,15 @@ Each lifecycle phase is executed by sorting all registered nodes by their declar
 
 Typical priority assignments:
 
-```
-priority 100 — static scene geometry (planes, tables)
-priority  50 — robots and articulated entities
-priority   0 — controllers and sensors that depend on entities
-```
+|Priority Range|Node Catgories|
+|-|-|
+|`[80, 100)`|static scene geometry (planes, tables)|
+|`[50, 80)`|robots and articulated entities|
+|`(-20, 0]`|controllers and sensors that depend on entities|
+|$\mathbb{Z}$|Task control logic can declare any priority to ensure it runs after all the necessary state has been updated by the controllers and sensors.|
 
 This means a floor plane is always added to the scene before a robot, and a camera that is attached to a robot link is always attached after the robot entity exists.
+
 
 ### Composing a Scene
 

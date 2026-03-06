@@ -323,6 +323,20 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         bbox = self.get_local_bounding_box(entity)
         size_xy = bbox_size(bbox)[:2]
         return float(torch.linalg.norm(size_xy) / 2.0)
+    
+    def get_footprint(self, entity: EntityT) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Return the 2D footprint on the XY plane as a tuple of (center, radius) in the world frame.
+        Returns:
+            center: The center of the footprint in the local frame, shape ([B], 2).
+            radius: The radius of the footprint in meters, shape ([B],).
+        """
+        center = bbox_center(self.get_bounding_box(entity))[:2]
+        radius = self.get_footprint_radius(entity)
+        radius = torch.tensor(radius, device=center.device)
+        if center.ndim == 1:
+            return center, radius
+        return center, radius.unsqueeze(0).expand(center.shape[0])
 
     # ------------------------------------------------------------------
     # Placement

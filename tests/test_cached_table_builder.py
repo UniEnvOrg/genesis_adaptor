@@ -18,6 +18,11 @@ gs.init(backend=gs_backend.cpu)
 from unienv_genesis import GenesisWorld
 from unienv_genesis_collection.scenes.plane_builder import PlaneBuilder
 from unienv_genesis_collection.scenes.cached_table_builder import CachedTableBuilder, _PARK_POS
+from unienv_genesis_collection.scenes.table_builder import (
+    TableBuilder,
+    DEFAULT_TABLE_SIZE,
+    DEFAULT_TABLE_HEIGHT,
+)
 from unienv_interface.world import WorldEnv
 
 _TABLE_POS = (0.0, 0.0, 0.65)
@@ -25,6 +30,9 @@ _TABLE_YAW = 0.0
 _SIZE_RANGE = ((0.8, 1.2), (0.5, 0.7))
 _HEIGHT_RANGE = (0.55, 0.75)
 _N_VARIANTS = 8
+_DEFAULT_SIZE = (1.05, 0.58, 0.03)
+_DEFAULT_HEIGHT = 0.64
+_DEFAULT_LEG_COLOR = (0.21, 0.22, 0.23, 1.0)
 
 _TARGET_POS_T = torch.tensor(_TABLE_POS, dtype=torch.float32)
 _PARK_POS_T = torch.tensor(_PARK_POS, dtype=torch.float32)
@@ -42,6 +50,9 @@ def test_cached_table_builder():
         yaw=_TABLE_YAW,
         size_range=_SIZE_RANGE,
         height_range=_HEIGHT_RANGE,
+        size=_DEFAULT_SIZE,
+        height=_DEFAULT_HEIGHT,
+        leg_color=_DEFAULT_LEG_COLOR,
     )
     env = WorldEnv(world, [plane, table], render_mode=None)
 
@@ -49,6 +60,28 @@ def test_cached_table_builder():
     # Initial reload+reset
     # ------------------------------------------------------------------
     env.reset(seed=0, reload=True)
+
+    # Inheritance + shared base API
+    assert isinstance(table, TableBuilder)
+    assert table.default_size == _DEFAULT_SIZE
+    assert table.default_height == _DEFAULT_HEIGHT
+    assert table.default_texture_path is None
+    assert table.default_leg_color == _DEFAULT_LEG_COLOR
+    assert not hasattr(table, "texture_path")
+    assert not hasattr(table, "leg_color")
+    assert table._chosen_indices is not None
+    assert len(table._chosen_indices) == 1
+    chosen_initial = table._chosen_indices[0]
+    expected_size_t = torch.tensor(
+        table._variant_params[chosen_initial]["size"],
+        dtype=torch.float32,
+    )
+    expected_height_t = torch.tensor(
+        table._variant_params[chosen_initial]["height"],
+        dtype=torch.float32,
+    )
+    assert torch.allclose(table.size, expected_size_t)
+    assert torch.isclose(table.height, expected_height_t)
 
     # Correct number of variants created
     assert len(table._variants) == _N_VARIANTS, \
@@ -72,6 +105,7 @@ def test_cached_table_builder():
     active_pos = table._variants[chosen].pos
     assert torch.allclose(active_pos, _TARGET_POS_T), \
         f"Active variant {chosen} pos {active_pos} != target {_TARGET_POS_T}"
+    assert table._chosen_indices[0] == chosen
 
     for i, group in enumerate(table._variants):
         if i == chosen:
@@ -91,6 +125,7 @@ def test_cached_table_builder():
     second = table._chosen_indices[0]
     assert first == second, \
         f"Same reset seed 42 gave different variants: {first} vs {second}"
+    assert table._chosen_indices[0] == second
 
     print("  PASS: same reset seed yields same variant")
 
@@ -137,6 +172,25 @@ def test_cached_table_builder_batched():
     env = WorldEnv(world, [plane, table], render_mode=None)
 
     env.reset(seed=5, reload=True)
+
+    assert isinstance(table, TableBuilder)
+    assert not hasattr(table, "texture_path")
+    assert not hasattr(table, "leg_color")
+    assert table.default_size == DEFAULT_TABLE_SIZE
+    assert table.default_height == DEFAULT_TABLE_HEIGHT
+    assert table.size.shape == (N_ENVS, 3)
+    assert table.height.shape == (N_ENVS,)
+    expected_sizes_t = torch.tensor(
+        [table._variant_params[i]["size"] for i in table._chosen_indices],
+        dtype=torch.float32,
+    )
+    expected_heights_t = torch.tensor(
+        [table._variant_params[i]["height"] for i in table._chosen_indices],
+        dtype=torch.float32,
+    )
+    assert torch.allclose(table.size, expected_sizes_t)
+    assert torch.allclose(table.height, expected_heights_t)
+    assert 0 <= table._chosen_indices[0] < _N_VARIANTS
 
     # One chosen index per environment
     assert len(table._chosen_indices) == N_ENVS, \

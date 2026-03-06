@@ -29,6 +29,14 @@ def is_batched(batch_size: Optional[int]) -> bool:
     """
     return batch_size is not None and batch_size > 0
 
+def try_scalar(data : torch.Tensor) -> Union[int, float, torch.Tensor]:
+    """Check if the data is batched or unbatched, and return a scalar if unbatched.
+    """
+    if len(data.shape) == 0:
+        return data.item()
+    else:
+        return data
+
 def get_batch_aware_shape(
     batch_size: Optional[int], 
     dims: Union[int, Sequence[int]]
