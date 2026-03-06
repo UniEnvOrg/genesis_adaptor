@@ -186,18 +186,19 @@ class FrankaFR3WithRobotiq2F85(RobotDescriptionNode):
         """
         We apply
         R_usd_to_mjcf:
-        [[0 1 0]
-        [0 0 1]
+        [[0 -1 0]
+        [0 0 -1]
         [1 0 0]]
         """
         
-        pos  = (-0.031, -0.074, -0.011)
-        quat = (0.1585, 0.9873, -0.0085, -0.0025)  # (w, x, y, z)
+        pos  = (0.031, 0.074, -0.011)
+        quat = (0.0025, 0.0085, 0.9873, 0.1585)  # (w, x, y, z)
         return get_zed_mini_camera_options(
             resolution,
             pos=pos,
             quat=quat,
             attach_entity_name=self.name,
             attach_entity_link="g_base",
+            near=kwargs.pop("near", 0.01),
             **kwargs
         )

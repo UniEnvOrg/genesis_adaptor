@@ -53,6 +53,7 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
         scalar_shape = get_batch_aware_shape(batch_size, ())
         self._step_count = torch.zeros(scalar_shape, dtype=torch.long, device=device)
 
+    @torch.inference_mode()
     def reset(
         self,
         *,
@@ -64,6 +65,7 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
         else:
             self._step_count.zero_()
 
+    @torch.inference_mode()
     def step(
         self,
         *,
@@ -74,17 +76,21 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
         else:
             self._step_count += 1
 
+    @torch.inference_mode()
     def get_action(self) -> torch.Tensor:
         return self._action
 
+    @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:
         if self.steps <= 0:
             return self._unwrap_false()
         return try_scalar(self._step_count >= self.steps)
 
+    @torch.inference_mode()
     def get_failure(self) -> Union[torch.Tensor, bool]:
         return self._unwrap_false()
 
+    @torch.inference_mode()
     def get_timeout(self) -> Union[torch.Tensor, bool]:
         return self._unwrap_false()
 

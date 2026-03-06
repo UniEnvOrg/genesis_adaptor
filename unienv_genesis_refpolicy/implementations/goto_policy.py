@@ -113,6 +113,7 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         self._last_eef_pos.copy_(eef_pos.detach().float())
         self._last_eef_quat.copy_(eef_quat.detach().float())
 
+    @torch.inference_mode()
     def reset(
         self,
         *,
@@ -136,6 +137,7 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             self._last_eef_pos.copy_(eef_pos.detach().float())
             self._last_eef_quat.copy_(eef_quat.detach().float())
 
+    @torch.inference_mode()
     def step(
         self,
         *,
@@ -202,15 +204,19 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             self._last_eef_pos.copy_(eef_pos)
             self._last_eef_quat.copy_(eef_quat)
 
+    @torch.inference_mode()
     def get_action(self) -> torch.Tensor:
         return self._action
 
+    @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:
         return try_scalar(self._reached)
 
+    @torch.inference_mode()
     def get_failure(self) -> Union[torch.Tensor, bool]:
         return try_scalar(self._stalled)
 
+    @torch.inference_mode()
     def get_timeout(self) -> Union[torch.Tensor, bool]:
         if self.max_seconds <= 0:
             return try_scalar(

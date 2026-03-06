@@ -53,7 +53,7 @@ N_EPISODES = 2
 def init_env():
     world = GenesisWorld(
         scene_init_kwargs=dict(
-            sim_options=gs.options.SimOptions(substeps=5),
+            sim_options=gs.options.SimOptions(dt=1/20, substeps=10),
             rigid_options=gs.options.RigidOptions(box_box_detection=True),
         )
     )

@@ -190,6 +190,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._initial_eef_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
         self._initial_eef_quat = torch.zeros(quat_shape, dtype=torch.float32, device=device)
 
+    @torch.inference_mode()
     def reset(
         self,
         *,
@@ -312,6 +313,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
 
         self._zero_counters(mask)
 
+    @torch.inference_mode()
     def step(
         self,
         *,
@@ -405,6 +407,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 # No verification — backwards compatible.
                 self._advance(trans_close, GraspPhase.DONE)
 
+    @torch.inference_mode()
     def get_action(
         self, 
     ) -> Dict[str, torch.Tensor]:
@@ -436,12 +439,15 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
 
         return {self._eef_name: arm_action, self._gripper_name: gripper_val}
 
+    @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:
         return try_scalar(self._phase == GraspPhase.DONE)
 
+    @torch.inference_mode()
     def get_failure(self) -> Union[torch.Tensor, bool]:
         return try_scalar(self._failed)
 
+    @torch.inference_mode()
     def get_timeout(self) -> Union[torch.Tensor, bool]:
         if self.max_seconds <= 0:
             return try_scalar(torch.zeros_like(self._failed))

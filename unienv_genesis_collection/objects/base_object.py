@@ -331,7 +331,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             center: The center of the footprint in the local frame, shape ([B], 2).
             radius: The radius of the footprint in meters, shape ([B],).
         """
-        center = bbox_center(self.get_bounding_box(entity))[:2]
+        center = bbox_center(self.get_bounding_box(entity))[..., :2]
         radius = self.get_footprint_radius(entity)
         radius = torch.tensor(radius, device=center.device)
         if center.ndim == 1:

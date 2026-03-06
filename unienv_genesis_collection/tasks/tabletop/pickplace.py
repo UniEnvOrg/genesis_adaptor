@@ -156,8 +156,8 @@ class ObjectRelocateTask(WorldNode):
         placement_z_scalar = self.table_builder.pos[2] - self._target_object_bbox_local.low[2] # scalar
 
         target_xy_shape = (n_samples, 2) if self.world.batch_size is None else (self.world.batch_size, n_samples, 2)
-        xy = torch.rand(target_xy_shape, generator=self.rng, device=self.world.device) * 2 - 1 # uniform in [-1,1]
-        target_xy = xy * placement_half_xy
+        xy = torch.rand(target_xy_shape, generator=self.rng, device=self.world.device) * 2 - 1 # uniform in [-1,1], shape ([B], n_samples, 2)
+        target_xy = xy * placement_half_xy[..., None, :] # scale to valid range, shape ([B], n_samples, 2)
         target_world_xy = self.table_builder.xy_to_world(target_xy) # ([B], n_samples, 2)
         target_world_z = torch.full(target_world_xy.shape[:-1] + (1,), placement_z_scalar, device=target_world_xy.device) # ([B], n_samples, 1)
         target_world_pos = torch.cat([target_world_xy, target_world_z], dim=-1) # ([B], n_samples, 3)

@@ -26,7 +26,7 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             overall success (logical AND).  ``None`` means **all** sub-
             policies must succeed.
     """
-
+    
     def __init__(
         self,
         world: GenesisWorld,
@@ -40,6 +40,7 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             else list(self._policies.keys())
         )
 
+    @torch.inference_mode()
     def reset(
         self,
         *,
@@ -49,6 +50,7 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         for policy in self._policies.values():
             policy.reset(mask=mask, seed=seed)
 
+    @torch.inference_mode()
     def reload(
         self,
         *,
@@ -58,6 +60,7 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         for policy in self._policies.values():
             policy.reload(mask=mask, seed=seed)
 
+    @torch.inference_mode()
     def step(
         self,
         *,
@@ -66,20 +69,24 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         for policy in self._policies.values():
             policy.step(mask=mask)
 
+    @torch.inference_mode()
     def get_action(self) -> Dict[str, torch.Tensor]:
         return {
             name: policy.get_action()
             for name, policy in self._policies.items()
         }
 
+    @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:
         results = [self._policies[k].get_success() for k in self._success_keys]
         return reduce_and(*results)
 
+    @torch.inference_mode()
     def get_failure(self) -> Union[torch.Tensor, bool]:
         results = [p.get_failure() for p in self._policies.values()]
         return reduce_or(*results)
 
+    @torch.inference_mode()
     def get_timeout(self) -> Union[torch.Tensor, bool]:
         results = [self._policies[k].get_timeout() for k in self._success_keys]
         return reduce_or(*results)

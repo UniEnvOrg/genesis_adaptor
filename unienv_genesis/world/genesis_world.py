@@ -26,7 +26,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     unbatched cases through utility functions in batch_dim_utils.
     """
     GS_INIT_KWARGS_DEFAULT = {
-        "backend": gs.gs_backend.gpu,
+        "backend": gs.gpu,
         "performance_mode": True
     }
     
@@ -91,8 +91,8 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     
     @batch_size.setter
     def batch_size(self, value: Optional[int]):
-        assert value is None or value >= 0, "Batch size must be None or non-negative"
-        assert not self._scene_built, "Cannot change batch size after scene is built"
+        assert value is None or value > 0, "Batch size must be None or non-negative"
+        assert not self.scene.is_built, "Cannot change batch size after scene is built"
         self._batch_size = value
 
     @property

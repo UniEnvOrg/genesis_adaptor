@@ -13,7 +13,7 @@ import genesis as gs
 from genesis.constants import backend as gs_backend
 
 if not gs._initialized:
-    gs.init(backend=gs_backend.cuda)
+    gs.init(backend=gs_backend.cpu)
 
 from unienv_interface.world import WorldEnv
 from unienv_interface.wrapper.video_record import EpisodeVideoWrapper, EpisodeRenderStackWrapper
@@ -53,9 +53,8 @@ N_EPISODES = 2
 def init_env():
     world = GenesisWorld(
         scene_init_kwargs=dict(
-            sim_options=gs.options.SimOptions(substeps=5),
-            rigid_options=gs.options.RigidOptions(box_box_detection=True),
-            # renderer=gs.options.renderers.BatchRenderer(use_rasterizer=False)
+            sim_options=gs.options.SimOptions(dt=1/20, substeps=10),
+            rigid_options=gs.options.RigidOptions(box_box_detection=True)
         )
     )
 
@@ -82,7 +81,7 @@ def init_env():
     franka_gripper_cam = CameraSensorNode(
         world,
         name="gripper_cam",
-        option=franka.get_droid_gripper_cam_options(resolution=ZedSupportedResolution.HD720, near=0.01),
+        option=franka.get_droid_gripper_cam_options(resolution=ZedSupportedResolution.HD720),
         render_rgb=True,
     )
     

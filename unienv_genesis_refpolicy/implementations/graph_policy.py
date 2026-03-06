@@ -95,6 +95,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
     # Node resolution
     # ------------------------------------------------------------------
 
+    @torch.inference_mode()
     def _get_or_create_node(self, name: str) -> BaseRefPolicy[ActT]:
         """Return the policy for *name*, calling the factory if needed."""
         policy = self._node_policies[name]
@@ -104,6 +105,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
             self._node_policies[name] = policy
         return policy
 
+    @torch.inference_mode()
     def _clear_factory_nodes(self) -> None:
         """Reset lazily-created nodes so factories are re-invoked next episode."""
         for name, spec in self._node_specs.items():
@@ -114,6 +116,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
     # Lifecycle
     # ------------------------------------------------------------------
 
+    @torch.inference_mode()
     def reset(
         self,
         *,
@@ -135,6 +138,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         initial_policy = self._get_or_create_node(self._initial)
         initial_policy.reset(mask=mask, seed=seed)
 
+    @torch.inference_mode()
     def step(
         self,
         *,
@@ -151,7 +155,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         batched = is_batched(self.world.batch_size)
 
         if batched:
-            action = self._get_action_batched(observation)
+            action = self._get_action_batched()
         else:
             node_name = self._node_names[self._current_idx.item()]
             policy = self._get_or_create_node(node_name)
@@ -162,12 +166,15 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
 
         return action
 
+    @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:
         return try_scalar(self._terminal_success)
 
+    @torch.inference_mode()
     def get_failure(self) -> Union[torch.Tensor, bool]:
         return try_scalar(self._terminal_failure)
 
+    @torch.inference_mode()
     def get_timeout(self) -> Union[torch.Tensor, bool]:
         # Timeout is handled per-node via fail_edges; graph itself doesn't timeout.
         if is_batched(self.world.batch_size):
@@ -268,6 +275,10 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         first_policy = self._get_or_create_node(first_name)
         result = first_policy.get_action()
 
+        def mask_fn(r, a):
+            node_mask_expanded = node_mask.reshape((-1,) + (1,) * (r.ndim - 1))
+            return torch.where(node_mask_expanded, a, r)
+
         for node_idx in active_nodes[1:]:
             node_name = self._node_names[node_idx]
             node_mask = self._current_idx == node_idx
@@ -277,10 +288,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
             result = PyTorchComputeBackend.map_fn_over_arrays_ex(
                 result,
                 node_action,
-                lambda r, a: r.masked_fill(
-                    node_mask,
-                    a
-                )
+                func=mask_fn
             )
         return result
 
