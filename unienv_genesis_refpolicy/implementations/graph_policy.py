@@ -4,10 +4,12 @@ from typing import Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
 import torch
 
+from unienv_interface.backends.pytorch import PyTorchComputeBackend
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import (
     is_batched,
     get_batch_aware_shape,
+    try_scalar
 )
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
 
@@ -145,11 +147,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         else:
             self._step_unbatched()
 
-    # ------------------------------------------------------------------
-    # Query
-    # ------------------------------------------------------------------
-
-    def get_action(self, observation: torch.Tensor) -> ActT:
+    def get_action(self) -> ActT:
         batched = is_batched(self.world.batch_size)
 
         if batched:
@@ -157,7 +155,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         else:
             node_name = self._node_names[self._current_idx.item()]
             policy = self._get_or_create_node(node_name)
-            action = policy.get_action(observation)
+            action = policy.get_action()
 
         if self._static_actions is not None and isinstance(action, dict):
             action = {**self._static_actions, **action}
@@ -165,10 +163,10 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         return action
 
     def get_success(self) -> Union[torch.Tensor, bool]:
-        return self._unwrap(self._terminal_success)
+        return try_scalar(self._terminal_success)
 
     def get_failure(self) -> Union[torch.Tensor, bool]:
-        return self._unwrap(self._terminal_failure)
+        return try_scalar(self._terminal_failure)
 
     def get_timeout(self) -> Union[torch.Tensor, bool]:
         # Timeout is handled per-node via fail_edges; graph itself doesn't timeout.
@@ -212,11 +210,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         self._current_idx.fill_(self._name_to_idx[next_name])
         next_policy = self._get_or_create_node(next_name)
         next_policy.reset()
-
-    # ------------------------------------------------------------------
-    # Batched implementation
-    # ------------------------------------------------------------------
-
+    
     def _step_batched(self, mask: Optional[torch.Tensor]) -> None:
         alive = mask if mask is not None else torch.ones_like(self._terminal_success)
         alive = alive & ~self._terminal_success & ~self._terminal_failure
@@ -229,9 +223,9 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
             policy = self._get_or_create_node(node_name)
             policy.step(mask=node_mask)
 
-            success = _to_tensor(policy.get_success(), node_mask)
-            failure = _to_tensor(policy.get_failure(), node_mask)
-            timeout = _to_tensor(policy.get_timeout(), node_mask)
+            success = policy.get_success()
+            failure = policy.get_failure()
+            timeout = policy.get_timeout()
 
             # Success transitions.
             success_envs = node_mask & success
@@ -252,11 +246,13 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
                     self._terminal_failure[fail_envs] = True
 
     def _transition_to_batched(self, next_name: str, env_mask: torch.Tensor) -> None:
-        self._current_idx[env_mask] = self._name_to_idx[next_name]
+        self._current_idx.masked_fill_(
+            env_mask, self._name_to_idx[next_name]
+        )
         next_policy = self._get_or_create_node(next_name)
         next_policy.reset(mask=env_mask)
 
-    def _get_action_batched(self, observation: torch.Tensor) -> ActT:
+    def _get_action_batched(self) -> ActT:
         """Compute actions from all active nodes and combine."""
         # Find which nodes are active.
         active_nodes = self._current_idx.unique().tolist()
@@ -265,38 +261,28 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
             # Fast path: all envs at the same node.
             node_name = self._node_names[active_nodes[0]]
             policy = self._get_or_create_node(node_name)
-            return policy.get_action(observation)
+            return policy.get_action()
 
         # Slow path: multiple active nodes — get action from each and merge.
-        # This assumes ActT is torch.Tensor or Dict[str, torch.Tensor].
         first_name = self._node_names[active_nodes[0]]
         first_policy = self._get_or_create_node(first_name)
-        result = first_policy.get_action(observation)
+        result = first_policy.get_action()
 
         for node_idx in active_nodes[1:]:
             node_name = self._node_names[node_idx]
             node_mask = self._current_idx == node_idx
             policy = self._get_or_create_node(node_name)
-            node_action = policy.get_action(observation)
+            node_action = policy.get_action()
 
-            if isinstance(result, dict):
-                for key in result:
-                    if key in node_action:
-                        result[key][node_mask] = node_action[key][node_mask]
-            elif isinstance(result, torch.Tensor):
-                result[node_mask] = node_action[node_mask]
-
+            result = PyTorchComputeBackend.map_fn_over_arrays_ex(
+                result,
+                node_action,
+                lambda r, a: r.masked_fill(
+                    node_mask,
+                    a
+                )
+            )
         return result
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _unwrap(self, t: torch.Tensor) -> Union[torch.Tensor, bool]:
-        if is_batched(self.world.batch_size):
-            return t
-        return bool(t.item())
-
 
 def _to_tensor(value: Union[torch.Tensor, bool], like: torch.Tensor) -> torch.Tensor:
     """Coerce a bool or Tensor to a Tensor matching *like*'s shape/device."""

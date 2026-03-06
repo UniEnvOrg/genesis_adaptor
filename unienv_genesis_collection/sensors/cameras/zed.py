@@ -53,6 +53,7 @@ def get_zed_mini_camera_options(
     fov = ZED_MINI_FOVS[res]
     prefill_kwargs = ZED_MINI_DEFAULT_PARAM.copy()
     prefill_kwargs['fov'] = fov
+    prefill_kwargs['res'] = res.size
     prefill_kwargs.update(kwargs)
     return CameraSensorNodeOptions(
         **prefill_kwargs
@@ -78,6 +79,7 @@ def get_zed_2i_widelen_camera_options(
     fov = ZED_2I_WIDELEN_FOVS[res]
     prefill_kwargs = ZED_2I_WIDELEN_DEFAULT_PARAM.copy()
     prefill_kwargs['fov'] = fov
+    prefill_kwargs['res'] = res.size
     prefill_kwargs.update(kwargs)
     return CameraSensorNodeOptions(
         **prefill_kwargs
@@ -103,6 +105,7 @@ def get_zed_2i_narrowlen_camera_options(
     fov = ZED_2I_NARROWLEN_FOVS[res]
     prefill_kwargs = ZED_2I_NARROWLEN_DEFAULT_PARAM.copy()
     prefill_kwargs['fov'] = fov
+    prefill_kwargs['res'] = res.size
     prefill_kwargs.update(kwargs)
     return CameraSensorNodeOptions(
         **prefill_kwargs

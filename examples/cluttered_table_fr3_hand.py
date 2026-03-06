@@ -52,10 +52,10 @@ N_EPISODES = 2
 
 def init_env():
     world = GenesisWorld(
-        scene_init_kwargs={
-            "sim_options": gs.options.SimOptions(substeps=5),
-            "rigid_options": gs.options.RigidOptions(box_box_detection=True),
-        },
+        scene_init_kwargs=dict(
+            sim_options=gs.options.SimOptions(substeps=5),
+            rigid_options=gs.options.RigidOptions(box_box_detection=True),
+        )
     )
 
     # -- Floor --
@@ -213,7 +213,7 @@ def main():
         policy.reset(seed=episode)
 
         for step in range(TOTAL_STEPS):
-            action = policy.get_action(obs)
+            action = policy.get_action()
             obs, reward, terminated, truncated, info = env.step(action)
             policy.step()
 

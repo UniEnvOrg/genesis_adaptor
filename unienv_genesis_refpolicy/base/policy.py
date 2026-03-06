@@ -42,7 +42,7 @@ class BaseRefPolicy(abc.ABC, Generic[ActT]):
     
     # ========== Methods for querying policy state ==========
     @abc.abstractmethod
-    def get_action(self, observation : torch.Tensor) -> ActT:
+    def get_action(self) -> ActT:
         raise NotImplementedError
 
     @abc.abstractmethod

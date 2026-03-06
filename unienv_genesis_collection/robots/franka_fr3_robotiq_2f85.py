@@ -21,7 +21,7 @@ HOME_JOINT_POSITIONS = torch.tensor([
 ])
 
 # End-effector link name for IK control (arm wrist, before gripper)
-EE_LINK_NAME = "fr3_link7"
+EE_LINK_NAME = "g_base"
 
 # Joint names for arm and gripper (resolved to indexes at controller init)
 ARM_JOINT_NAMES = [f"fr3_joint{i}" for i in range(1, 8)]
@@ -71,12 +71,9 @@ _DEFAULT_SUB_CONTROLLERS = {
         "controller_type": "eef_pose",
         "joint_names": ARM_JOINT_NAMES,
         "target_link": EE_LINK_NAME,
-        # Virtual EEF offset from the target_link (fr3_link7) origin to
-        # the gripper fingertip along the approach direction, centred in
-        # the open direction.  This point is where grasp candidates place
-        # the EEF (see base_object.list_box_gripper_grasping_candidates_local).
-        #   0.107 m (FR3 flange) + ~0.159 m (Robotiq base to fingertip)
-        "eef_offset_pos": [0.0, 0.0, 0.107 + 0.159],
+        # Virtual EEF offset from the target_link (g_base) origin to the gripper fingertip along the approach direction, centred in the open direction.  This point is where grasp candidates place the EEF (see base_object.list_box_gripper_grasping_candidates_local).
+        # ~0.159 m (Robotiq base to fingertip)
+        "eef_offset_pos": [0.0, 0.0, 0.159],
     },
     "gripper": {
         "controller_type": "mimic_joint_position",
@@ -88,7 +85,7 @@ _DEFAULT_SUB_CONTROLLERS = {
         "control_low": -1,
         "control_high": 1,
         "is_grasping_fn": _make_is_grasping(GRIPPER_PAD_LINK_NAMES),
-        # Grasp frame directions in the EEF frame (fr3_link7 body frame).
+        # Grasp frame directions in the EEF frame (g_base body frame).
         # approach_direction: axis along which the gripper approaches the
         #   object (fingertip direction); eef_offset is measured along this.
         # open_direction: axis along which the fingers separate.
@@ -96,6 +93,8 @@ _DEFAULT_SUB_CONTROLLERS = {
         "open_direction": [0.0, 1.0, 0.0],
         "gripper_width": 0.085,
         "gripper_depth": 0.035,
+        "gripper_open_action": -1.0,  # action value for fully open gripper
+        "gripper_close_action": 1.0,  # action value for fully closed gripper
     },
 }
 
@@ -181,13 +180,24 @@ class FrankaFR3WithRobotiq2F85(RobotDescriptionNode):
         resolution : ZedSupportedResolution,
         **kwargs
     ) -> CameraSensorNodeOptions:
-        pos = (-0.06, -0.04, 0.0425 + 0.107)
-        quat = (0.70404461, 0.11489082, 0.12344012, 0.68984334)
+        # https://github.com/arhanjain/sim-evals/blob/main/src/sim_evals/environments/droid_environment.py
+        orig_pos = (0.011, -0.031, -0.074)
+        orig_quat = (-0.420, 0.570, 0.576, -0.409)
+        """
+        We apply
+        R_usd_to_mjcf:
+        [[0 1 0]
+        [0 0 1]
+        [1 0 0]]
+        """
+        
+        pos  = (-0.031, -0.074, -0.011)
+        quat = (0.1585, 0.9873, -0.0085, -0.0025)  # (w, x, y, z)
         return get_zed_mini_camera_options(
             resolution,
             pos=pos,
             quat=quat,
             attach_entity_name=self.name,
-            attach_entity_link=EE_LINK_NAME,
+            attach_entity_link="g_base",
             **kwargs
         )

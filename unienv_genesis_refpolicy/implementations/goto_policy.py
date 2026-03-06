@@ -16,7 +16,6 @@ from unienv_genesis.utils.batch_dim_utils import (
 )
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
 
-
 class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
     """Move an end-effector to a target world-frame pose.
 
@@ -36,13 +35,20 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         position_threshold: Position tolerance in metres for success.
         orientation_threshold: Quaternion distance tolerance for success,
             measured as ``1 - |q1 · q2|``.
-        max_steps: Maximum steps before timeout.  ``0`` means infinite
-            (no timeout).
-        stall_steps: Number of consecutive steps with motion below
-            *stall_threshold* before declaring failure.  ``0`` disables
-            stall detection.
-        stall_threshold: Motion magnitude (metres) below which a step
-            counts as stalled.
+        position_threshold_stall: Per-step translational motion threshold
+            in metres. If the EEF moves less than this value, the step
+            is considered translationally stalled.
+        orientation_threshold_stall: Per-step rotational motion threshold
+            measured as ``1 - |q_t · q_{t-1}|``. If the orientation change
+            is below this value, the step is considered rotationally stalled.
+        stall_seconds: Continuous stalled duration before declaring failure.
+            ``0`` disables stall detection.
+        max_seconds: Maximum policy runtime before timeout. ``0`` disables
+            timeout.
+
+    Notes:
+        Time accounting is based on :attr:`GenesisWorld.world_timestep`
+        added once per :meth:`step` call.
     """
 
     def __init__(
@@ -53,17 +59,20 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         target_quat: torch.Tensor,
         position_threshold: float = 0.01,
         orientation_threshold: float = 0.05,
-        max_steps: int = 200,
-        stall_steps: int = 20,
-        stall_threshold: float = 1e-4,
+        position_threshold_stall: float = 1e-4,
+        orientation_threshold_stall: float = 1e-3,
+        stall_seconds: float = 1.0,
+        max_seconds: float = 0.0,
     ) -> None:
         super().__init__(world)
         self.controller = controller
         self.position_threshold = position_threshold
         self.orientation_threshold = orientation_threshold
-        self.max_steps = max_steps
-        self.stall_steps = stall_steps
-        self.stall_threshold = stall_threshold
+        self.max_seconds = max_seconds
+
+        self.position_threshold_stall = position_threshold_stall
+        self.orientation_threshold_stall = orientation_threshold_stall
+        self.stall_seconds = stall_seconds
 
         batch_size = world.batch_size
         device = world.device
@@ -86,20 +95,23 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         # Mutable per-env state — native shapes via get_batch_aware_shape.
         scalar_shape = get_batch_aware_shape(batch_size, ())  # () or (B,)
         pos_shape = get_batch_aware_shape(batch_size, 3)       # (3,) or (B, 3)
+        quat_shape = get_batch_aware_shape(batch_size, 4)      # (4,) or (B, 4)
 
-        self._step_count = torch.zeros(scalar_shape, dtype=torch.long, device=device)
+        self._elapsed_seconds = torch.zeros(
+            scalar_shape, dtype=torch.float32, device=device,
+        )
         self._reached = torch.zeros(scalar_shape, dtype=torch.bool, device=device)
-        self._stall_count = torch.zeros(scalar_shape, dtype=torch.long, device=device)
+        self._stall_elapsed_seconds = torch.zeros(
+            scalar_shape, dtype=torch.float32, device=device,
+        )
         self._stalled = torch.zeros(scalar_shape, dtype=torch.bool, device=device)
         self._last_eef_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
+        self._last_eef_quat = torch.zeros(quat_shape, dtype=torch.float32, device=device)
 
-        # Initialise _last_eef_pos from the current EEF position.
-        eef_pos, _ = controller.get_eef_pose_absolute()
+        # Initialise last EEF pose from the current EEF pose.
+        eef_pos, eef_quat = controller.get_eef_pose_absolute()
         self._last_eef_pos.copy_(eef_pos.detach().float())
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+        self._last_eef_quat.copy_(eef_quat.detach().float())
 
     def reset(
         self,
@@ -108,30 +120,34 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         seed: Optional[int] = None,
     ) -> None:
         if mask is not None:
-            self._step_count[mask] = 0
+            self._elapsed_seconds[mask] = 0.0
             self._reached[mask] = False
-            self._stall_count[mask] = 0
+            self._stall_elapsed_seconds[mask] = 0.0
             self._stalled[mask] = False
-            eef_pos, _ = self.controller.get_eef_pose_absolute()
+            eef_pos, eef_quat = self.controller.get_eef_pose_absolute()
             self._last_eef_pos[mask] = eef_pos.detach().float()[mask]
+            self._last_eef_quat[mask] = eef_quat.detach().float()[mask]
         else:
-            self._step_count.zero_()
+            self._elapsed_seconds.zero_()
             self._reached.zero_()
-            self._stall_count.zero_()
+            self._stall_elapsed_seconds.zero_()
             self._stalled.zero_()
-            eef_pos, _ = self.controller.get_eef_pose_absolute()
+            eef_pos, eef_quat = self.controller.get_eef_pose_absolute()
             self._last_eef_pos.copy_(eef_pos.detach().float())
+            self._last_eef_quat.copy_(eef_quat.detach().float())
 
     def step(
         self,
         *,
         mask: Optional[torch.Tensor] = None,
     ) -> None:
-        # Increment step counter.
+        dt = float(self.world.world_timestep)
+
+        # Increment elapsed time.
         if mask is not None:
-            self._step_count[mask] += 1
+            self._elapsed_seconds[mask] += dt
         else:
-            self._step_count += 1
+            self._elapsed_seconds += dt
 
         # Query current EEF pose (native shapes from controller).
         eef_pos, eef_quat = self.controller.get_eef_pose_absolute()
@@ -149,54 +165,61 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         self._reached = self._reached | newly_reached
 
         # --- Stall detection ---
-        if self.stall_steps > 0:
-            motion = torch.norm(eef_pos - self._last_eef_pos, dim=-1)
-            new_stall = torch.where(
-                motion < self.stall_threshold,
-                self._stall_count + 1,
-                torch.zeros_like(self._stall_count),
+        if self.stall_seconds > 0:
+            pos_motion = torch.norm(eef_pos - self._last_eef_pos, dim=-1)
+            quat_motion_dot = torch.abs(torch.sum(eef_quat * self._last_eef_quat, dim=-1))
+            quat_motion = 1.0 - quat_motion_dot.clamp(max=1.0)
+            stalled_this_step = (
+                (pos_motion < self.position_threshold_stall)
+                & (quat_motion < self.orientation_threshold_stall)
             )
-            if mask is not None:
-                self._stall_count[mask] = new_stall[mask]
-            else:
-                self._stall_count = new_stall
 
-            stall_trigger = (self._stall_count >= self.stall_steps) & ~self._reached
+            if mask is not None:
+                updated = torch.where(
+                    stalled_this_step[mask],
+                    self._stall_elapsed_seconds[mask] + dt,
+                    torch.zeros_like(self._stall_elapsed_seconds[mask]),
+                )
+                self._stall_elapsed_seconds[mask] = updated
+            else:
+                self._stall_elapsed_seconds = torch.where(
+                    stalled_this_step,
+                    self._stall_elapsed_seconds + dt,
+                    torch.zeros_like(self._stall_elapsed_seconds),
+                )
+
+            stall_trigger = (
+                (self._stall_elapsed_seconds >= self.stall_seconds) & ~self._reached
+            )
             if mask is not None:
                 stall_trigger = stall_trigger & mask
             self._stalled = self._stalled | stall_trigger
 
         if mask is not None:
             self._last_eef_pos[mask] = eef_pos[mask]
+            self._last_eef_quat[mask] = eef_quat[mask]
         else:
             self._last_eef_pos.copy_(eef_pos)
+            self._last_eef_quat.copy_(eef_quat)
 
-    # ------------------------------------------------------------------
-    # Query
-    # ------------------------------------------------------------------
-
-    def get_action(self, observation: torch.Tensor) -> torch.Tensor:
+    def get_action(self) -> torch.Tensor:
         return self._action
 
     def get_success(self) -> Union[torch.Tensor, bool]:
-        return self._unwrap(self._reached)
+        return try_scalar(self._reached)
 
     def get_failure(self) -> Union[torch.Tensor, bool]:
-        return self._unwrap(self._stalled)
+        return try_scalar(self._stalled)
 
     def get_timeout(self) -> Union[torch.Tensor, bool]:
-        if self.max_steps <= 0:
-            return self._unwrap(
+        if self.max_seconds <= 0:
+            return try_scalar(
                 torch.zeros_like(self._reached),
             )
         timed_out = (
-            (self._step_count >= self.max_steps) & ~self._reached & ~self._stalled
+            (self._elapsed_seconds >= self.max_seconds) & ~self._reached & ~self._stalled
         )
-        return self._unwrap(timed_out)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+        return try_scalar(timed_out)
 
     @staticmethod
     def check_reachable_error(
@@ -247,9 +270,3 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         if batched:
             return torch.stack(errors, dim=1)
         return torch.stack(errors, dim=0)
-
-    def _unwrap(self, t: torch.Tensor) -> Union[torch.Tensor, bool]:
-        """Return a Python bool for unbatched worlds, else the tensor."""
-        if is_batched(self.world.batch_size):
-            return t
-        return bool(t.item())

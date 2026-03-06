@@ -213,9 +213,11 @@
                       <geom mesh="link7_2" material="white" class="visual"/>
                       <geom mesh="link7_3" material="black" class="visual"/>
                       <geom name="fr3_link7_collision" class="collision" mesh="link7_coll"/>
-
-                      <!-- GRIPPER: Robotiq 2F-85 at FR3 flange (0.107 m from joint7 axis) -->
-                      <body name="g_base" pos="0 0 0.107" childclass="2f85">
+                      <!-- USD-aligned mount:
+                           fr3_link7 -> fr3_flange (panda_joint8), then
+                           fr3_flange -> g_base (panda_hand_joint) -->
+                      <body name="fr3_flange" pos="0 0 0.107">
+                      <body name="g_base" pos="0 0 0" quat="0.7071 0 0 0.7071" childclass="2f85">
                         <inertial mass="0.777441" pos="0 -2.70394e-05 0.0354675" quat="1 -0.00152849 0 0"
                                   diaginertia="0.000260285 0.000225381 0.000152708"/>
                         <geom class="robotiq_visual" pos="0 0 0.0108" quat="0 0 0 1" mesh="robotiq_base_mesh"/>
@@ -292,6 +294,7 @@
                             </body>
                           </body>
                         </body>
+                      </body>
                       </body>
                       <!-- END GRIPPER -->
 

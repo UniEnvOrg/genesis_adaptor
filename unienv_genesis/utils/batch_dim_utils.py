@@ -7,6 +7,15 @@ These utilities help handle both cases consistently.
 from typing import Optional, Tuple, Union, Sequence
 import torch
 
+__all__ = [
+    "is_batched",
+    "try_scalar",
+    "get_batch_aware_shape"
+    "broadcast_to_batch",
+    "index_batch_dimension",
+    "reduce_and",
+    "reduce_or"
+]
 
 # Type alias for index types supported by index_batch_dimension
 IndexType = Union[
@@ -110,12 +119,16 @@ def broadcast_to_batch(
     if is_batched(batch_size):
         # Batched case: ensure shape is (batch_size, n_features)
         if tensor.ndim == 1:
-            return tensor.unsqueeze(0).expand(batch_size, -1)
+            tensor = tensor.unsqueeze(0).expand(batch_size, -1)
+        if device is not None:
+            tensor = tensor.to(device)
         return tensor
     else:
         # Unbatched case: ensure shape is (n_features,)
         if tensor.ndim == 2 and tensor.shape[0] == 1:
-            return tensor.squeeze(0)
+            tensor = tensor.squeeze(0)
+        if device is not None:
+            tensor = tensor.to(device)
         return tensor
 
 
@@ -174,3 +187,28 @@ def index_batch_dimension(
     return tensor[full_index]
 
 
+def reduce_and(*values):
+    """Logical AND across a list of bool / Tensor values."""
+    result = values[0]
+    for v in values[1:]:
+        if isinstance(result, torch.Tensor) or isinstance(v, torch.Tensor):
+            result = torch.logical_and(
+                result,
+                v
+            )
+        else:
+            result = result and v
+    return result
+
+def reduce_or(*values):
+    """Logical OR across a list of bool / Tensor values."""
+    result = values[0]
+    for v in values[1:]:
+        if isinstance(result, torch.Tensor) or isinstance(v, torch.Tensor):
+            result = torch.logical_and(
+                result,
+                v
+            )
+        else:
+            result = result or v
+    return result

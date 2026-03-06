@@ -176,6 +176,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         *,
         seed: Optional[int] = None,
         mask: Optional[PyTorchArrayType] = None,
+        temporary : bool = False,
         **kwargs
     ) -> None:
         """Compile the scene AFTER all nodes have added their entities."""
@@ -183,6 +184,12 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         if seed is not None:
             gs.set_random_seed(seed)
         
+        if temporary and (
+            self.scene.visualizer._batch_renderer is not None and
+            len(self.scene.visualizer.cameras) == 0
+        ):
+            self.scene.add_camera()
+
         self.build_scene(self.scene, n_envs=self.batch_size)
         
     def close(self) -> None:

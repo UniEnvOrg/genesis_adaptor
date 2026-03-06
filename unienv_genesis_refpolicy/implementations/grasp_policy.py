@@ -19,11 +19,11 @@ from unienv_genesis.utils.batch_dim_utils import (
     is_batched,
     get_batch_aware_shape,
     broadcast_to_batch,
+    try_scalar
 )
 from unienv_genesis_collection.objects.base_object import ManipulatableObject, GraspCandidates
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
 from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
-
 
 class GraspPhase:
     OPEN_GRIPPER = 0
@@ -32,7 +32,6 @@ class GraspPhase:
     CLOSE_GRIPPER = 3
     DONE = 4
     _NUM_PHASES = 5
-
 
 class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
     """Grasp a :class:`ManipulatableObject` using a parallel-jaw gripper.
@@ -60,17 +59,17 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         target_entity: The loaded Genesis entity for *target_object*.
         gripper_width: Maximum gripper opening in metres.
         gripper_depth: Depth of the gripper fingers in metres.
+        gripper_open_action: Gripper action value for fully open.
+        gripper_close_action: Gripper action value for fully closed.
         approach_distance: Pre-grasp offset along the approach direction.
         position_threshold: EEF position tolerance for phase transitions.
         orientation_threshold: Quaternion distance tolerance (``1 - |q1·q2|``).
-        open_gripper_steps: Steps to hold the gripper open before moving.
-        close_gripper_steps: Steps to hold the gripper closed before success.
-        phase_patience: Max steps per motion phase before declaring failure.
-        max_steps: Overall timeout (``0`` = infinite).
+        open_gripper_seconds: Seconds to hold the gripper open before moving.
+        close_gripper_seconds: Seconds to hold the gripper closed before success.
+        phase_patience_seconds: Max seconds per motion phase before declaring failure.
+        max_seconds: Overall timeout in seconds (``0`` = infinite).
         eef_name: Key used for the arm action in the returned dict.
         gripper_name: Key used for the gripper action in the returned dict.
-        gripper_open_action: Gripper action value for fully open.
-        gripper_close_action: Gripper action value for fully closed.
         approach_axis: ``(3,)`` direction in the **EEF frame** that should
             align with the grasp approach direction. If ``None``, read from
             ``gripper_controller.approach_direction``.
@@ -99,17 +98,17 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         open_axis: Optional[torch.Tensor] = None,
         gripper_width: Optional[float] = None,
         gripper_depth: Optional[float] = None,
+        gripper_open_action: Optional[float] = None,
+        gripper_close_action: Optional[float] = None,
         approach_distance: float = 0.10,
         position_threshold: float = 0.01,
         orientation_threshold: float = 0.05,
-        open_gripper_steps: int = 10,
-        close_gripper_steps: int = 30,
-        phase_patience: int = 50,
-        max_steps: int = 300,
+        open_gripper_seconds: float = 1.0,
+        close_gripper_seconds: float = 1.0,
+        phase_patience_seconds: float = 3.0,
+        max_seconds: float = 10.0,
         eef_name: str = "arm",
         gripper_name: str = "gripper",
-        gripper_open_action: float = -1.0,
-        gripper_close_action: float = 1.0,
         ik_error_threshold: float = 0.05,
         filter_candidate_fn : Optional[Callable[[GraspCandidates], torch.Tensor]] = None,
     ) -> None:
@@ -122,14 +121,13 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self.approach_distance = approach_distance
         self.position_threshold = position_threshold
         self.orientation_threshold = orientation_threshold
-        self.open_gripper_steps = open_gripper_steps
-        self.close_gripper_steps = close_gripper_steps
-        self.phase_patience = phase_patience
-        self.max_steps = max_steps
+        dt = float(world.world_timestep)
+        self.open_gripper_seconds = open_gripper_seconds
+        self.close_gripper_seconds = close_gripper_seconds
+        self.phase_patience_seconds = phase_patience_seconds
+        self.max_seconds = max_seconds
         self._eef_name = eef_name
         self._gripper_name = gripper_name
-        self.gripper_open_action = gripper_open_action
-        self.gripper_close_action = gripper_close_action
         self.ik_error_threshold = ik_error_threshold
         self._filter_candidate_fn = filter_candidate_fn
         self._candidate_filter_mask: Optional[torch.Tensor] = None
@@ -143,9 +141,15 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             approach_axis = torch.tensor(gripper_controller.approach_direction, dtype=torch.float32)
         if open_axis is None:
             open_axis = torch.tensor(gripper_controller.open_direction, dtype=torch.float32)
+        if gripper_open_action is None:
+            gripper_open_action = gripper_controller.gripper_open_action
+        if gripper_close_action is None:
+            gripper_close_action = gripper_controller.gripper_close_action
 
         self.gripper_width = gripper_width
         self.gripper_depth = gripper_depth
+        self.gripper_open_action = gripper_open_action
+        self.gripper_close_action = gripper_close_action
 
         batch_size = world.batch_size
         device = world.device
@@ -172,8 +176,12 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         quat_shape = get_batch_aware_shape(batch_size, 4)
 
         self._phase = torch.zeros(scalar_shape, dtype=torch.long, device=device)
-        self._step_in_phase = torch.zeros(scalar_shape, dtype=torch.long, device=device)
-        self._global_step = torch.zeros(scalar_shape, dtype=torch.long, device=device)
+        self._phase_elapsed_seconds = torch.zeros(
+            scalar_shape, dtype=torch.float32, device=device,
+        )
+        self._total_elapsed_seconds = torch.zeros(
+            scalar_shape, dtype=torch.float32, device=device,
+        )
         self._failed = torch.zeros(scalar_shape, dtype=torch.bool, device=device)
 
         self._target_grasp_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
@@ -181,10 +189,6 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._pre_grasp_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
         self._initial_eef_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
         self._initial_eef_quat = torch.zeros(quat_shape, dtype=torch.float32, device=device)
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def reset(
         self,
@@ -313,13 +317,15 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         *,
         mask: Optional[torch.Tensor] = None,
     ) -> None:
-        # 1. Increment counters.
+        dt = float(self.world.world_timestep)
+
+        # 1. Increment elapsed-time counters.
         if mask is not None:
-            self._global_step[mask] += 1
-            self._step_in_phase[mask] += 1
+            self._total_elapsed_seconds[mask] += dt
+            self._phase_elapsed_seconds[mask] += dt
         else:
-            self._global_step += 1
-            self._step_in_phase += 1
+            self._total_elapsed_seconds += dt
+            self._phase_elapsed_seconds += dt
 
         # 2. Current EEF pose.
         eef_pos, eef_quat = self._eef_ctrl.get_eef_pose_absolute()
@@ -351,7 +357,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         trans_open = (
             alive & ~transitioned
             & (self._phase == GraspPhase.OPEN_GRIPPER)
-            & (self._step_in_phase >= self.open_gripper_steps)
+            & (self._phase_elapsed_seconds >= self.open_gripper_seconds)
         )
         self._advance(trans_open, GraspPhase.PRE_GRASP)
         transitioned = transitioned | trans_open
@@ -362,12 +368,16 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._advance(trans_pre, GraspPhase.APPROACH)
         transitioned = transitioned | trans_pre
         # patience failure
-        fail_pre = in_pre & ~reached & (self._step_in_phase >= self.phase_patience)
+        fail_pre = in_pre & ~reached & (
+            self._phase_elapsed_seconds >= self.phase_patience_seconds
+        )
         self._failed = self._failed | fail_pre
 
         # APPROACH → CLOSE_GRIPPER  (on reach OR patience timeout — try closing anyway)
         in_app = alive & ~transitioned & (self._phase == GraspPhase.APPROACH)
-        timed_out_app = in_app & ~reached & (self._step_in_phase >= self.phase_patience)
+        timed_out_app = in_app & ~reached & (
+            self._phase_elapsed_seconds >= self.phase_patience_seconds
+        )
         trans_app = in_app & (reached | timed_out_app)
         self._advance(trans_app, GraspPhase.CLOSE_GRIPPER)
         transitioned = transitioned | trans_app
@@ -376,7 +386,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         trans_close = (
             alive & ~transitioned
             & (self._phase == GraspPhase.CLOSE_GRIPPER)
-            & (self._step_in_phase >= self.close_gripper_steps)
+            & (self._phase_elapsed_seconds >= self.close_gripper_seconds)
         )
         if trans_close.any():
             grasping_result = self._gripper_ctrl.is_grasping(self.target_entity)
@@ -395,12 +405,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 # No verification — backwards compatible.
                 self._advance(trans_close, GraspPhase.DONE)
 
-    # ------------------------------------------------------------------
-    # Query
-    # ------------------------------------------------------------------
-
     def get_action(
-        self, observation: torch.Tensor,
+        self, 
     ) -> Dict[str, torch.Tensor]:
         target_pos = self._get_phase_target_pos()
         target_quat = self._get_phase_target_quat()
@@ -431,20 +437,20 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         return {self._eef_name: arm_action, self._gripper_name: gripper_val}
 
     def get_success(self) -> Union[torch.Tensor, bool]:
-        return self._unwrap(self._phase == GraspPhase.DONE)
+        return try_scalar(self._phase == GraspPhase.DONE)
 
     def get_failure(self) -> Union[torch.Tensor, bool]:
-        return self._unwrap(self._failed)
+        return try_scalar(self._failed)
 
     def get_timeout(self) -> Union[torch.Tensor, bool]:
-        if self.max_steps <= 0:
-            return self._unwrap(torch.zeros_like(self._failed))
+        if self.max_seconds <= 0:
+            return try_scalar(torch.zeros_like(self._failed))
         timed_out = (
-            (self._global_step >= self.max_steps)
+            (self._total_elapsed_seconds >= self.max_seconds)
             & (self._phase != GraspPhase.DONE)
             & ~self._failed
         )
-        return self._unwrap(timed_out)
+        return try_scalar(timed_out)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -511,34 +517,28 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         return self._target_grasp_quat
 
     def _advance(self, trans_mask: torch.Tensor, next_phase: int) -> None:
-        """Advance envs in *trans_mask* to *next_phase*, zeroing step counter."""
+        """Advance envs in *trans_mask* to *next_phase*, zeroing phase timer."""
         if not trans_mask.any():
             return
         if is_batched(self.world.batch_size):
             self._phase[trans_mask] = next_phase
-            self._step_in_phase[trans_mask] = 0
+            self._phase_elapsed_seconds[trans_mask] = 0.0
         else:
             if trans_mask.item():
                 self._phase.fill_(next_phase)
-                self._step_in_phase.zero_()
+                self._phase_elapsed_seconds.zero_()
 
     def _zero_counters(self, mask: Optional[torch.Tensor]) -> None:
         if mask is not None:
             self._phase[mask] = 0
-            self._step_in_phase[mask] = 0
-            self._global_step[mask] = 0
+            self._phase_elapsed_seconds[mask] = 0.0
+            self._total_elapsed_seconds[mask] = 0.0
             self._failed[mask] = False
         else:
             self._phase.zero_()
-            self._step_in_phase.zero_()
-            self._global_step.zero_()
+            self._phase_elapsed_seconds.zero_()
+            self._total_elapsed_seconds.zero_()
             self._failed.zero_()
-
-    def _unwrap(self, t: torch.Tensor) -> Union[torch.Tensor, bool]:
-        if is_batched(self.world.batch_size):
-            return t
-        return bool(t.item())
-
 
 def _to_bool_tensor(value: Union[torch.Tensor, bool], like: torch.Tensor) -> torch.Tensor:
     """Coerce a bool or Tensor to a bool Tensor matching *like*'s shape/device."""

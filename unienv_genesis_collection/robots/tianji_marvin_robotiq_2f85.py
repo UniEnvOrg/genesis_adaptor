@@ -99,6 +99,8 @@ _DEFAULT_SUB_CONTROLLERS = {
         "open_direction": [0.0, 1.0, 0.0],
         "gripper_width": 0.085,
         "gripper_depth": 0.035,
+        "gripper_open_action": -1.0, 
+        "gripper_close_action": 1.0,
     },
     "right_gripper": {
         "controller_type": "mimic_joint_position",
@@ -112,6 +114,8 @@ _DEFAULT_SUB_CONTROLLERS = {
         "open_direction": [0.0, 1.0, 0.0],
         "gripper_width": 0.085,
         "gripper_depth": 0.035,
+        "gripper_open_action": -1.0,
+        "gripper_close_action": 1.0, 
     },
 }
 

@@ -51,7 +51,13 @@ class CameraSensorNodeOptions(Options):
     pos : Tuple[float, float, float] = (0.5, 2.5, 3.5)
     """The position of the camera in the scene, specified as (x, y, z)."""
     quat : Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
-    """The orientation of the camera specified as a quaternion (w, x, y, z). """
+    """Camera orientation quaternion ``(w, x, y, z)`` in OpenGL convention.
+
+    OpenGL camera axes are:
+      - ``+X`` right
+      - ``+Y`` up
+      - ``-Z`` forward (view direction)
+    """
     fov : float = 30
     """The vertical field of view of the camera in degrees."""
     aperture : float = 2.0
@@ -88,37 +94,42 @@ class CameraSensorNodeOptions(Options):
         lookat: Tuple[float, float, float],
         up: Tuple[float, float, float] = (0.0, 0.0, 1.0),
     ) -> Tuple[float, float, float, float]:
-        """Utility function to compute quaternion from lookat parameters."""
+        """Compute OpenGL-convention quaternion from look-at parameters.
+
+        Returns ``(w, x, y, z)`` where the camera frame follows OpenGL:
+        ``+Y`` is up and ``-Z`` points toward ``lookat``.
+        """
         pos = np.array(pos, dtype=np.float32)
         lookat = np.array(lookat, dtype=np.float32)
         up = np.array(up, dtype=np.float32)
-        Z_axis = lookat - pos
-        Z_axis /= np.linalg.norm(Z_axis)
-        Y_axis = -up
-        Y_axis -= Y_axis.dot(Z_axis) * Z_axis  # Make orthogonal to
+        forward = lookat - pos
+        forward /= np.linalg.norm(forward)
+        Z_axis = -forward  # OpenGL camera forward is -Z
+        Y_axis = up
+        Y_axis -= Y_axis.dot(Z_axis) * Z_axis  # Make orthogonal to Z
         Y_axis /= np.linalg.norm(Y_axis)
         X_axis = np.cross(Y_axis, Z_axis)
-        rot_matrix = np.stack([X_axis, Y_axis, Z_axis], axis=1)  # 3x3 rotation matrix
+        rot_matrix = np.stack([X_axis, Y_axis, Z_axis], axis=1)  # camera-to-world
         quat = matrix_to_quaternion(NumpyComputeBackend, rot_matrix)
         return tuple(quat)
     
     def get_lookat(self) -> Tuple[float, float, float]:
-        """Compute lookat point from position and quaternion."""
+        """Compute look-at point from OpenGL-convention ``quat``."""
         rot_matrix = quaternion_to_matrix(
             NumpyComputeBackend,
             np.array(self.quat, dtype=np.float32),
         )
-        forward_vector = rot_matrix[:, 2]  # Z-axis is the forward direction
+        forward_vector = -rot_matrix[:, 2]  # OpenGL forward is -Z
         lookat = np.array(self.pos, dtype=np.float32) + forward_vector
         return tuple(lookat)
     
     def get_up(self) -> Tuple[float, float, float]:
-        """Compute up vector from quaternion."""
+        """Compute OpenGL up vector from ``quat``."""
         rot_matrix = quaternion_to_matrix(
             NumpyComputeBackend,
             np.array(self.quat, dtype=np.float32),
         )
-        up_vector = -rot_matrix[:, 1] 
+        up_vector = rot_matrix[:, 1]
         return tuple(up_vector)
 
 class CameraSensorNode(SensorNode[
@@ -153,8 +164,6 @@ class CameraSensorNode(SensorNode[
         render_depth: bool = False,
         render_seg: bool = False,
         render_normal: bool = False,
-        attach_entity_name : Optional[str] = None,
-        attach_entity_link : Optional[str] = None,
         control_timestep: Optional[float] = None,
         update_timestep: Optional[float] = None,
         render_position: bool = False,
@@ -181,8 +190,6 @@ class CameraSensorNode(SensorNode[
         
         self.sensor: Optional[CameraSensor] = None
         self.option = option
-        self.attach_entity_name = attach_entity_name
-        self.attach_entity_link = attach_entity_link
         assert (render_rgb or render_depth or render_seg or render_normal or render_position), (
             "At least one of render_rgb, render_depth, render_seg, render_normal, or render_position must be True"
         )
@@ -198,9 +205,6 @@ class CameraSensorNode(SensorNode[
         # Expose render() when RGB is available.
         self.render_mode = "rgb_array" if render_rgb else None
 
-        # Initialize sensor
-        self.sensor = self._init_sensor()
-
         # Cached observation
         self._last_observation: Optional[Dict[str, PyTorchArrayType]] = None
         
@@ -212,11 +216,11 @@ class CameraSensorNode(SensorNode[
 
         attach_entity = None
         attach_link = None
-        if self.attach_entity_name is not None:
-            attach_entity = self.world.scene.get_entity(self.attach_entity_name)
-            assert isinstance(attach_entity, RigidEntity), f"Attach entity must be a RigidEntity: {self.attach_entity_name}"
-            if self.attach_entity_link is not None:
-                attach_link : RigidLink = attach_entity.get_link(self.attach_entity_link)
+        if self.option.attach_entity_name is not None:
+            attach_entity = self.world.scene.get_entity(self.option.attach_entity_name)
+            assert isinstance(attach_entity, RigidEntity), f"Attach entity must be a RigidEntity: {self.option.attach_entity_name}"
+            if self.option.attach_entity_link is not None:
+                attach_link : RigidLink = attach_entity.get_link(self.option.attach_entity_link)
             else:
                 attach_link : RigidLink = attach_entity.links[0]
         
@@ -469,7 +473,7 @@ class CameraSensorNode(SensorNode[
     def update_observation(self) -> None:
         """Render and cache camera observations."""
         # Move camera to attached link's current position before rendering
-        if self.attach_entity_name is not None:
+        if self.option.attach_entity_name is not None:
             self.sensor.move_to_attach()
         
         rgb, depth, segmentation, normal = self.sensor.render(

@@ -6,7 +6,10 @@ import torch
 
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
-
+from unienv_genesis.utils.batch_dim_utils import (
+    reduce_and,
+    reduce_or
+)
 
 class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
     """Run named sub-policies in parallel and combine their actions.
@@ -37,10 +40,6 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             else list(self._policies.keys())
         )
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def reset(
         self,
         *,
@@ -67,52 +66,20 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         for policy in self._policies.values():
             policy.step(mask=mask)
 
-    # ------------------------------------------------------------------
-    # Query
-    # ------------------------------------------------------------------
-
-    def get_action(
-        self, observation: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+    def get_action(self) -> Dict[str, torch.Tensor]:
         return {
-            name: policy.get_action(observation)
+            name: policy.get_action()
             for name, policy in self._policies.items()
         }
 
     def get_success(self) -> Union[torch.Tensor, bool]:
         results = [self._policies[k].get_success() for k in self._success_keys]
-        return _reduce_and(results)
+        return reduce_and(*results)
 
     def get_failure(self) -> Union[torch.Tensor, bool]:
         results = [p.get_failure() for p in self._policies.values()]
-        return _reduce_or(results)
+        return reduce_or(*results)
 
     def get_timeout(self) -> Union[torch.Tensor, bool]:
         results = [self._policies[k].get_timeout() for k in self._success_keys]
-        return _reduce_or(results)
-
-
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
-def _reduce_and(values):
-    """Logical AND across a list of bool / Tensor values."""
-    result = values[0]
-    for v in values[1:]:
-        if isinstance(result, torch.Tensor) or isinstance(v, torch.Tensor):
-            result = torch.as_tensor(result) & torch.as_tensor(v)
-        else:
-            result = result and v
-    return result
-
-
-def _reduce_or(values):
-    """Logical OR across a list of bool / Tensor values."""
-    result = values[0]
-    for v in values[1:]:
-        if isinstance(result, torch.Tensor) or isinstance(v, torch.Tensor):
-            result = torch.as_tensor(result) | torch.as_tensor(v)
-        else:
-            result = result or v
-    return result
+        return reduce_or(*results)

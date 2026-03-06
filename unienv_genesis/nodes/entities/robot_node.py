@@ -120,7 +120,7 @@ class RobotDescriptionNode(EntityNode[
         # during the first WorldEnv.reload() call.
         self.world.reload(disable_viewer=True) # fresh scene (destroys any prior built scene)
         self.reload(priority=50)               # add this entity to the fresh scene
-        self.world.after_reload()              # compile scene
+        self.world.after_reload(temporary=True)              # compile scene
         self.after_reload(priority=50)         # init controller — real spaces now available
         self.world.reload()                    # restore fresh unbuilt scene for subsequent nodes
 

@@ -9,6 +9,7 @@ from unienv_genesis.utils.batch_dim_utils import (
     is_batched,
     get_batch_aware_shape,
     broadcast_to_batch,
+    try_scalar
 )
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
 
@@ -52,10 +53,6 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
         scalar_shape = get_batch_aware_shape(batch_size, ())
         self._step_count = torch.zeros(scalar_shape, dtype=torch.long, device=device)
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def reset(
         self,
         *,
@@ -77,32 +74,19 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
         else:
             self._step_count += 1
 
-    # ------------------------------------------------------------------
-    # Query
-    # ------------------------------------------------------------------
-
-    def get_action(self, observation: torch.Tensor) -> torch.Tensor:
+    def get_action(self) -> torch.Tensor:
         return self._action
 
     def get_success(self) -> Union[torch.Tensor, bool]:
         if self.steps <= 0:
             return self._unwrap_false()
-        return self._unwrap(self._step_count >= self.steps)
+        return try_scalar(self._step_count >= self.steps)
 
     def get_failure(self) -> Union[torch.Tensor, bool]:
         return self._unwrap_false()
 
     def get_timeout(self) -> Union[torch.Tensor, bool]:
         return self._unwrap_false()
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _unwrap(self, t: torch.Tensor) -> Union[torch.Tensor, bool]:
-        if is_batched(self.world.batch_size):
-            return t
-        return bool(t.item())
 
     def _unwrap_false(self) -> Union[torch.Tensor, bool]:
         if is_batched(self.world.batch_size):

@@ -85,6 +85,8 @@ _DEFAULT_SUB_CONTROLLERS = {
         "open_direction": [0.0, 1.0, 0.0],
         "gripper_width": 0.08,    # 2 × 0.04 m max finger opening
         "gripper_depth": 0.02,    # fingertip pad depth
+        "gripper_open_action": -1.0,  # action value for fully open gripper
+        "gripper_close_action": 1.0,  # action value for fully closed gripper
     },
 }
 
