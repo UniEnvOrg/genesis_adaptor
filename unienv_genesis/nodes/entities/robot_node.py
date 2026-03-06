@@ -72,7 +72,7 @@ class RobotDescriptionNode(EntityNode[
 
             morph = gs.morphs.MJCF(file=description_file, **pose_kwargs)
         elif description_base.endswith('.usd') or description_base.endswith('.usda') or description_base.endswith('.usdc'):
-            morph = gs.morphs.USD(file=description_file, fixed=self.fix_root, **pose_kwargs)
+            morph = gs.morphs.USD(file=description_file, fixed=self.fix_root, requires_jac_and_IK=True, **pose_kwargs)
         else:
             raise ValueError(f"Unsupported robot description file format: {description_file}")
         entity = self.world.scene.add_entity(morph, name=self._name)
