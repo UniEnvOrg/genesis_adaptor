@@ -37,6 +37,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         batch_size: Optional[int] = None,
         scene_init_kwargs : Dict[str, Any] = {},
         scene_build_kwargs : Dict[str, Any] = {},
+        add_default_light : bool = True,
     ):
         """Initialize Genesis World.
         
@@ -51,6 +52,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         self._batch_size = batch_size
         self.scene_init_kwargs = scene_init_kwargs
         self.scene_build_kwargs = scene_build_kwargs
+        self.add_default_light = add_default_light
         self.scene = self.create_scene()
     
     def create_scene(
@@ -63,6 +65,16 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         scene = gs.Scene(
             **self.scene_init_kwargs
         )
+        if self.add_default_light and isinstance(self.scene_init_kwargs.get("renderer"), gs.options.renderers.BatchRenderer):
+            scene.add_light(
+                pos=(0.0, 0.0, 3.0),
+                dir=(0.0, 0.0, -1.0),
+                color=(1.0, 1.0, 1.0),
+                intensity=1.0,
+                directional=True,
+                castshadow=False,
+            )
+
         return scene
 
     def build_scene(self, scene : gs.Scene, n_envs : Optional[int] = None) -> None:
