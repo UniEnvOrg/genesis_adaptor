@@ -11,6 +11,7 @@ from unienv_genesis import GenesisWorld
 from unienv_genesis.nodes.entities.robot_node import RobotKeyframe, RobotDescriptionNode
 from unienv_genesis.nodes.entities.entity_controllers import CONTROL_MODE_T
 from unienv_genesis.nodes.sensors.camera_node import CameraSensorNodeOptions
+from unienv_genesis.options.attach_option import AttachFromName
 from unienv_genesis_collection.sensors.cameras.zed import get_zed_mini_camera_options, ZedSupportedResolution
 from unienv_genesis_collection.asset_path import get_asset_path
 
@@ -197,8 +198,7 @@ class FrankaFR3WithRobotiq2F85(RobotDescriptionNode):
             resolution,
             pos=pos,
             quat=quat,
-            attach_entity_name=self.name,
-            attach_entity_link="g_base",
+            attach=AttachFromName(self.name, "g_base"),
             near=kwargs.pop("near", 0.01),
             **kwargs
         )

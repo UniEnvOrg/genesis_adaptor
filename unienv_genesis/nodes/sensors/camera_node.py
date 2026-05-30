@@ -1,6 +1,6 @@
 """Camera sensor node for Genesis."""
 
-from typing import Optional, Dict, Any, List, Tuple, Union, Literal
+from typing import Optional, Dict, Any, List, Tuple, Union, Literal, Sequence, TYPE_CHECKING
 import torch
 import numpy as np
 from dataclasses import dataclass
@@ -9,6 +9,15 @@ from genesis.engine.entities.rigid_entity import RigidEntity, RigidLink
 from genesis.options.options import Options
 from genesis.vis.camera import Camera
 from genesis.vis.batch_renderer import BatchRenderer
+
+try:
+    import gs_nyx.nyx_py_renderer as npr
+    import gs_nyx.nyx_py_sdk as nps
+    from gs_nyx_plugin.nyx_camera_options import NyxCameraOptions
+    from gs_nyx_plugin.nyx_camera_sensor import NyxCameraSensor
+    NYX_AVAILABLE = True
+except Exception:
+    NYX_AVAILABLE = False
 
 from xbarray.transformations.rotation_conversions import (
     quaternion_to_matrix,
@@ -34,6 +43,7 @@ from unienv_interface.backends.numpy import (
 )
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
+from unienv_genesis.options.attach_option import AttachmentProvider
 
 from .base import SensorNode, ContextType, ObsType
 
@@ -41,9 +51,17 @@ __all__ = [
     "CameraSensorNodeOptions",
     "CameraSensorNode",
 ]
+CameraSensor = Union[Camera, BatchRenderer]  # type: ignore[misc]
 
-CameraSensor = Union[Camera, BatchRenderer]
-class CameraSensorNodeOptions(Options):
+@dataclass(frozen=True)
+class CameraSensorNodeOptions:
+    # ── Backend selection ──────────────────────────────────────────────
+    backend : Literal["genesis", "nyx"] = "genesis"
+    """Rendering backend to use. ``"genesis"`` uses the scene's configured renderer
+    (Rasterizer, RayTracer, or BatchRenderer) via ``scene.add_camera()``.
+    ``"nyx"`` uses the Nyx path tracer plugin via ``scene.add_sensor()``.
+    """
+    
     model : Literal['pinhole', 'thinlens', 'fisheye'] = "pinhole"
     """Specifies the camera model. Options are 'pinhole', 'thinlens', or 'fisheye'."""
     res : Tuple[int, int] = (320, 320)
@@ -67,9 +85,9 @@ class CameraSensorNodeOptions(Options):
     GUI : bool = False
     """Whether to display the camera's rendered image in a separate GUI window."""
     spp : int = 256
-    """Samples per pixel. Only available when using RayTracer renderer. Defaults to 256."""
+    """Samples per pixel. Only available when using RayTracer / NYX renderer. Defaults to 256."""
     denoise : Optional[bool] = None
-    """Whether to denoise the camera's rendered image. Only available when using the RayTracer renderer."""
+    """Whether to denoise the camera's rendered image. Only available when using the RayTracer / NYX renderer. Defaults to `None` which means true for ray tracers and false for rasterizers."""
     near : float = 0.1
     """Distance from camera center to near plane in meters."""
     far : float = 20.0
@@ -83,10 +101,35 @@ class CameraSensorNodeOptions(Options):
     """
     debug : bool = False
     """Whether to use the debug camera for monitoring/debugging without interfering with robot perception."""
-    attach_entity_name : Optional[str] = None
-    """Name of the entity to attach the camera to. If None, the camera will not be attached to any entity."""
-    attach_entity_link : Optional[str] = None
-    """Name of the link to attach the camera to. If None, the camera will be attached to the entity's root. This option is only valid if 'attach_entity_name' is also specified."""
+    attach : Optional[AttachmentProvider] = None
+    """Provider that resolves the entity/link to attach the camera to.
+    If ``None``, the camera will not be attached to any entity.
+    Use ``AttachFromName(entity_name, link_name)`` for name-based attachment,
+    or implement a custom ``AttachmentProvider``.
+    """
+
+    # ── NYX-specific options (ignored when backend != "nyx") ──────────
+    lights : Optional[Sequence[Dict[str, Any]]] = None
+    """Light definitions forwarded to ``NyxCameraOptions.lights``.
+    Each entry is a dict describing a light (e.g. ``{"type": "directional", "dir": (-0.4, -0.4, -0.8), "color": (1,1,1), "intensity": 5.0, "shadow": True}``).
+    Only used when ``backend="nyx"``.
+    """
+    env_maps : Optional[List[Any]] = None
+    """``EnvironmentMapAsset`` instances for HDRI lighting, forwarded to
+    ``NyxCameraOptions.env_maps``. Only used when ``backend="nyx"``.
+    """
+    render_mode : Optional[Any] = None
+    """``npr.ERenderMode`` value (e.g. ``npr.ERenderMode.FastPathTracer``).
+    If ``None``, uses ``NyxCameraOptions`` default. Only used when ``backend="nyx"``.
+    """
+    anti_aliasing : Optional[Any] = None
+    """``nps.EAntiAliasing`` value. Forwarded to ``NyxCameraOptions.anti_aliasing``.
+    Only used when ``backend="nyx"``.
+    """
+    debug_view : Optional[Any] = None
+    """``npr.EDebugView`` value. Forwarded to ``NyxCameraOptions.debug_view``.
+    Only used when ``backend="nyx"``.
+    """
 
     @staticmethod
     def quat_from_lookat(
@@ -188,11 +231,22 @@ class CameraSensorNode(SensorNode[
         )
         self.world : GenesisWorld = world
         
-        self.sensor: Optional[CameraSensor] = None
+        self.sensor: CameraSensor | "NyxCameraSensor" | None = None
+        self._genesis_sensor: CameraSensor | None = None  # Secondary genesis camera for depth/seg/normal when using NYX
         self.option = option
         assert (render_rgb or render_depth or render_seg or render_normal or render_position), (
             "At least one of render_rgb, render_depth, render_seg, render_normal, or render_position must be True"
         )
+        if option.backend == "nyx":
+            if not NYX_AVAILABLE:
+                raise ImportError(
+                    "NYX backend requires gs-nyx-plugin to be installed. "
+                    "Install it according to https://genesis-world.readthedocs.io/en/latest/user_guide/getting_started/nyx_renderer.html"
+                )
+            if not render_rgb:
+                raise ValueError(
+                    "NYX backend requires render_rgb=True."
+                )
         self.render_rgb = render_rgb
         self.render_depth = render_depth
         self.render_seg = render_seg
@@ -201,6 +255,11 @@ class CameraSensorNode(SensorNode[
         # Position map is derived from depth. We may render depth internally
         # even when it is not explicitly exposed in observations.
         self._render_depth_internal = self.render_depth or self.render_position
+        
+        # Attachment state (resolved during _init_sensor)
+        self._attach_entity = None
+        self._attach_link = None
+        self._offset_T = None  # 4x4 camera-to-link transform in OpenGL convention
 
         # Expose render() when RGB is available.
         self.render_mode = "rgb_array" if render_rgb else None
@@ -210,19 +269,22 @@ class CameraSensorNode(SensorNode[
         
         # Build observation space
         self.observation_space = self._get_observation_space()
-    
-    def _init_sensor(self) -> CameraSensor:
-        """Initialize the Genesis camera sensor."""
 
-        attach_entity = None
-        attach_link = None
-        if self.option.attach_entity_name is not None:
-            attach_entity = self.world.scene.get_entity(self.option.attach_entity_name)
-            assert isinstance(attach_entity, RigidEntity), f"Attach entity must be a RigidEntity: {self.option.attach_entity_name}"
-            if self.option.attach_entity_link is not None:
-                attach_link : RigidLink = attach_entity.get_link(self.option.attach_entity_link)
-            else:
-                attach_link : RigidLink = attach_entity.links[0]
+    def _init_sensor(self) -> None:
+        """Initialize the camera sensor according to the specified backend."""
+        if self.option.backend == "nyx":
+            self.sensor = self._init_sensor_nyx()
+            # If depth/seg/normal/position is requested, also create a genesis camera
+            if self._render_depth_internal or self.render_seg or self.render_normal:
+                self._genesis_sensor = self._init_sensor_genesis()
+        else:
+            self.sensor = self._init_sensor_genesis()
+
+    def _init_sensor_genesis(self) -> CameraSensor:
+        """Initialize via Genesis ``scene.add_camera()``."""
+
+        if self.option.attach is not None:
+            self._attach_entity, self._attach_link = self.option.attach.get_attachment(self.world)
         
         camera = self.world.scene.add_camera(
             model=self.option.model,
@@ -241,15 +303,91 @@ class CameraSensorNode(SensorNode[
             env_idx=self.option.env_idx,
             debug=self.option.debug
         )
-        if attach_link is not None:
-            relative_T = np.eye(4)
+        if self._attach_entity is not None:
+            attach_link = self._attach_link if self._attach_link is not None else self._attach_entity.base_link
+            relative_T = np.eye(4, dtype=np.float32)
             relative_T[:3, :3] = quaternion_to_matrix(
                 NumpyComputeBackend,
                 np.array(self.option.quat, dtype=np.float32),
             )
             relative_T[:3, 3] = np.array(self.option.pos, dtype=np.float32)
+            self._offset_T = relative_T.copy()
             camera.attach(attach_link, relative_T)
+        else:
+            # Static camera: offset_T is the camera's own pose in world frame
+            self._offset_T = np.eye(4, dtype=np.float32)
+            self._offset_T[:3, :3] = quaternion_to_matrix(
+                NumpyComputeBackend,
+                np.array(self.option.quat, dtype=np.float32),
+            )
+            self._offset_T[:3, 3] = np.array(self.option.pos, dtype=np.float32)
         
+        return camera
+
+    def _init_sensor_nyx(self) -> CameraSensor:
+        """Initialize via NYX ``scene.add_sensor(NyxCameraOptions(...))``."""
+
+        # Resolve attachment to entity_idx / link_idx_local / offset_T
+        entity_idx = None
+        link_idx_local = None
+        offset_T = None
+        if self.option.attach is not None:
+            self._attach_entity, self._attach_link = self.option.attach.get_attachment(self.world)
+            entity_idx = self._attach_entity.idx
+            if self._attach_link is not None:
+                link_idx_local = self._attach_link.idx_local
+            # Build the 4x4 offset transform from quat + pos
+            offset_T = np.eye(4, dtype=np.float64)
+            offset_T[:3, :3] = quaternion_to_matrix(
+                NumpyComputeBackend,
+                np.array(self.option.quat, dtype=np.float32),
+            ).astype(np.float64)
+            offset_T[:3, 3] = np.array(self.option.pos, dtype=np.float64)
+            self._offset_T = offset_T.astype(np.float32)
+        else:
+            # Static camera: offset_T is the camera's own pose in world frame
+            self._offset_T = np.eye(4, dtype=np.float32)
+            self._offset_T[:3, :3] = quaternion_to_matrix(
+                NumpyComputeBackend,
+                np.array(self.option.quat, dtype=np.float32),
+            )
+            self._offset_T[:3, 3] = np.array(self.option.pos, dtype=np.float32)
+
+        # Build NyxCameraOptions kwargs
+        nyx_kwargs = dict(
+            res=self.option.res,
+            pos=self.option.pos,
+            lookat=self.option.get_lookat(),
+            up=self.option.get_up(),
+            fov=self.option.fov,
+            near=self.option.near,
+            far=self.option.far,
+            spp=self.option.spp,
+        )
+        
+        # Only pass render_mode if explicitly set
+        if self.option.render_mode is not None:
+            nyx_kwargs["render_mode"] = self.option.render_mode
+
+        # Optional NYX fields — only pass when explicitly set
+        if self.option.denoise is not None:
+            nyx_kwargs["denoise"] = self.option.denoise
+        if entity_idx is not None:
+            nyx_kwargs["entity_idx"] = entity_idx
+        if link_idx_local is not None:
+            nyx_kwargs["link_idx_local"] = link_idx_local
+        if offset_T is not None:
+            nyx_kwargs["offset_T"] = offset_T
+        if self.option.lights is not None:
+            nyx_kwargs["lights"] = list(self.option.lights)
+        if self.option.env_maps is not None:
+            nyx_kwargs["env_maps"] = self.option.env_maps
+        if self.option.anti_aliasing is not None:
+            nyx_kwargs["anti_aliasing"] = self.option.anti_aliasing
+        if self.option.debug_view is not None:
+            nyx_kwargs["debug_view"] = self.option.debug_view
+
+        camera = self.world.scene.add_sensor(NyxCameraOptions(**nyx_kwargs))
         return camera
 
     def reload(
@@ -262,7 +400,7 @@ class CameraSensorNode(SensorNode[
     ) -> None:
         """Add camera to the scene."""
         if priority == 0:
-            self.sensor = self._init_sensor()
+            self._init_sensor()
 
     def reset(
         self,
@@ -280,6 +418,9 @@ class CameraSensorNode(SensorNode[
         # BatchRenderer exposes reset(); the plain Camera class does not.
         if hasattr(self.sensor, "reset"):
             self.sensor.reset(envs_idx=env_indices)
+        # Also reset the secondary genesis sensor if it exists
+        if self._genesis_sensor is not None and hasattr(self._genesis_sensor, "reset"):
+            self._genesis_sensor.reset(envs_idx=env_indices)
     
     def after_reset(
         self,
@@ -383,6 +524,14 @@ class CameraSensorNode(SensorNode[
             dtype=torch.float32,
             device=self.world.device,
         )
+        spaces["local_extrinsics_cv"] = BoxSpace(
+            PyTorchComputeBackend,
+            low=-float("inf"),
+            high=float("inf"),
+            shape=get_batch_aware_shape(B, (3, 4)),
+            dtype=torch.float32,
+            device=self.world.device,
+        )
 
         return DictSpace(
             PyTorchComputeBackend,
@@ -393,16 +542,51 @@ class CameraSensorNode(SensorNode[
     def _get_intrinsics(self) -> torch.Tensor:
         """Build intrinsic matrix in standard OpenCV convention.
 
-        Genesis stores ``cx``/``cy`` with a half-pixel offset (pixel centre at
-        ``u + 0.5``).  The returned matrix follows the OpenCV convention where
-        pixel centres are at integer coordinates.
+        For the Genesis backend, ``cx``/``cy`` are read from the sensor with a
+        half-pixel offset correction.  For the NYX backend, intrinsics are
+        computed analytically from ``fov`` and ``res``.
+        
+        If a secondary genesis sensor exists (NYX backend with depth/seg/normal),
+        prefer its intrinsics for consistency with the depth/seg/normal data.
 
         Returns ``(3, 3)`` for a single camera, ``(B, 3, 3)`` for batched.
         """
-        fx = float(self.sensor.f)
+        # Prefer genesis sensor if available (for consistency with depth/seg/normal)
+        if self._genesis_sensor is not None:
+            sensor = self._genesis_sensor
+        elif self.option.backend == "nyx":
+            return self._get_intrinsics_from_fov()
+        else:
+            sensor = self.sensor
+
+        fx = float(sensor.f)
         fy = fx  # Genesis uses a single focal length
-        cx = float(self.sensor.cx) - 0.5
-        cy = float(self.sensor.cy) - 0.5
+        cx = float(sensor.cx)
+        cy = float(sensor.cy)
+        K = torch.tensor(
+            [[fx, 0.0, cx],
+             [0.0, fy, cy],
+             [0.0, 0.0, 1.0]],
+            dtype=torch.float32,
+            device=self.world.device,
+        )
+        B = self.world.batch_size
+        if B is not None:
+            K = K.unsqueeze(0).expand(B, -1, -1)
+        return K
+
+    def _get_intrinsics_from_fov(self) -> torch.Tensor:
+        """Compute intrinsic matrix from ``fov`` and ``res`` (NYX backend).
+
+        Uses the standard pinhole relation ``f = (H/2) / tan(fov/2)`` and
+        places the principal point at the image centre (OpenCV convention).
+        """
+        W, H = self.option.res
+        fov_rad = np.deg2rad(self.option.fov)
+        fy = (H / 2.0) / np.tan(fov_rad / 2.0)
+        fx = fy
+        cx = W / 2.0
+        cy = H / 2.0
         K = torch.tensor(
             [[fx, 0.0, cx],
              [0.0, fy, cy],
@@ -420,12 +604,13 @@ class CameraSensorNode(SensorNode[
 
         Returns the ``[R | t]`` matrix such that ``cam = R @ world + t``.
         Shape is ``(3, 4)`` for a single camera, ``(B, 3, 4)`` for batched.
+
+        For the Genesis backend the transform is read from ``sensor.get_transform()``.
+        For the NYX backend, if the camera is attached to a link, the world extrinsics
+        are computed from the link's current world transform composed with the stored
+        ``_offset_T``.  If a secondary genesis sensor exists (NYX backend with
+        depth/seg/normal), prefer its extrinsics for consistency.
         """
-        camera_transform = torch.as_tensor(
-            self.sensor.get_transform(),
-            dtype=torch.float32,
-            device=self.world.device,
-        )
         T_OPENGL_TO_OPENCV = torch.tensor(
             [[1.0, 0.0, 0.0, 0.0],
              [0.0, -1.0, 0.0, 0.0],
@@ -434,9 +619,96 @@ class CameraSensorNode(SensorNode[
             dtype=torch.float32,
             device=self.world.device,
         )
+
+        # Prefer genesis sensor if available (for consistency with depth/seg/normal)
+        sensor = self._genesis_sensor if self._genesis_sensor is not None else self.sensor
+
+        if hasattr(sensor, "get_transform"):
+            camera_transform = torch.as_tensor(
+                sensor.get_transform(),
+                dtype=torch.float32,
+                device=self.world.device,
+            )
+        elif self.option.backend == "nyx" and self._attach_link is not None:
+            # NYX attached camera: compose link world transform with offset_T
+            camera_transform = self._get_nyx_attached_transform()
+        elif self.option.backend == "nyx":
+            # NYX static camera: use stored offset_T as world pose
+            camera_transform = torch.as_tensor(
+                self._offset_T, dtype=torch.float32, device=self.world.device,
+            )
+        else:
+            raise RuntimeError(
+                "Sensor does not expose get_transform(); cannot compute extrinsics."
+            )
+
         cam_to_world = camera_transform @ T_OPENGL_TO_OPENCV
         world_to_cam = torch.linalg.inv(cam_to_world)
         return world_to_cam[..., :3, :]
+
+    def _get_nyx_attached_transform(self) -> torch.Tensor:
+        """Compute the camera's world transform for an NYX attached camera.
+
+        Reads the link's current ``pos`` / ``quat``, builds the link-to-world
+        matrix, and composes it with the stored ``_offset_T``.
+        """
+        link_pos = self._attach_link.get_pos()   # (3,) or (B, 3) tensor
+        link_quat = self._attach_link.get_quat()  # (4,) or (B, 4) tensor (w, x, y, z)
+
+        device = self.world.device
+        link_pos = torch.as_tensor(link_pos, dtype=torch.float32, device=device)
+        link_quat = torch.as_tensor(link_quat, dtype=torch.float32, device=device)
+
+        offset_T = torch.as_tensor(
+            self._offset_T, dtype=torch.float32, device=device,
+        )
+
+        R_link = quaternion_to_matrix(PyTorchComputeBackend, link_quat).to(
+            dtype=torch.float32, device=device,
+        )
+        T_link = torch.eye(4, dtype=torch.float32, device=device)
+        if link_pos.ndim > 1:
+            T_link = T_link.unsqueeze(0).expand(link_pos.shape[0], -1, -1).clone()
+        T_link[..., :3, :3] = R_link
+        T_link[..., :3, 3] = link_pos
+        if link_pos.ndim == 1:
+            return T_link @ offset_T
+        else:
+            return T_link @ offset_T.unsqueeze(0)
+
+    def _get_local_extrinsics(self) -> torch.Tensor:
+        """Build ``(..., 3, 4)`` link-to-camera extrinsic matrix (OpenCV).
+
+        This is the fixed transform from the attached link's frame to the
+        camera frame, expressed as ``[R | t]`` such that
+        ``p_cam = R @ p_link + t``.
+
+        For a static camera (no attachment), the "link" frame is the world
+        frame, so this equals the world extrinsics.
+
+        Shape is ``(3, 4)`` for a single camera, ``(B, 3, 4)`` for batched.
+        """
+        T_OPENGL_TO_OPENCV = torch.tensor(
+            [[1.0, 0.0, 0.0, 0.0],
+             [0.0, -1.0, 0.0, 0.0],
+             [0.0, 0.0, -1.0, 0.0],
+             [0.0, 0.0, 0.0, 1.0]],
+            dtype=torch.float32,
+            device=self.world.device,
+        )
+
+        offset_T = torch.from_numpy(self._offset_T).to(device=self.world.device)
+
+        # offset_T is camera-to-link in OpenGL convention.
+        # Convert to OpenCV and invert to get link-to-camera.
+        cam_to_link_cv = offset_T @ T_OPENGL_TO_OPENCV
+        link_to_cam_cv = torch.linalg.inv(cam_to_link_cv)
+        result = link_to_cam_cv[:3, :]
+
+        B = self.world.batch_size
+        if B is not None:
+            result = result.unsqueeze(0).expand(B, -1, -1)
+        return result
 
     def _depth_to_position_map(self, depth: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
         """Convert per-pixel depth to per-pixel 3D world positions.
@@ -472,8 +744,17 @@ class CameraSensorNode(SensorNode[
 
     def update_observation(self) -> None:
         """Render and cache camera observations."""
+        device = self.world.device
+
+        if self.option.backend == "nyx":
+            self._update_observation_nyx(device)
+        else:
+            self._update_observation_genesis(device)
+
+    def _update_observation_genesis(self, device) -> None:
+        """Render via Genesis Camera / BatchRenderer."""
         # Move camera to attached link's current position before rendering
-        if self.option.attach_entity_name is not None:
+        if self.option.attach is not None:
             self.sensor.move_to_attach()
         
         rgb, depth, segmentation, normal = self.sensor.render(
@@ -481,9 +762,8 @@ class CameraSensorNode(SensorNode[
             depth=self._render_depth_internal,
             segmentation=self.render_seg,
             normal=self.render_normal,
+            antialiasing=True
         )
-
-        device = self.world.device
 
         def _to_tensor(x, **kwargs):
             if isinstance(x, torch.Tensor):
@@ -508,6 +788,62 @@ class CameraSensorNode(SensorNode[
 
         obs["intrinsics_cv"] = self._get_intrinsics()
         obs["extrinsics_cv"] = self._get_extrinsics()
+        obs["local_extrinsics_cv"] = self._get_local_extrinsics()
+
+        self._last_observation = obs
+
+    def _update_observation_nyx(self, device) -> None:
+        """Render via NYX path tracer (``sensor.read().rgb``).
+        
+        If depth/seg/normal/position is also requested, those come from the
+        secondary genesis camera (``self._genesis_sensor``).
+        """
+        # NYX handles move_to_attach() internally during read().
+        assert isinstance(self.sensor, NyxCameraSensor), "Expected sensor to be a NyxCameraSensor"
+        data = self.sensor.read()
+        
+        rgb_tensor = torch.as_tensor(data.rgb, dtype=torch.uint8, device=device)
+
+        # NYX always returns (B, H, W, 3); squeeze for unbatched worlds.
+        if not self.world.is_batched:
+            rgb_tensor = rgb_tensor.squeeze(0)
+
+        obs: Dict[str, PyTorchArrayType] = {}
+        obs["rgb"] = rgb_tensor
+
+        # If we have a secondary genesis sensor, get depth/seg/normal from it
+        if self._genesis_sensor is not None:
+            # Move genesis camera to attached link's current position
+            if self.option.attach is not None:
+                self._genesis_sensor.move_to_attach()
+            
+            _, depth, segmentation, normal = self._genesis_sensor.render(
+                rgb=False,
+                depth=self._render_depth_internal,
+                segmentation=self.render_seg,
+                normal=self.render_normal,
+            )
+
+            def _to_tensor(x, **kwargs):
+                if isinstance(x, torch.Tensor):
+                    return x.to(device=device, **kwargs)
+                return torch.from_numpy(np.ascontiguousarray(x)).to(device=device, **kwargs)
+
+            if self.render_depth:
+                obs["depth"] = _to_tensor(depth, dtype=torch.float32)
+
+            if self.render_position:
+                obs["position"] = self._depth_to_position_map(depth)
+
+            if self.render_seg:
+                obs["seg"] = _to_tensor(segmentation)
+
+            if self.render_normal:
+                obs["normal"] = _to_tensor(normal, dtype=torch.float32)
+
+        obs["intrinsics_cv"] = self._get_intrinsics()
+        obs["extrinsics_cv"] = self._get_extrinsics()
+        obs["local_extrinsics_cv"] = self._get_local_extrinsics()
 
         self._last_observation = obs
     

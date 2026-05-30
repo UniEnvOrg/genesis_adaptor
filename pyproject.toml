@@ -6,7 +6,7 @@ license = "MIT"
 requires-python = ">= 3.10"
 dependencies = [
     "unienv",
-    "genesis-world",
+    "genesis-world>=1.0.0",
     "torch",
 ]
 

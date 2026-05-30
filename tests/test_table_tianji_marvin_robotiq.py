@@ -5,7 +5,9 @@ import os
 import torch
 import genesis as gs
 from genesis.constants import backend as gs_backend
-gs.init(backend=gs_backend.cpu)
+
+if not gs._initialized:
+    gs.init(backend=gs_backend.cpu)
 
 from unienv_genesis import GenesisWorld
 from unienv_genesis.nodes.sensors.camera_node import CameraSensorNode, CameraSensorNodeOptions
