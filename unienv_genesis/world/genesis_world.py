@@ -70,7 +70,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
                 pos=(0.0, 0.0, 3.0),
                 dir=(0.0, 0.0, -1.0),
                 color=(1.0, 1.0, 1.0),
-                intensity=1.0,
+                intensity=2.0,
                 directional=True,
                 castshadow=False,
             )

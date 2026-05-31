@@ -3,7 +3,7 @@
 from typing import Optional, Dict, Any, List, Tuple, Union, Literal, Sequence, TYPE_CHECKING
 import torch
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import genesis as gs
 from genesis.engine.entities.rigid_entity import RigidEntity, RigidLink
 from genesis.options.options import Options
@@ -109,7 +109,14 @@ class CameraSensorNodeOptions:
     """
 
     # ── NYX-specific options (ignored when backend != "nyx") ──────────
-    lights : Optional[Sequence[Dict[str, Any]]] = None
+    lights : Optional[Sequence[Dict[str, Any]]] = field(default_factory=lambda: [
+        {
+            "type":      "directional",
+            "dir":       (0.0, 0.0, -1.0),
+            "color":     (1.0, 1.0, 1.0),
+            "intensity": 2.0,
+        }
+    ])
     """Light definitions forwarded to ``NyxCameraOptions.lights``.
     Each entry is a dict describing a light (e.g. ``{"type": "directional", "dir": (-0.4, -0.4, -0.8), "color": (1,1,1), "intensity": 5.0, "shadow": True}``).
     Only used when ``backend="nyx"``.
