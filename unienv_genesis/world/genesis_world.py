@@ -1,7 +1,8 @@
 """Genesis World backend for UniEnv."""
 
-from typing import Optional, Any, Dict, Union
+from typing import Optional, Any, Dict, Union, List
 import time
+import logging
 import genesis as gs
 import torch
 from unienv_interface.backends.pytorch import (
@@ -12,6 +13,9 @@ from unienv_interface.backends.pytorch import (
     PyTorchRNGType,
 )
 from unienv_interface.world import World
+from unienv_genesis.options.light_option import GenesisWorldLightOption, GenesisWorldEnvMapOption
+
+logger = logging.getLogger(__name__)
 
 class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]):
     """World backend using Genesis physics simulator with PyTorch backend.
@@ -25,10 +29,6 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     not have a batch dimension. The adaptor code handles both batched and 
     unbatched cases through utility functions in batch_dim_utils.
     """
-    GS_INIT_KWARGS_DEFAULT = {
-        "backend": gs.gpu,
-        "performance_mode": True
-    }
     
     backend = PyTorchComputeBackend
 
@@ -37,7 +37,16 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         batch_size: Optional[int] = None,
         scene_init_kwargs : Dict[str, Any] = {},
         scene_build_kwargs : Dict[str, Any] = {},
-        add_default_light : bool = True,
+        lights : Dict[str, GenesisWorldLightOption] = {
+            "default": GenesisWorldLightOption(
+                light_type="directional",
+                direction=(0.0, 0.0, -1.0),
+                color=(1.0, 1.0, 1.0),
+                intensity=2.0,
+                cast_shadow=True,
+            )
+        },
+        env_map : Optional[GenesisWorldEnvMapOption] = None,
     ):
         """Initialize Genesis World.
         
@@ -46,13 +55,11 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             scene_init_kwargs: Kwargs passed to gs.Scene constructor.
             scene_build_kwargs: Kwargs passed to scene.build() method.
         """
-        if not gs._initialized:
-            gs.init(**self.GS_INIT_KWARGS_DEFAULT)
-        
         self._batch_size = batch_size
         self.scene_init_kwargs = scene_init_kwargs
         self.scene_build_kwargs = scene_build_kwargs
-        self.add_default_light = add_default_light
+        self.lights = lights
+        self.env_map = env_map
         self.scene = self.create_scene()
     
     def create_scene(
@@ -62,24 +69,55 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         if disable_viewer and "show_viewer" in self.scene_init_kwargs:
             self.scene_init_kwargs["show_viewer"] = False
         
+        if isinstance(self.scene_init_kwargs.get("renderer", None), gs.options.renderers.RayTracer):
+            renderer_option : gs.options.renderers.RayTracer = self.scene_init_kwargs["renderer"]
+            new_lights = []
+            for light in self.lights.values():
+                if light.light_type != "point":
+                    logger.warning(f"Light {light} of type {light.light_type} is not supported by RayTracer and will be ignored.")
+                    continue
+                new_lights.append(gs.options.renderers.SphereLight(
+                    pos=light.pos,
+                    color=light.color,
+                    intensity=light.intensity,
+                    radius=light.range,
+                ))
+            renderer_option.lights = new_lights
+            if self.env_map is not None and self.env_map.png_path is not None:
+                renderer_option.env_surface = gs.surfaces.Emission(
+                    emissive_texture=gs.textures.ImageTexture(
+                        image_path=self.env_map.png_path,
+                    ),
+                ),
+                renderer_option.env_pos=self.env_map.png_pos
+                renderer_option.env_euler=self.env_map.png_euler
+                renderer_option.env_radius=self.env_map.png_radius
+
         scene = gs.Scene(
             **self.scene_init_kwargs
         )
-        if self.add_default_light and isinstance(self.scene_init_kwargs.get("renderer"), gs.options.renderers.BatchRenderer):
-            scene.add_light(
-                pos=(0.0, 0.0, 3.0),
-                dir=(0.0, 0.0, -1.0),
-                color=(1.0, 1.0, 1.0),
-                intensity=2.0,
-                directional=True,
-                castshadow=False,
-            )
 
         return scene
 
     def build_scene(self, scene : gs.Scene, n_envs : Optional[int] = None) -> None:
         """Build the Genesis scene."""
         if not scene.is_built:
+            # Handle lights
+            if isinstance(self.scene.renderer_options, gs.options.renderers.BatchRenderer):
+                for light in self.lights.values():
+                    if not light.light_type in ["directional", "spot"]:
+                        logger.warning(f"Light {light} of type {light.light_type} is not supported by BatchRenderer and will be ignored.")
+                        continue
+                    scene.add_light(
+                        pos=light.pos,
+                        dir=light.direction,
+                        color=light.color,
+                        intensity=light.intensity,
+                        directional=(light.light_type == "directional"),
+                        castshadow=light.cast_shadow,
+                        cutoff=light.spot_outer_cone_angle if light.light_type == "spot" else 90,
+                        attenuation=light.attenuation,
+                    )
             scene.build(
                 n_envs=0 if n_envs is None else n_envs,
                 **self.scene_build_kwargs
@@ -178,9 +216,8 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             gs.set_random_seed(seed)
         
         # Clear scene if it was previously built
-        if self.scene.is_built:
+        if self.scene is not None:
             self.scene.destroy()
-        
         self.scene = self.create_scene(disable_viewer=disable_viewer)
     
     def after_reload(
@@ -208,3 +245,4 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         """Close the Genesis simulation and cleanup."""
         # Genesis handles cleanup automatically
         self.scene.destroy()
+        self.scene = None

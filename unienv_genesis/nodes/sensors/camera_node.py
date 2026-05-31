@@ -108,23 +108,7 @@ class CameraSensorNodeOptions:
     or implement a custom ``AttachmentProvider``.
     """
 
-    # ── NYX-specific options (ignored when backend != "nyx") ──────────
-    lights : Optional[Sequence[Dict[str, Any]]] = field(default_factory=lambda: [
-        {
-            "type":      "directional",
-            "dir":       (0.0, 0.0, -1.0),
-            "color":     (1.0, 1.0, 1.0),
-            "intensity": 2.0,
-        }
-    ])
-    """Light definitions forwarded to ``NyxCameraOptions.lights``.
-    Each entry is a dict describing a light (e.g. ``{"type": "directional", "dir": (-0.4, -0.4, -0.8), "color": (1,1,1), "intensity": 5.0, "shadow": True}``).
-    Only used when ``backend="nyx"``.
-    """
-    env_maps : Optional[List[Any]] = None
-    """``EnvironmentMapAsset`` instances for HDRI lighting, forwarded to
-    ``NyxCameraOptions.env_maps``. Only used when ``backend="nyx"``.
-    """
+    # ========== NYX-specific options ==========
     render_mode : Optional[Any] = None
     """``npr.ERenderMode`` value (e.g. ``npr.ERenderMode.FastPathTracer``).
     If ``None``, uses ``NyxCameraOptions`` default. Only used when ``backend="nyx"``.
@@ -360,6 +344,14 @@ class CameraSensorNode(SensorNode[
             )
             self._offset_T[:3, 3] = np.array(self.option.pos, dtype=np.float32)
 
+        lights = []
+        env_map = None
+        for light in self.world.lights.values():
+            lights.append(light.to_light_dict())
+        
+        if self.world.env_map is not None:
+            env_map = self.world.env_map.to_hyx_asset()
+
         # Build NyxCameraOptions kwargs
         nyx_kwargs = dict(
             res=self.option.res,
@@ -370,6 +362,8 @@ class CameraSensorNode(SensorNode[
             near=self.option.near,
             far=self.option.far,
             spp=self.option.spp,
+            lights=lights,
+            env_maps=(env_map,) if env_map is not None else (),
         )
         
         # Only pass render_mode if explicitly set
@@ -385,10 +379,6 @@ class CameraSensorNode(SensorNode[
             nyx_kwargs["link_idx_local"] = link_idx_local
         if offset_T is not None:
             nyx_kwargs["offset_T"] = offset_T
-        if self.option.lights is not None:
-            nyx_kwargs["lights"] = list(self.option.lights)
-        if self.option.env_maps is not None:
-            nyx_kwargs["env_maps"] = self.option.env_maps
         if self.option.anti_aliasing is not None:
             nyx_kwargs["anti_aliasing"] = self.option.anti_aliasing
         if self.option.debug_view is not None:
