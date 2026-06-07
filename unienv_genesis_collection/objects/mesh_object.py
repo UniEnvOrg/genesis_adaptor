@@ -9,7 +9,7 @@ and cached for subsequent calls.
 from __future__ import annotations
 
 import os
-from typing import Optional, Tuple, List, Union, TYPE_CHECKING
+from typing import Optional, Tuple, List, Union, Sequence, TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -39,7 +39,12 @@ class MeshObject(ManipulatableObject):
         scale: Uniform scalar **or** per-axis ``(sx, sy, sz)`` scale factor.
         decimate: Whether Genesis should decimate the mesh for physics.
         color: RGBA colour tuple.
-        **kwargs: Forwarded to :class:`ManipulatableObject`.
+        name: Technical identifier forwarded to :class:`ManipulatableObject`.
+        fixed: Whether the object is immovable; forwarded to
+            :class:`ManipulatableObject`.
+        language_annotations: Optional sequence of English-language
+            descriptions.  Unlike the primitive subclasses, meshes have no
+            default semantic annotation — ``None`` yields an empty tuple.
     """
 
     def __init__(
@@ -48,9 +53,15 @@ class MeshObject(ManipulatableObject):
         scale: Union[float, Tuple[float, float, float]] = 1.0,
         decimate: bool = True,
         color: Optional[Tuple[float, float, float, float]] = None,
-        **kwargs,
+        name: str = "object",
+        fixed: bool = False,
+        language_annotations: Optional[Sequence[str]] = None,
     ):
-        super().__init__(**kwargs)
+        super().__init__(
+            name=name,
+            fixed=fixed,
+            language_annotations=language_annotations,
+        )
         self.mesh_file = str(mesh_file)
         self.scale = scale if isinstance(scale, tuple) else (scale, scale, scale)
         self.decimate = decimate
@@ -107,7 +118,7 @@ class MeshObject(ManipulatableObject):
 
         key = (gripper_width, gripper_depth, n_samples)
         if key in self._local_grasp_cache:
-            return self._local_grasp_cache[key]
+            return self._local_grasp_cache[key].clone()
 
         mesh = self._load_trimesh()
 
@@ -151,7 +162,7 @@ class MeshObject(ManipulatableObject):
                 entity, gripper_width, gripper_depth=gripper_depth,
             )
             self._local_grasp_cache[key] = result
-            return result
+            return result.clone()
 
         result = GraspCandidates(
             position=torch.from_numpy(np.stack(local_positions).astype(np.float32)),
@@ -159,7 +170,7 @@ class MeshObject(ManipulatableObject):
             opening_direction=torch.from_numpy(np.stack(local_openings).astype(np.float32)),
         )
         self._local_grasp_cache[key] = result
-        return result
+        return result.clone()
 
     # ------------------------------------------------------------------
     # Scene loading

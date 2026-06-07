@@ -23,6 +23,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Generic, Optional, List, Tuple, TypeVar, Union, Sequence, TYPE_CHECKING
+import math
 
 import torch
 from unienv_interface.space import BoxSpace
@@ -125,12 +126,43 @@ class GraspCandidates:
         return self.position.shape[0]
 
     @classmethod
-    def empty(cls) -> GraspCandidates:
-        """Return an empty ``GraspCandidates`` with zero candidates."""
+    def empty(cls, device=None, dtype=torch.float32) -> GraspCandidates:
+        """Return an empty ``GraspCandidates`` with zero candidates.
+
+        Args:
+            device: Target device (e.g. ``'cuda'``).  ``None`` means CPU.
+            dtype: Tensor dtype.  Defaults to ``torch.float32``.
+        """
         return cls(
-            position=torch.empty(0, 3),
-            approach_direction=torch.empty(0, 3),
-            opening_direction=torch.empty(0, 3),
+            position=torch.empty(0, 3, device=device, dtype=dtype),
+            approach_direction=torch.empty(0, 3, device=device, dtype=dtype),
+            opening_direction=torch.empty(0, 3, device=device, dtype=dtype),
+        )
+
+    def clone(self) -> GraspCandidates:
+        """Return a deep copy with cloned tensors.
+
+        This protects the internal cache from accidental in-place mutation
+        by callers.
+        """
+        return GraspCandidates(
+            position=self.position.clone(),
+            approach_direction=self.approach_direction.clone(),
+            opening_direction=self.opening_direction.clone(),
+        )
+
+    def to(self, device=None, dtype=None) -> GraspCandidates:
+        """Return a new :class:`GraspCandidates` with tensors moved to the
+        specified device and/or dtype (non-mutating, like :meth:`torch.Tensor.to`).
+
+        Args:
+            device: Target device.
+            dtype: Target dtype.
+        """
+        return GraspCandidates(
+            position=self.position.to(device=device, dtype=dtype),
+            approach_direction=self.approach_direction.to(device=device, dtype=dtype),
+            opening_direction=self.opening_direction.to(device=device, dtype=dtype),
         )
 
 
@@ -165,6 +197,9 @@ def _local_to_world_candidates(
     """
     from xbarray.transformations.rotation_conversions.pytorch import quaternion_apply
 
+    # Ensure candidates tensors are on the same device as the world-frame pose.
+    candidates = candidates.to(device=pos.device)
+
     if pos.ndim > 1:
         # Batched: pos (n_envs, 3), quat (n_envs, 4)
         # candidates fields are (N, 3)
@@ -195,6 +230,11 @@ class ManipulatableObject(ABC, Generic[EntityT]):
     This is NOT a ``WorldNode``.  It is a standalone descriptor that can be
     used offline for planning or passed to a manager node for scene loading.
 
+    Each object carries an optional tuple of English-language
+    *annotations* — human-readable descriptions such as ``"a red mug"``.
+    These are distinct from :attr:`name`, which remains a technical
+    identifier.  Access them via the :attr:`language_annotations` attribute.
+
     Subclasses must implement:
         - :meth:`load_into_scene` — add the object to a Genesis scene.
         - :meth:`get_local_bounding_box` — return the AABB in the local frame.
@@ -207,14 +247,26 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         self,
         name: str = "object",
         fixed: bool = False,
+        language_annotations: Optional[Sequence[str]] = None,
     ):
         """
         Args:
             name: Default entity name used when loading into the scene.
+                This is a **technical identifier** (e.g. ``"box_0"``) and is
+                distinct from the human-readable :attr:`language_annotations`.
             fixed: If ``True`` the object is immovable (no dynamics).
+            language_annotations: Optional sequence of English-language
+                descriptions for the object (e.g.
+                ``["a red mug", "a ceramic cup"]``).  Stored on
+                :attr:`language_annotations` as an immutable tuple.
+                Pass ``None`` or an empty sequence to indicate no
+                annotations.
         """
         self.name = name
         self.fixed = fixed
+        self.language_annotations: Tuple[str, ...] = (
+            tuple(language_annotations) if language_annotations is not None else ()
+        )
 
     # ------------------------------------------------------------------
     # Abstract methods
@@ -284,7 +336,8 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         pos = entity.get_pos().detach().float()
         quat = entity.get_quat().detach().float()
 
-        lo, hi = local_bbox.low, local_bbox.high
+        lo = local_bbox.low.to(pos.device)
+        hi = local_bbox.high.to(pos.device)
         # All 8 corners of the local AABB: (8, 3)
         corners = torch.stack([
             torch.stack([lo[0], lo[1], lo[2]]),
@@ -325,11 +378,19 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         return float(torch.linalg.norm(size_xy) / 2.0)
     
     def get_footprint(self, entity: EntityT) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Return the 2D footprint on the XY plane as a tuple of (center, radius) in the world frame.
+        """Return the 2D footprint on the XY plane as a (centre, radius) pair.
+
+        The **centre** is derived from the world-frame bounding box, while
+        the **radius** is an orientation-invariant circumscribed-circle
+        estimate computed from the local AABB (half of the XY diagonal).
+        This is exact for upright (yaw-only) objects and conservative for
+        arbitrary rotations.
+
         Returns:
-            center: The center of the footprint in the local frame, shape ([B], 2).
-            radius: The radius of the footprint in meters, shape ([B],).
+            centre: World-frame footprint centre, shape ``([B], 2)``.
+            radius: Circumscribed footprint radius in metres, shape
+                ``([B],)``.  This is a local-frame value, broadcast to
+                match the batch dimension when the entity is batched.
         """
         center = bbox_center(self.get_bounding_box(entity))[..., :2]
         radius = self.get_footprint_radius(entity)
@@ -372,15 +433,18 @@ class ManipulatableObject(ABC, Generic[EntityT]):
                 listed environments are overwritten; the rest keep their
                 current state.
         """
+        device = positions.device
+        dtype = positions.dtype if positions.dtype.is_floating_point else torch.float32
+
         if positions.ndim == 1:
             # Unbatched — single environment.
-            quat = self._standing_quaternion(1, random_quaternion, rng).squeeze(0)
+            quat = self._standing_quaternion(1, random_quaternion, rng, device=device, dtype=dtype).squeeze(0)
             entity.set_pos(positions)
             entity.set_quat(quat)
             return
 
         n = positions.shape[0]
-        quat = self._standing_quaternion(n, random_quaternion, rng)
+        quat = self._standing_quaternion(n, random_quaternion, rng, device=device, dtype=dtype)
 
         if envs_idx is None:
             entity.set_pos(positions)
@@ -398,6 +462,8 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         n: int,
         randomise: bool,
         rng: Optional[torch.Generator],
+        device=None,
+        dtype: torch.dtype = torch.float32,
     ) -> torch.Tensor:
         """Return *n* orientation quaternions ``(n, 4)`` for upright placement.
 
@@ -409,16 +475,17 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             n: Number of quaternions to generate.
             randomise: Whether to randomise.
             rng: Optional :class:`torch.Generator`.
+            device: Target device for the output tensor.
+            dtype: Target dtype for the output tensor.
         """
         if randomise:
-            import math
-            yaw = torch.rand(n, generator=rng) * (2 * math.pi)
+            yaw = torch.rand(n, generator=rng, device=device, dtype=dtype) * (2 * math.pi)
             half = yaw / 2.0
-            quat = torch.zeros(n, 4)
+            quat = torch.zeros(n, 4, device=device, dtype=dtype)
             quat[:, 0] = torch.cos(half)
             quat[:, 3] = torch.sin(half)
             return quat
-        quat = torch.zeros(n, 4)
+        quat = torch.zeros(n, 4, device=device, dtype=dtype)
         quat[:, 0] = 1.0
         return quat
 
@@ -480,7 +547,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
 
         key = (gripper_width, gripper_depth)
         if key in self._local_grasp_cache:
-            return self._local_grasp_cache[key]
+            return self._local_grasp_cache[key].clone()
 
         bbox = self.get_local_bounding_box(entity)
         center = bbox_center(bbox)
@@ -525,7 +592,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             )
 
         self._local_grasp_cache[key] = result
-        return result
+        return result.clone()
 
     def list_box_gripper_grasping_candidates(
         self,
@@ -539,6 +606,10 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         for the local-frame candidates (cached), then transforms them to
         **world coordinates** using the entity's current pose.
 
+        The transformation is always applied, even for empty candidate
+        sets, so that the returned batch dimensions and device match the
+        entity's pose (important for batched environments).
+
         Args:
             entity: The loaded Genesis entity (``entity.get_pos()`` and
                 ``entity.get_quat()`` are called to obtain the current
@@ -548,14 +619,11 @@ class ManipulatableObject(ABC, Generic[EntityT]):
 
         Returns:
             :class:`GraspCandidates` in world coordinates,
-            shape ``([B], N, ...)`` where *N* is the number of candidates and *B* is the batch size (if the world is batched).
+                shape ``([B], N, ...)`` where *N* is the number of candidates and *B* is the batch size (if the world is batched).
         """
         local = self.list_box_gripper_grasping_candidates_local(
             entity, gripper_width, gripper_depth=gripper_depth,
         )
-        if len(local) == 0:
-            return local
-
         pos = entity.get_pos().detach().float()
         quat = entity.get_quat().detach().float()
         return _local_to_world_candidates(local, pos, quat)

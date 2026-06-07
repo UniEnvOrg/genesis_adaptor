@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 import math
 import torch
 
@@ -223,3 +223,30 @@ class ObjectRelocateTask(WorldNode):
 
     def get_termination(self):
         return self._terminated
+
+    def get_info(self) -> Dict[str, Any]:
+        """Return auxiliary information about the current episode.
+
+        Exposes the target object's technical name and its language
+        annotations (if any) so that downstream consumers (logging,
+        language-conditioned policies, etc.) can refer to the object in
+        natural language.
+
+        Returns:
+            A dictionary with keys:
+
+            - ``"target_object_name"`` — technical identifier
+              (:attr:`ManipulatableObject.name`).
+            - ``"target_object_annotation"`` — the first annotation in
+              :attr:`ManipulatableObject.language_annotations`, or
+              ``None`` if the tuple is empty.
+            - ``"target_object_annotations"`` — the full
+              :attr:`ManipulatableObject.language_annotations` tuple
+              (may be empty).
+        """
+        annotations = self.target_object.language_annotations
+        return {
+            "target_object_name": self.target_object.name,
+            "target_object_annotation": annotations[0] if annotations else None,
+            "target_object_annotations": annotations,
+        }

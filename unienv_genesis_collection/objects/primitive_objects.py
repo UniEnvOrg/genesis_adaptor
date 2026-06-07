@@ -8,7 +8,7 @@ construction time).
 
 from __future__ import annotations
 
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Optional, Sequence, Tuple, TYPE_CHECKING
 
 import torch
 
@@ -30,17 +30,30 @@ class BoxObject(ManipulatableObject):
     Args:
         size: Dimensions ``(width_x, depth_y, height_z)`` in metres.
         color: RGBA colour tuple.  Applied as a ``Plastic`` surface.
-        **kwargs: Forwarded to :class:`ManipulatableObject` (``name``,
-            ``mass``, ``fixed``).
+        name: Technical identifier forwarded to :class:`ManipulatableObject`.
+        fixed: Whether the object is immovable; forwarded to
+            :class:`ManipulatableObject`.
+        language_annotations: Optional sequence of English-language
+            descriptions.  When ``None`` (the default), the primitive
+            fallback ``("box",)`` is used.  An explicit empty sequence is
+            preserved as empty.
     """
 
     def __init__(
         self,
         size: Tuple[float, float, float] = (0.05, 0.05, 0.05),
         color: Optional[Tuple[float, float, float, float]] = None,
-        **kwargs,
+        name: str = "object",
+        fixed: bool = False,
+        language_annotations: Optional[Sequence[str]] = None,
     ):
-        super().__init__(**kwargs)
+        if language_annotations is None:
+            language_annotations = ("box",)
+        super().__init__(
+            name=name,
+            fixed=fixed,
+            language_annotations=language_annotations,
+        )
         self.size = size
         self.color = color
 
@@ -78,16 +91,30 @@ class SphereObject(ManipulatableObject):
     Args:
         radius: Sphere radius in metres.
         color: RGBA colour tuple.
-        **kwargs: Forwarded to :class:`ManipulatableObject`.
+        name: Technical identifier forwarded to :class:`ManipulatableObject`.
+        fixed: Whether the object is immovable; forwarded to
+            :class:`ManipulatableObject`.
+        language_annotations: Optional sequence of English-language
+            descriptions.  When ``None`` (the default), the primitive
+            fallback ``("sphere",)`` is used.  An explicit empty sequence is
+            preserved as empty.
     """
 
     def __init__(
         self,
         radius: float = 0.025,
         color: Optional[Tuple[float, float, float, float]] = None,
-        **kwargs,
+        name: str = "object",
+        fixed: bool = False,
+        language_annotations: Optional[Sequence[str]] = None,
     ):
-        super().__init__(**kwargs)
+        if language_annotations is None:
+            language_annotations = ("sphere",)
+        super().__init__(
+            name=name,
+            fixed=fixed,
+            language_annotations=language_annotations,
+        )
         self.radius = radius
         self.color = color
 
@@ -131,7 +158,13 @@ class CylinderObject(ManipulatableObject):
         radius: Cylinder radius in metres.
         height: Cylinder height in metres.
         color: RGBA colour tuple.
-        **kwargs: Forwarded to :class:`ManipulatableObject`.
+        name: Technical identifier forwarded to :class:`ManipulatableObject`.
+        fixed: Whether the object is immovable; forwarded to
+            :class:`ManipulatableObject`.
+        language_annotations: Optional sequence of English-language
+            descriptions.  When ``None`` (the default), the primitive
+            fallback ``("cylinder",)`` is used.  An explicit empty sequence
+            is preserved as empty.
     """
 
     def __init__(
@@ -139,9 +172,17 @@ class CylinderObject(ManipulatableObject):
         radius: float = 0.025,
         height: float = 0.1,
         color: Optional[Tuple[float, float, float, float]] = None,
-        **kwargs,
+        name: str = "object",
+        fixed: bool = False,
+        language_annotations: Optional[Sequence[str]] = None,
     ):
-        super().__init__(**kwargs)
+        if language_annotations is None:
+            language_annotations = ("cylinder",)
+        super().__init__(
+            name=name,
+            fixed=fixed,
+            language_annotations=language_annotations,
+        )
         self.radius = radius
         self.height = height
         self.color = color
