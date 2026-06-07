@@ -39,6 +39,16 @@ class JointPositionAndVelocityController(
         n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
         batch_size = world.batch_size
 
+        # Normalize tensor-valued config for device safety before any
+        # broadcast_to_batch / BoxSpace construction.
+        dev = world.device
+        Kp = Kp.to(device=dev, dtype=torch.float32) if isinstance(Kp, torch.Tensor) else Kp
+        Kd = Kd.to(device=dev, dtype=torch.float32) if isinstance(Kd, torch.Tensor) else Kd
+        max_joint_vel = max_joint_vel.to(device=dev, dtype=torch.float32) if isinstance(max_joint_vel, torch.Tensor) else max_joint_vel
+        max_joint_pos_vel = max_joint_pos_vel.to(device=dev, dtype=torch.float32) if isinstance(max_joint_pos_vel, torch.Tensor) else max_joint_pos_vel
+        position_control_low = position_control_low.to(device=dev, dtype=torch.float32) if isinstance(position_control_low, torch.Tensor) else position_control_low
+        position_control_high = position_control_high.to(device=dev, dtype=torch.float32) if isinstance(position_control_high, torch.Tensor) else position_control_high
+
         # Get limits from entity - returns (low, high) tuple of shape (batch_size, n_dofs) or (n_dofs,)
         joint_limit_low, joint_limit_high = entity.get_dofs_limit(dofs_idx_local=joint_indexes)
 

@@ -243,6 +243,10 @@ class DiscreteEntityController(
         self._is_grasping_fn = is_grasping_fn
 
         # ----- Rate-limit / velocity clipping tensors -----
+        # Normalize device/dtype before broadcast_to_batch so that a tensor
+        # passed on the wrong device is relocated consistently.
+        max_joint_pos_vel = max_joint_pos_vel.to(device=joint_position_low.device, dtype=torch.float32) if isinstance(max_joint_pos_vel, torch.Tensor) else max_joint_pos_vel
+        max_joint_vel = max_joint_vel.to(device=joint_position_low.device, dtype=torch.float32) if isinstance(max_joint_vel, torch.Tensor) else max_joint_vel
         self._max_joint_pos_vel = (
             broadcast_to_batch(max_joint_pos_vel, batch_size, n_dofs, device=joint_position_low.device)
             if max_joint_pos_vel is not None else None

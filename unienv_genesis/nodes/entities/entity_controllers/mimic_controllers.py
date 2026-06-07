@@ -90,6 +90,12 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
         n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
+        # Normalize control-signal bounds for device safety before BoxSpace.
+        position_control_low = position_control_low.to(device=dev, dtype=torch.float32) if isinstance(position_control_low, torch.Tensor) else position_control_low
+        position_control_high = position_control_high.to(device=dev, dtype=torch.float32) if isinstance(position_control_high, torch.Tensor) else position_control_high
+        velocity_control_low = velocity_control_low.to(device=dev, dtype=torch.float32) if isinstance(velocity_control_low, torch.Tensor) else velocity_control_low
+        velocity_control_high = velocity_control_high.to(device=dev, dtype=torch.float32) if isinstance(velocity_control_high, torch.Tensor) else velocity_control_high
+
         self._pos_multiplier = _prepare_1d(position_multiplier, n_dofs, "position_multiplier", dev)
         self._pos_shift = _prepare_1d(position_shift, n_dofs, "position_shift", dev)
         self._vel_multiplier = _prepare_1d(velocity_multiplier, n_dofs, "velocity_multiplier", dev)
@@ -207,6 +213,10 @@ class MimicJointPositionController(JointPositionController):
         n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
+        # Normalize control-signal bounds for device safety before BoxSpace.
+        control_low = control_low.to(device=dev, dtype=torch.float32) if isinstance(control_low, torch.Tensor) else control_low
+        control_high = control_high.to(device=dev, dtype=torch.float32) if isinstance(control_high, torch.Tensor) else control_high
+
         self._multiplier = _prepare_1d(multiplier, n_dofs, "multiplier", dev)
         self._shift = _prepare_1d(shift, n_dofs, "shift", dev)
 
@@ -287,6 +297,10 @@ class MimicJointVelocityController(JointVelocityController):
         super().__init__(world, entity, Kp, Kd, joint_indexes, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
         n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
+
+        # Normalize control-signal bounds for device safety before BoxSpace.
+        control_low = control_low.to(device=dev, dtype=torch.float32) if isinstance(control_low, torch.Tensor) else control_low
+        control_high = control_high.to(device=dev, dtype=torch.float32) if isinstance(control_high, torch.Tensor) else control_high
 
         self._multiplier = _prepare_1d(multiplier, n_dofs, "multiplier", dev)
         self._shift = _prepare_1d(shift, n_dofs, "shift", dev)
