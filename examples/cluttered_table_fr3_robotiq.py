@@ -81,7 +81,10 @@ def init_env():
     franka_gripper_cam = CameraSensorNode(
         world,
         name="gripper_cam",
-        option=franka.get_droid_gripper_cam_options(resolution=ZedSupportedResolution.HD720),
+        option=franka.get_droid_gripper_cam_options(
+            backend="nyx",
+            resolution=ZedSupportedResolution.HD720
+        ),
         render_rgb=True,
     )
     
@@ -128,6 +131,7 @@ def init_env():
         world,
         name="camera",
         option=CameraSensorNodeOptions(
+            backend="nyx",
             pos=cam_pos,
             quat=CameraSensorNodeOptions.quat_from_lookat(cam_pos, cam_lookat),
             res=(1280, 720),
@@ -143,6 +147,7 @@ def init_env():
         world,
         name="side_camera",
         option=CameraSensorNodeOptions(
+            backend="nyx",
             pos=side_cam_pos,
             quat=CameraSensorNodeOptions.quat_from_lookat(side_cam_pos, side_cam_lookat),
             res=(1280, 720),

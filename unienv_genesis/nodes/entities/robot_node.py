@@ -94,7 +94,7 @@ class RobotDescriptionNode(EntityNode[
         name: Optional[str] = None,
         control_timestep: Optional[float] = None,
         update_timestep: Optional[float] = None,
-        keyframes : Dict[Union[Literal['reset'], str], RobotKeyframe] = {},
+        keyframes : Optional[Dict[Union[Literal['reset'], str], RobotKeyframe]] = None,
         fix_root : bool = True,
         pos: Optional[tuple] = None,
         quat: Optional[tuple] = None,
@@ -107,17 +107,27 @@ class RobotDescriptionNode(EntityNode[
         self.fix_root = fix_root
         self.pos = pos
         self.quat = quat
-        self.keyframes = keyframes
+        self.keyframes = dict(keyframes) if keyframes is not None else {}
         self.controller_type = controller_type
         self.controller_kwargs = controller_kwargs
 
         self.entity : Optional[BaseEntity] = None
         self.controller : Optional[EntityController] = None
 
-        # Build a temporary single-robot scene so the controller can be initialised
-        # immediately, giving real (non-None) action/observation spaces before
-        # WorldEnv is constructed.  The scene is rebuilt properly (with all nodes)
-        # during the first WorldEnv.reload() call.
+        # ------------------------------------------------------------------
+        # Temporary build / reload sequence (intentional side-effect).
+        #
+        # We build a throwaway single-robot scene here so that the controller
+        # can be initialised immediately, giving real (non-None) action and
+        # observation spaces *before* the enclosing WorldEnv is constructed.
+        # The controller needs a compiled scene (and therefore a built entity)
+        # in order to discover the robot's DOFs and set up its action space
+        # and related controller spaces.
+        #
+        # The scene is rebuilt properly (with all nodes) during the first
+        # WorldEnv.reload() call, so this temporary build is purely for
+        # early space discovery and does not affect normal operation.
+        # ------------------------------------------------------------------
         self.world.reload(disable_viewer=True) # fresh scene (destroys any prior built scene)
         self.reload(priority=50)               # add this entity to the fresh scene
         self.world.after_reload(temporary=True)              # compile scene
@@ -177,7 +187,7 @@ class RobotDescriptionNode(EntityNode[
         if 'reset' in self.keyframes and isinstance(self.entity, gs_entities.RigidEntity):
             reset_keyframe = self.keyframes['reset']
             if mask is not None:
-                env_idx = torch.nonzero(mask)[0]
+                env_idx = mask.nonzero(as_tuple=True)[0]
             else:
                 env_idx = None
             if reset_keyframe.pos is not None:

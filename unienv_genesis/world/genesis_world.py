@@ -35,17 +35,9 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     def __init__(
         self,
         batch_size: Optional[int] = None,
-        scene_init_kwargs : Dict[str, Any] = {},
-        scene_build_kwargs : Dict[str, Any] = {},
-        lights : Dict[str, GenesisWorldLightOption] = {
-            "default": GenesisWorldLightOption(
-                light_type="directional",
-                direction=(0.0, 0.0, -1.0),
-                color=(1.0, 1.0, 1.0),
-                intensity=2.0,
-                cast_shadow=True,
-            )
-        },
+        scene_init_kwargs : Optional[Dict[str, Any]] = None,
+        scene_build_kwargs : Optional[Dict[str, Any]] = None,
+        lights : Optional[Dict[str, GenesisWorldLightOption]] = None,
         env_map : Optional[GenesisWorldEnvMapOption] = None,
     ):
         """Initialize Genesis World.
@@ -54,11 +46,25 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             batch_size: Number of parallel environments, or None for single (unbatched) environment.
             scene_init_kwargs: Kwargs passed to gs.Scene constructor.
             scene_build_kwargs: Kwargs passed to scene.build() method.
+            lights: Dictionary of light options keyed by name.
+            env_map: Optional environment map option.
         """
         self._batch_size = batch_size
-        self.scene_init_kwargs = scene_init_kwargs
-        self.scene_build_kwargs = scene_build_kwargs
-        self.lights = lights
+        # Copy caller-supplied dicts so we never mutate the caller's objects.
+        self.scene_init_kwargs = dict(scene_init_kwargs) if scene_init_kwargs is not None else {}
+        self.scene_build_kwargs = dict(scene_build_kwargs) if scene_build_kwargs is not None else {}
+        if lights is None:
+            self.lights = {
+                "default": GenesisWorldLightOption(
+                    light_type="directional",
+                    direction=(0.0, 0.0, -1.0),
+                    color=(1.0, 1.0, 1.0),
+                    intensity=2.0,
+                    cast_shadow=True,
+                )
+            }
+        else:
+            self.lights = dict(lights)
         self.env_map = env_map
         self.scene = self.create_scene()
     
@@ -88,7 +94,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
                     emissive_texture=gs.textures.ImageTexture(
                         image_path=self.env_map.png_path,
                     ),
-                ),
+                )
                 renderer_option.env_pos=self.env_map.png_pos
                 renderer_option.env_euler=self.env_map.png_euler
                 renderer_option.env_radius=self.env_map.png_radius
@@ -186,7 +192,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             gs.set_random_seed(seed)
         
         if mask is not None:
-            env_indices = torch.nonzero(mask)[0]
+            env_indices = mask.nonzero(as_tuple=True)[0]
             self.scene.reset(envs_idx=env_indices)
         else:
             self.scene.reset()

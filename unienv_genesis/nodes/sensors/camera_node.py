@@ -409,7 +409,7 @@ class CameraSensorNode(SensorNode[
     ) -> None:
         """Reset camera state if needed."""
         if mask is not None:
-            env_indices = torch.nonzero(mask)[0]
+            env_indices = mask.nonzero(as_tuple=True)[0]
         else:
             env_indices = None
         # BatchRenderer exposes reset(); the plain Camera class does not.

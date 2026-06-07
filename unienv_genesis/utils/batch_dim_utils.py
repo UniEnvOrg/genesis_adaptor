@@ -10,11 +10,11 @@ import torch
 __all__ = [
     "is_batched",
     "try_scalar",
-    "get_batch_aware_shape"
+    "get_batch_aware_shape",
     "broadcast_to_batch",
     "index_batch_dimension",
     "reduce_and",
-    "reduce_or"
+    "reduce_or",
 ]
 
 # Type alias for index types supported by index_batch_dimension
@@ -205,7 +205,7 @@ def reduce_or(*values):
     result = values[0]
     for v in values[1:]:
         if isinstance(result, torch.Tensor) or isinstance(v, torch.Tensor):
-            result = torch.logical_and(
+            result = torch.logical_or(
                 result,
                 v
             )
