@@ -35,3 +35,11 @@ class JointVelocityController(
             action,
             dofs_idx_local=self.joint_indexes
         )
+
+    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+        """Return structured action dict for joint velocity control.
+
+        ``action`` is a tensor of target joint velocities.  Only
+        ``target_joint_velocity`` is returned (no FK-based EEF pose).
+        """
+        return {"target_joint_velocity": action}

@@ -10,7 +10,6 @@ from xbarray.transformations.rotation_conversions.pytorch import (
     matrix_to_quaternion,
     quaternion_apply,
     quaternion_invert,
-    quaternion_multiply,
     quaternion_to_matrix,
     matrix_to_euler_angles,
     matrix_to_rotation_6d,
@@ -144,33 +143,22 @@ class EndEffectorPoseController(
         ik_kwargs: Optional[dict] = None,
         **kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
-        self._target_link_name = target_link
-        self._base_frame_name = base_frame
-        self._resolve_links()
+        # EEF metadata (target_link, base_frame, eef_offset_*) is forwarded to
+        # the DiscreteEntityController base via **kwargs so that the base class
+        # owns link resolution, offset transforms, and EEF observation keys.
+        super().__init__(
+            world, entity, Kp, Kd, joint_indexes,
+            joint_names=joint_names,
+            is_grasping_fn=is_grasping_fn,
+            target_link=target_link,
+            base_frame=base_frame,
+            eef_offset_pos=eef_offset_pos,
+            eef_offset_quat=eef_offset_quat,
+            **kwargs,
+        )
         self.rotation_representation = rotation_representation
         self.normalize_rotation_action = normalize_rotation_action
         self.ik_kwargs = ik_kwargs or {}
-
-        # EEF pose offset: translates the virtual EEF point away from the
-        # physical target_link origin.  Stored in the target_link's local frame.
-        # Convention: place the virtual point at the gripper fingertip
-        # (farthest extent along approach direction, centred in open direction).
-        if eef_offset_pos is not None:
-            self._eef_offset_pos = torch.as_tensor(
-                eef_offset_pos, dtype=torch.float32, device=world.device,
-            )
-            if eef_offset_quat is not None:
-                self._eef_offset_quat = torch.as_tensor(
-                    eef_offset_quat, dtype=torch.float32, device=world.device,
-                )
-            else:
-                self._eef_offset_quat = torch.tensor(
-                    [1.0, 0.0, 0.0, 0.0], device=world.device,
-                )
-        else:
-            self._eef_offset_pos = None
-            self._eef_offset_quat = None
 
         batch_size = world.batch_size
         
@@ -178,22 +166,8 @@ class EndEffectorPoseController(
         self.action_space = AbsoluteRotationConventionUtils.get_action_space(
             rotation_representation, batch_size, world.device
         )
-        self.observation_space['eef_position'] = BoxSpace(
-            PyTorchComputeBackend,
-            low=-torch.inf,
-            high=torch.inf,
-            shape=get_batch_aware_shape(batch_size, 3),
-            dtype=torch.float32,
-            device=world.device,
-        )
-        self.observation_space['eef_quaternion'] = BoxSpace(
-            PyTorchComputeBackend,
-            low=-1,
-            high=1,
-            shape=get_batch_aware_shape(batch_size, 4),
-            dtype=torch.float32,
-            device=world.device,
-        )
+        # EEF observation keys (eef_position, eef_quaternion) are already added
+        # by the DiscreteEntityController base when target_link is provided.
         self.observation_space['last_ik_solved_error'] = BoxSpace(
             PyTorchComputeBackend,
             low=-torch.inf,
@@ -204,84 +178,14 @@ class EndEffectorPoseController(
         )
         self._last_ik_result = {}
 
-    def _resolve_links(self) -> None:
-        """Re-resolve target_link and base_frame from the current entity by name."""
-        self.target_link : RigidLink = self.entity.get_link(self._target_link_name)
-        self.base_frame : Optional[RigidLink] = self.entity.get_link(self._base_frame_name) if self._base_frame_name is not None else None
-
     def reload(self) -> None:
-        self._resolve_links()
+        # Link re-resolution is handled by DiscreteEntityController.reload().
         super().reload()
-
-    # ------------------------------------------------------------------
-    # EEF offset transforms
-    # ------------------------------------------------------------------
-
-    def _link_to_virtual(
-        self,
-        link_pos: PyTorchArrayType,
-        link_quat: PyTorchArrayType,
-    ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
-        """Forward offset: physical target_link pose -> virtual EEF pose."""
-        if self._eef_offset_pos is None:
-            return link_pos, link_quat
-        virt_pos = link_pos + quaternion_apply(link_quat, self._eef_offset_pos)
-        virt_quat = quaternion_multiply(link_quat, self._eef_offset_quat)
-        return virt_pos, virt_quat
-
-    def _virtual_to_link(
-        self,
-        virt_pos: PyTorchArrayType,
-        virt_quat: PyTorchArrayType,
-    ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
-        """Inverse offset: virtual EEF pose -> physical target_link pose."""
-        if self._eef_offset_pos is None:
-            return virt_pos, virt_quat
-        link_quat = quaternion_multiply(virt_quat, quaternion_invert(self._eef_offset_quat))
-        link_pos = virt_pos - quaternion_apply(link_quat, self._eef_offset_pos)
-        return link_pos, link_quat
 
     def reset(self, mask: Optional[PyTorchArrayType] = None) -> None:
         """Reset the controller's IK result cache."""
         self._last_ik_result = {}
     
-    def get_base_transform(self) -> Optional[Tuple[PyTorchArrayType, PyTorchArrayType]]:
-        if self.base_frame is None:
-            return None
-        elif isinstance(self.base_frame, (RigidEntity, RigidLink)):
-            base_position, base_quaternion = self.base_frame.get_pos(), self.base_frame.get_quat()
-        return base_position, base_quaternion
-
-    def convert_base_to_absolute(self, target_position_base : Optional[PyTorchArrayType], target_rotation_base : Optional[PyTorchArrayType]) -> Tuple[Optional[PyTorchArrayType], Optional[PyTorchArrayType]]:
-        base_transform = self.get_base_transform()
-        if base_transform is None:
-            return target_position_base, target_rotation_base
-        base_position, base_quaternion = base_transform
-        if target_position_base is not None:
-            target_position_absolute = quaternion_apply(base_quaternion, target_position_base) + base_position
-        else:
-            target_position_absolute = None
-        if target_rotation_base is not None:
-            target_rotation_absolute = quaternion_apply(base_quaternion, target_rotation_base)
-        else:
-            target_rotation_absolute = None
-        return target_position_absolute, target_rotation_absolute
-
-    def convert_absolute_to_base(self, target_position_absolute : Optional[PyTorchArrayType], target_rotation_absolute : Optional[PyTorchArrayType]) -> Tuple[Optional[PyTorchArrayType], Optional[PyTorchArrayType]]:
-        base_transform = self.get_base_transform()
-        if base_transform is None:
-            return target_position_absolute, target_rotation_absolute
-        base_position, base_quaternion = base_transform
-        if target_position_absolute is not None:
-            target_position_base = quaternion_apply(quaternion_invert(base_quaternion), target_position_absolute - base_position)
-        else:
-            target_position_base = None
-        if target_rotation_absolute is not None:
-            target_rotation_base = quaternion_apply(quaternion_invert(base_quaternion), target_rotation_absolute)
-        else:
-            target_rotation_base = None
-        return target_position_base, target_rotation_base
-
     def solve_ik_absolute(self, target_position : Optional[PyTorchArrayType], target_quaternion : Optional[PyTorchArrayType]) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
         """Solve IK for the target end-effector position and rotation.
 
@@ -370,14 +274,15 @@ class EndEffectorPoseController(
             achieved_error = torch.cat([achieved_position_error, achieved_rotation_error], dim=-1)
         return target_joint_positions, achieved_error
 
-    def get_eef_pose_absolute(self) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
-        link_pos, link_quat = self.target_link.get_pos(), self.target_link.get_quat()
-        return self._link_to_virtual(link_pos, link_quat)
-
-    def get_eef_pose_base(self) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
-        achieved_position_absolute, achieved_quaternion_absolute = self.get_eef_pose_absolute()
-        achieved_position_base, achieved_quaternion_base = self.convert_absolute_to_base(achieved_position_absolute, achieved_quaternion_absolute)
-        return achieved_position_base, achieved_quaternion_base
+    def get_observation(self):
+        obs = super().get_observation()
+        # eef_position and eef_quaternion are provided by the base class.
+        # This controller only adds last_ik_solved_error.
+        if 'achieved_error' in self._last_ik_result:
+            obs['last_ik_solved_error'] = self._last_ik_result['achieved_error']
+        else:
+            obs['last_ik_solved_error'] = torch.zeros(get_batch_aware_shape(self.world.batch_size, 6), device=self.world.device)
+        return obs
 
     def get_action_world(
         self,
@@ -411,17 +316,6 @@ class EndEffectorPoseController(
             )
         return torch.cat([pos_base, rot], dim=-1)
 
-    def get_observation(self):
-        obs = super().get_observation()
-        eef_pos_base, eef_quat_base = self.get_eef_pose_base()
-        obs['eef_position'] = eef_pos_base
-        obs['eef_quaternion'] = eef_quat_base
-        if 'achieved_error' in self._last_ik_result:
-            obs['last_ik_solved_error'] = self._last_ik_result['achieved_error']
-        else:
-            obs['last_ik_solved_error'] = torch.zeros(get_batch_aware_shape(self.world.batch_size, 6), device=self.world.device)
-        return obs
-
     def apply_action(self, action):
         target_pos = action[..., :3]
         target_rot = action[..., 3:]
@@ -436,4 +330,33 @@ class EndEffectorPoseController(
         self._last_ik_result = {
             'target_joint_positions': target_joint_positions,
             'achieved_error': achieved_error,
+        }
+
+    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+        """Return structured action dict for EEF pose control.
+
+        Parses the raw action tensor into position + rotation, solves IK to
+        obtain the target joint positions, and returns both the joint-space
+        target and the commanded EEF pose (in the configured base frame, or
+        world frame if no ``base_frame`` is set).
+        """
+        target_pos = action[..., :3]
+        target_rot = action[..., 3:]
+        if self.normalize_rotation_action:
+            target_rot = AbsoluteRotationConventionUtils.unnormalize_action(
+                self.rotation_representation, target_rot,
+            )
+        target_quat = AbsoluteRotationConventionUtils.to_quaternion(
+            self.rotation_representation, target_rot,
+        )
+
+        # Solve IK to obtain target joint positions
+        target_joint_positions, _ = self.solve_ik_base(target_pos, target_quat)
+
+        # The commanded EEF pose in the base/world frame is exactly what the
+        # user requested (pos + quat already in base frame from the action).
+        return {
+            "target_joint_position": target_joint_positions,
+            "target_eef_position": target_pos,
+            "target_eef_quaternion": target_quat,
         }

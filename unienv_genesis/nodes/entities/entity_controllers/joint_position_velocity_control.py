@@ -110,6 +110,7 @@ class JointPositionAndVelocityController(
             self._Kd_expanded = None
 
     def reload(self):
+        super().reload()
         # Set the controller for the entity
         if self._Kp_expanded is not None:
             self.entity.set_dofs_kp(self._Kp_expanded, dofs_idx_local=self.joint_indexes)
@@ -122,3 +123,16 @@ class JointPositionAndVelocityController(
             action['target_joint_velocity'],
             dofs_idx_local=self.joint_indexes
         )
+
+    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+        """Return structured action dict for combined position+velocity control.
+
+        ``action`` is expected to be a dict with keys ``target_joint_position``
+        and ``target_joint_velocity``.  The returned dict includes both, plus
+        optional FK-based EEF pose derived from the position target.
+        """
+        target_qpos = action['target_joint_position']
+        target_qvel = action['target_joint_velocity']
+        result = self._get_action_dict_from_qpos(target_qpos)
+        result['target_joint_velocity'] = target_qvel
+        return result

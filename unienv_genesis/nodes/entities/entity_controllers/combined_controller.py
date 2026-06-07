@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Dict, Any
 from genesis.engine import entities as gs_entities
 from unienv_interface.space import DictSpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType
@@ -113,6 +113,19 @@ class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
     def apply_action(self, action: dict) -> None:
         for name, ctrl in self._sub_controllers.items():
             ctrl.apply_action(action[name])
+
+    def get_action_dict(self, action: dict) -> Dict[str, Any]:
+        """Return a nested structured action dict by recursing into sub-controllers.
+
+        ``action`` is expected to be a dict mapping sub-controller names to
+        their respective action tensors/dicts.  The returned dict has the same
+        top-level keys, with each value being the structured action dict
+        produced by the corresponding sub-controller.
+        """
+        return {
+            name: ctrl.get_action_dict(action[name])
+            for name, ctrl in self._sub_controllers.items()
+        }
 
     def reload(self) -> None:
         for ctrl in self._sub_controllers.values():

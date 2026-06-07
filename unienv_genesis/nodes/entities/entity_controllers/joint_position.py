@@ -33,3 +33,13 @@ class JointPositionController(
             action,
             dofs_idx_local=self.joint_indexes
         )
+
+    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+        """Return structured action dict for joint position control.
+
+        ``action`` is a tensor of target joint positions.  The returned dict
+        includes ``target_joint_position`` and, when an end-effector is
+        configured, the FK-based ``target_eef_position`` /
+        ``target_eef_quaternion``.
+        """
+        return self._get_action_dict_from_qpos(action)

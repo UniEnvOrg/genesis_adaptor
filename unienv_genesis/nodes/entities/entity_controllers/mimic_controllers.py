@@ -1,4 +1,4 @@
-from typing import Optional, Union, Sequence
+from typing import Optional, Union, Sequence, Dict, Any
 import torch
 from genesis.engine import entities as gs_entities
 from unienv_interface.space import BoxSpace, DictSpace
@@ -136,6 +136,27 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
         }
         super().apply_action(mimic_action)
 
+    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+        """Return structured action dict with **actual** mapped targets.
+
+        Applies the mimic mapping (multiplier + shift + clip) to the scalar
+        control signal and returns the resulting per-joint position and
+        velocity targets, plus optional FK-based EEF pose.
+        """
+        pos = torch.clamp(
+            _apply_mimic(action['target_joint_position'], self._pos_multiplier, self._pos_shift),
+            self._pos_clip_low,
+            self._pos_clip_high,
+        )
+        vel = torch.clamp(
+            _apply_mimic(action['target_joint_velocity'], self._vel_multiplier, self._vel_shift),
+            self._vel_clip_low,
+            self._vel_clip_high,
+        )
+        result = self._get_action_dict_from_qpos(pos)
+        result['target_joint_velocity'] = vel
+        return result
+
 
 class MimicJointPositionController(JointPositionController):
     """Joint position controller driven by a single scalar control signal.
@@ -200,6 +221,20 @@ class MimicJointPositionController(JointPositionController):
             self._clip_high,
         )
         super().apply_action(actual)
+
+    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+        """Return structured action dict with the **actual** mapped joint positions.
+
+        Applies the mimic mapping (multiplier + shift + clip) to the scalar
+        control signal and returns the resulting per-joint position target,
+        plus optional FK-based EEF pose.
+        """
+        actual = torch.clamp(
+            _apply_mimic(action, self._multiplier, self._shift),
+            self._clip_low,
+            self._clip_high,
+        )
+        return self._get_action_dict_from_qpos(actual)
 
 
 class MimicJointVelocityController(JointVelocityController):
@@ -267,3 +302,16 @@ class MimicJointVelocityController(JointVelocityController):
             self._clip_high,
         )
         super().apply_action(actual)
+
+    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+        """Return structured action dict with the **actual** mapped joint velocities.
+
+        Applies the mimic mapping (multiplier + shift + clip) to the scalar
+        control signal and returns the resulting per-joint velocity target.
+        """
+        actual = torch.clamp(
+            _apply_mimic(action, self._multiplier, self._shift),
+            self._clip_low,
+            self._clip_high,
+        )
+        return {"target_joint_velocity": actual}

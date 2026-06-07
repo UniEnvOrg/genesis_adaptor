@@ -1,6 +1,6 @@
 """Robot entity node for loading URDF/MJCF/USD files."""
 
-from typing import Literal, Optional, Dict, Any, List, Tuple, Union
+from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Sequence
 import genesis as gs
 from genesis.engine.entities.base_entity import Entity as BaseEntity
 from genesis.engine import entities as gs_entities
@@ -252,3 +252,140 @@ class RobotDescriptionNode(EntityNode[
 
     def set_next_action(self, action):
         self._next_action = action
+
+    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+        """Return a structured dict describing the commanded target.
+
+        Delegates to the underlying controller's :meth:`get_action_dict`.
+        This is an introspection helper — it does **not** apply the action.
+
+        Args:
+            action: The raw action tensor or dict in the format expected by
+                the controller's ``apply_action``.
+
+        Returns:
+            A dict with semantically meaningful keys such as
+            ``target_joint_position``, ``target_joint_velocity``,
+            ``target_eef_position``, ``target_eef_quaternion``.
+
+        Raises:
+            RuntimeError: If the controller has not been initialised yet.
+        """
+        if self.controller is None:
+            raise RuntimeError(
+                "Controller has not been initialised yet. "
+                "Call reload()/after_reload() first."
+            )
+        return self.controller.get_action_dict(action)
+
+    # ------------------------------------------------------------------
+    # Genesis RigidEntity pass-through helpers
+    # ------------------------------------------------------------------
+
+    def _require_rigid_entity(self) -> gs_entities.RigidEntity:
+        """Return the built entity, raising if it is not a ``RigidEntity``."""
+        if self.entity is None:
+            raise RuntimeError(
+                "Entity has not been built yet. Call reload()/after_reload() first."
+            )
+        if not isinstance(self.entity, gs_entities.RigidEntity):
+            raise TypeError(
+                f"Expected a RigidEntity but got {type(self.entity).__name__}. "
+                f"forward_kinematics / plan_path are only available on rigid robots."
+            )
+        return self.entity
+
+    def forward_kinematics(
+        self,
+        qpos: PyTorchArrayType,
+        qs_idx_local: Optional[Sequence[int]] = None,
+        links_idx_local: Optional[Sequence[int]] = None,
+        envs_idx: Optional[PyTorchArrayType] = None,
+    ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
+        """Compute forward kinematics for the given joint positions.
+
+        Proxy to :meth:`genesis.engine.entities.RigidEntity.forward_kinematics`.
+
+        Args:
+            qpos: Joint positions — shape ``(n_qs,)`` or ``(batch_size, n_qs)``.
+            qs_idx_local: Optional subset of generalized coordinates to use.
+            links_idx_local: Optional subset of links whose poses to return.
+            envs_idx: Optional batch indices to evaluate.
+
+        Returns:
+            ``(links_pos, links_quat)`` — positions and quaternions of the
+            requested links.
+        """
+        entity = self._require_rigid_entity()
+        return entity.forward_kinematics(
+            qpos,
+            qs_idx_local=qs_idx_local,
+            links_idx_local=links_idx_local,
+            envs_idx=envs_idx,
+        )
+
+    def plan_path(
+        self,
+        qpos_goal: PyTorchArrayType,
+        qpos_start: Optional[PyTorchArrayType] = None,
+        max_nodes: int = 2000,
+        resolution: float = 0.05,
+        timeout: Optional[float] = None,
+        max_retry: int = 1,
+        smooth_path: bool = True,
+        num_waypoints: int = 300,
+        ignore_collision: bool = False,
+        planner: str = "RRTConnect",
+        envs_idx: Optional[PyTorchArrayType] = None,
+        return_valid_mask: bool = False,
+        *,
+        ee_link_name: Optional[str] = None,
+        with_entity=None,
+        **kwargs,
+    ):
+        """Plan a collision-free joint-space path to ``qpos_goal``.
+
+        Proxy to :meth:`genesis.engine.entities.RigidEntity.plan_path`.
+
+        Args:
+            qpos_goal: Target joint positions — shape ``(n_qs,)`` or
+                ``(batch_size, n_qs)``.
+            qpos_start: Start joint positions (defaults to current qpos).
+            max_nodes: Maximum RRT nodes before failure.
+            resolution: Joint-space resolution for the planner.
+            timeout: Per-attempt timeout in seconds (``None`` = no timeout).
+            max_retry: Number of retry attempts.
+            smooth_path: Whether to smooth the resulting path.
+            num_waypoints: Number of waypoints after interpolation.
+            ignore_collision: If ``True``, ignore collision checks.
+            planner: Planner name (default ``"RRTConnect"``).
+            envs_idx: Optional batch indices to plan for.
+            return_valid_mask: If ``True``, return ``(path, valid_mask)``
+                where ``valid_mask=True`` indicates success.
+            ee_link_name: Optional end-effector link name for task-space
+                planning.
+            with_entity: Optional entity for collision-aware planning.
+            **kwargs: Forwarded to the Genesis planner.
+
+        Returns:
+            Planned path tensor, or ``(path, valid_mask)`` when
+            ``return_valid_mask=True``.
+        """
+        entity = self._require_rigid_entity()
+        return entity.plan_path(
+            qpos_goal,
+            qpos_start=qpos_start,
+            max_nodes=max_nodes,
+            resolution=resolution,
+            timeout=timeout,
+            max_retry=max_retry,
+            smooth_path=smooth_path,
+            num_waypoints=num_waypoints,
+            ignore_collision=ignore_collision,
+            planner=planner,
+            envs_idx=envs_idx,
+            return_valid_mask=return_valid_mask,
+            ee_link_name=ee_link_name,
+            with_entity=with_entity,
+            **kwargs,
+        )
