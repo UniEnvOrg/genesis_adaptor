@@ -6,6 +6,7 @@ from .keypoint_tracker_node import (
     PointProposer,
     UniformSegmentationPointProposer,
     KeypointTrackerNode,
+    SegmentationTarget,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "PointProposer",
     "UniformSegmentationPointProposer",
     "KeypointTrackerNode",
+    "SegmentationTarget",
 ]

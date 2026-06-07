@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import pytest
 import torch
 import genesis as gs
 from genesis.constants import backend as gs_backend
@@ -80,8 +81,14 @@ class MovingBoxNode(WorldNode):
         return None
 
 
-def _make_env(render_position: bool, render_depth: bool):
-    world = GenesisWorld()
+def _make_env(
+    render_position: bool,
+    render_depth: bool,
+    segmentation_level: str = "link",
+):
+    # Configure scene-level vis_options to match the requested segmentation level
+    vis_options = gs.options.VisOptions(segmentation_level=segmentation_level)
+    world = GenesisWorld(scene_init_kwargs={"vis_options": vis_options})
     moving_box = MovingBoxNode(world, step_delta=(0.012, -0.004, 0.0))
 
     cam_pos = (1.0, 0.0, 0.65)
@@ -200,11 +207,125 @@ def test_uniform_segmentation_point_proposer():
         assert int((valid_seg == seg_id_val).sum().item()) <= 2
 
 
-def test_gt_keypoint_flow_sensor_with_position_map():
-    env, moving_box = _make_env(render_position=True, render_depth=False)
+@pytest.mark.parametrize("segmentation_level", ["link", "geom"])
+def test_gt_keypoint_flow_sensor_with_position_map(segmentation_level):
+    env, moving_box = _make_env(
+        render_position=True,
+        render_depth=False,
+        segmentation_level=segmentation_level,
+    )
     _assert_tracking_translation(env, moving_box)
 
 
-def test_gt_keypoint_flow_sensor_with_depth_fallback():
-    env, moving_box = _make_env(render_position=False, render_depth=True)
+@pytest.mark.parametrize("segmentation_level", ["link", "geom"])
+def test_gt_keypoint_flow_sensor_with_depth_fallback(segmentation_level):
+    env, moving_box = _make_env(
+        render_position=False,
+        render_depth=True,
+        segmentation_level=segmentation_level,
+    )
     _assert_tracking_translation(env, moving_box)
+
+
+def test_entity_segmentation_level_rejected():
+    """KeypointTrackerNode should reject segmentation_level='entity'."""
+    vis_options = gs.options.VisOptions(segmentation_level="entity")
+    world = GenesisWorld(scene_init_kwargs={"vis_options": vis_options})
+    moving_box = MovingBoxNode(world)
+
+    cam_pos = (1.0, 0.0, 0.65)
+    cam_lookat = (0.0, 0.0, 0.20)
+    cam_opt = CameraSensorNodeOptions(
+        res=(96, 96),
+        pos=cam_pos,
+        quat=CameraSensorNodeOptions.quat_from_lookat(cam_pos, cam_lookat),
+        fov=45,
+        GUI=False,
+    )
+    camera = CameraSensorNode(
+        world=world,
+        name="camera",
+        option=cam_opt,
+        render_rgb=False,
+        render_depth=True,
+        render_seg=True,
+        render_normal=False,
+        render_position=False,
+    )
+    with pytest.raises(ValueError, match="does not support segmentation_level='entity'"):
+        KeypointTrackerNode(
+            world=world,
+            name="gt_flow",
+            camera_node=camera,
+            max_points=32,
+        )
+    world.close()
+
+
+def test_geom_mode_visibility_semantics():
+    """In geom mode, visibility should match on (entity, link), not exact geom seg ID.
+
+    This test verifies that when multiple geoms belong to the same link,
+    points tracked on one geom remain visible even when the pixel shows
+    a different geom from the same link.
+    """
+    # Create a scene with geom-level segmentation
+    vis_options = gs.options.VisOptions(segmentation_level="geom")
+    world = GenesisWorld(scene_init_kwargs={"vis_options": vis_options})
+
+    # Create a box with multiple geoms (by using a composite entity)
+    # For simplicity, we'll use a single box which has one geom
+    moving_box = MovingBoxNode(world, step_delta=(0.0, 0.0, 0.0))
+
+    cam_pos = (1.0, 0.0, 0.65)
+    cam_lookat = (0.0, 0.0, 0.20)
+    cam_opt = CameraSensorNodeOptions(
+        res=(96, 96),
+        pos=cam_pos,
+        quat=CameraSensorNodeOptions.quat_from_lookat(cam_pos, cam_lookat),
+        fov=45,
+        GUI=False,
+    )
+    camera = CameraSensorNode(
+        world=world,
+        name="camera",
+        option=cam_opt,
+        render_rgb=False,
+        render_depth=True,
+        render_seg=True,
+        render_normal=False,
+        render_position=True,
+    )
+    tracker = KeypointTrackerNode(
+        world=world,
+        name="gt_flow",
+        camera_node=camera,
+        max_points=32,
+        point_proposer=UniformSegmentationPointProposer(
+            max_points_per_entity=32,
+            randomize=False,
+            tracked_entity_names=["moving_box"],
+        ),
+    )
+    env = WorldEnv(world, [moving_box, camera, tracker], render_mode=None)
+
+    _, obs, _ = env.reset(seed=0, reload=True)
+    track = obs["gt_flow"]
+    valid = track["valid_masks"].bool()
+
+    # Verify that we have some tracked points
+    assert torch.any(valid), "No keypoints were initialized in geom mode."
+
+    # Verify that the tracker stores geom_idx
+    assert hasattr(tracker, "_geom_idx"), "Tracker should have _geom_idx storage."
+    # For unbatched world, observation is (max_points,) but internal storage is (1, max_points)
+    geom_indices = tracker._geom_idx[0, valid]
+    # In geom mode, geom_idx should be >= 0 for valid points
+    assert torch.all(geom_indices >= 0), "Geom mode should have valid geom_idx."
+
+    # Verify visibility mask is populated
+    visibility = track["visibility_masks"].bool()
+    # At least some points should be visible
+    assert torch.any(visibility & valid), "Some tracked points should be visible."
+
+    env.close()

@@ -9,11 +9,18 @@ that provides segmentation and per-pixel 3D positions. At reset/reload time it:
 
 After each environment step, keypoints are updated from entity poses only
 (ground-truth tracking), and per-step 3D flow is produced.
+
+**Rendering assumption**: The tracker requires that *all* environments are
+rendered by the delegated camera on every frame, in order.  The camera's
+batch dimension is treated as the environment index directly — no remapping
+of rendered-env indices is performed.  A :class:`RuntimeError` is raised if
+the camera batch size does not match the world's environment count.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Dict, Mapping, Optional, Sequence, Set, Tuple, Union
 
 import torch
@@ -46,7 +53,34 @@ __all__ = [
     "PointProposer",
     "UniformSegmentationPointProposer",
     "KeypointTrackerNode",
+    "SegmentationTarget",
 ]
+
+
+@dataclass(frozen=True)
+class SegmentationTarget:
+    """Internal representation of a segmentation ID's target.
+
+    Maps a Genesis segmentation ID to the entity, link, and (optionally) geom
+    it represents. This provides an explicit internal model instead of parsing
+    the raw segmentation metadata implicitly.
+
+    Attributes:
+        seg_id: The Genesis segmentation ID (as it appears in the seg map).
+        entity_idx: Index of the rigid entity.
+        link_idx: Index of the rigid link (always valid for link/geom modes).
+        geom_idx: Index of the geom within the link. ``-1`` for link mode,
+            or a valid geom index for geom mode.
+    """
+    seg_id: int
+    entity_idx: int
+    link_idx: int
+    geom_idx: int = -1
+
+    @property
+    def is_geom_mode(self) -> bool:
+        """Return True if this target represents a geom-level segmentation."""
+        return self.geom_idx >= 0
 
 
 class PointProposer(ABC):
@@ -60,21 +94,16 @@ class PointProposer(ABC):
         seg_to_entity_idx: Mapping[int, int],
         entity_names: Mapping[int, str],
         max_points: int,
-        mask: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Select keypoints from batched camera observations.
 
         The caller is responsible for pre-filtering ``camera_obs`` to only
-        contain active entries.  That is, if only ``B'`` out of ``B`` total
-        environments need proposals, the caller should slice all tensors in
-        ``camera_obs`` down to ``B'`` before calling this method, so the
-        batch dimension of every value in ``camera_obs`` is ``B'``.
-
-        The ``mask`` parameter is **not** used for filtering — the caller
-        handles that.  It is passed through so that proposers with internal
-        per-environment state (e.g. history buffers) can update bookkeeping
-        for the active entries.
+        contain the environments that need proposals.  That is, if only
+        ``B'`` out of ``B`` total environments need proposals, the caller
+        should slice all tensors in ``camera_obs`` down to ``B'`` before
+        calling this method, so the batch dimension of every value in
+        ``camera_obs`` is ``B'``.
 
         Args:
             camera_obs: Pre-filtered camera observation dictionary with
@@ -87,9 +116,6 @@ class PointProposer(ABC):
             entity_names: Mapping from entity index to entity name string.
                 Proposers can use this to filter which entities to track.
             max_points: Maximum number of keypoints to return per environment.
-            mask: Optional ``(B',)`` bool tensor passed for proposers that
-                maintain internal state.  All entries are ``True`` (the
-                caller already filtered).  Stateless proposers may ignore it.
             generator: Optional torch RNG for reproducible randomization.
 
         Returns:
@@ -238,7 +264,6 @@ class UniformSegmentationPointProposer(PointProposer):
         seg_to_entity_idx: Mapping[int, int],
         entity_names: Mapping[int, str],
         max_points: int,
-        mask: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         segmentation = camera_obs["seg"]       # (B, H, W)
@@ -280,6 +305,9 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
       :class:`PointProposer` passed at construction time.
     - The delegated camera must provide segmentation (``render_seg=True``)
       and either depth or position rendering.
+    - **All environments must be rendered** by the delegated camera on every
+      frame, in order.  The camera batch dimension is treated as the
+      environment index directly (no rendered-env remapping).
     """
 
     reload_priorities = {0}
@@ -318,7 +346,20 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         if not (camera_node.render_depth or camera_node.render_position):
             raise ValueError("camera_node must render depth or position.")
 
-        self.world = world
+        # Validate segmentation level from the scene's vis_options (the actual source of truth)
+        seg_level = self.world.scene.vis_options.segmentation_level
+        if seg_level == "entity":
+            raise ValueError(
+                f"KeypointTrackerNode does not support segmentation_level='entity'. "
+                f"Use 'link' or 'geom' instead."
+            )
+        if seg_level not in ("link", "geom"):
+            raise ValueError(
+                f"Unsupported segmentation_level={seg_level!r}. "
+                f"Must be 'link' or 'geom'."
+            )
+        self._segmentation_level = seg_level
+
         self.camera_node = camera_node
         self.max_points = int(max_points)
         self.point_proposer = point_proposer or UniformSegmentationPointProposer()
@@ -336,9 +377,14 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         self._valid_mask = torch.zeros((self._n_envs, self.max_points), dtype=torch.bool, device=self._device)
         self._entity_idx = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self._device)
         self._link_idx = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self._device)
-        self._seg_idxc = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self._device)
+        self._seg_ids = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self._device)
+        self._geom_idx = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self._device)
         self._points_2d = torch.zeros((self._n_envs, self.max_points, 2), dtype=torch.float32, device=self._device)
         self._visibility_mask = torch.zeros((self._n_envs, self.max_points), dtype=torch.bool, device=self._device)
+
+        # Lookup structures for visibility checking
+        # seg_id -> SegmentationTarget (for all tracked seg IDs)
+        self._seg_target_by_id: Dict[int, SegmentationTarget] = {}
 
         self._last_observation: Optional[Dict[str, PyTorchArrayType]] = None
         self.observation_space = self._get_observation_space()
@@ -409,39 +455,52 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         self._valid_mask[env_idx].zero_()
         self._entity_idx[env_idx].fill_(-1)
         self._link_idx[env_idx].fill_(-1)
-        self._seg_idxc[env_idx].fill_(-1)
+        self._seg_ids[env_idx].fill_(-1)
+        self._geom_idx[env_idx].fill_(-1)
         self._points_2d[env_idx].zero_()
         self._visibility_mask[env_idx].zero_()
 
-    def _camera_env_indices(self, n_camera_envs: int) -> torch.Tensor:
-        """Map camera batch axis to world environment indices."""
+    def _validate_camera_batch(self, n_camera_batch: int) -> None:
+        """Assert that the camera batch size matches the world environment count.
+
+        The tracker assumes **all environments are rendered in order** by the
+        delegated camera, so the camera batch dimension must equal the number
+        of environments (or 1 for an unbatched world).
+
+        Raises:
+            RuntimeError: If the sizes do not match.
+        """
         if self.world.batch_size is None:
-            return torch.arange(n_camera_envs, dtype=torch.long, device=self._device)
+            if n_camera_batch != 1:
+                raise RuntimeError(
+                    f"Unbatched world expects camera batch size 1, got "
+                    f"{n_camera_batch}. The keypoint tracker requires all "
+                    f"environments to be rendered in order."
+                )
+            return
+        if n_camera_batch != self._n_envs:
+            raise RuntimeError(
+                f"Camera batch size ({n_camera_batch}) does not match the "
+                f"number of environments ({self._n_envs}). The keypoint "
+                f"tracker requires all environments to be rendered in order "
+                f"(no partial/subset rendering)."
+            )
 
-        if n_camera_envs == self._n_envs:
-            return torch.arange(self._n_envs, dtype=torch.long, device=self._device)
+    def _get_camera_maps(self) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Fetch segmentation and position maps from the camera.
 
-        sensor = self.camera_node.sensor
-        rendered_envs_idx = None
-        if hasattr(sensor, "_visualizer") and hasattr(sensor._visualizer, "_context"):
-            rendered_envs_idx = getattr(sensor._visualizer._context, "rendered_envs_idx", None)
-        if rendered_envs_idx is not None and len(rendered_envs_idx) == n_camera_envs:
-            return torch.tensor(rendered_envs_idx, dtype=torch.long, device=self._device)
-
-        if n_camera_envs == 1:
-            env_idx = self.camera_node.option.env_idx if self.camera_node.option.env_idx is not None else 0
-            return torch.tensor([int(env_idx)], dtype=torch.long, device=self._device)
-
-        return torch.arange(min(n_camera_envs, self._n_envs), dtype=torch.long, device=self._device)
-
-    def _get_camera_maps(self) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
-        """Fetch segmentation, position, and env indices from the camera.
+        The tracker assumes all environments are rendered in order, so the
+        batch dimension of the returned tensors directly corresponds to
+        environment indices (batch index == env index).
 
         Returns:
             seg: ``(B, H, W)`` segmentation tensor.
             position: ``(B, H, W, 3)`` world-position tensor, or ``None`` if
                 the camera provides neither position nor depth.
-            env_indices: ``(B,)`` long tensor mapping camera batch to world envs.
+
+        Raises:
+            RuntimeError: If the camera batch size does not match the world's
+                environment count.
         """
         obs = self.camera_node.get_observation()
         if obs is None:
@@ -477,43 +536,103 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                     f"Segmentation and position batch sizes mismatch: {seg.shape[0]} vs {position.shape[0]}"
                 )
 
-        env_indices = self._camera_env_indices(seg.shape[0])
-        if env_indices.shape[0] != seg.shape[0]:
-            n = min(env_indices.shape[0], seg.shape[0])
-            seg = seg[:n]
-            if position is not None:
-                position = position[:n]
-            env_indices = env_indices[:n]
+        # Enforce: all envs rendered in order (batch index == env index).
+        self._validate_camera_batch(seg.shape[0])
 
-        return seg, position, env_indices
+        return seg, position
 
     @staticmethod
-    def _seg_key_to_entity_and_link(seg_key: Union[int, Tuple[int, ...]]) -> Tuple[int, Optional[int]]:
+    def _seg_key_to_target(seg_idxc: int, seg_key: Union[int, Tuple[int, ...]]) -> Optional[SegmentationTarget]:
+        """Parse a segmentation dict key into a :class:`SegmentationTarget`.
+
+        Genesis segmentation keys have different structures depending on the
+        segmentation level:
+        - ``"entity"``: ``seg_key`` is an ``int`` (entity_idx)
+        - ``"link"``: ``seg_key`` is ``(entity_idx, link_idx)``
+        - ``"geom"``: ``seg_key`` is ``(entity_idx, link_idx, geom_idx)``
+
+        Returns ``None`` if the key cannot be parsed (e.g. entity segmentation
+        which is not supported).
+        """
         if isinstance(seg_key, tuple):
-            entity_idx = int(seg_key[0])
-            link_idx = int(seg_key[1]) if len(seg_key) >= 2 else None
-            return entity_idx, link_idx
-        return int(seg_key), None
+            if len(seg_key) == 2:
+                # link mode: (entity_idx, link_idx)
+                entity_idx, link_idx = int(seg_key[0]), int(seg_key[1])
+                return SegmentationTarget(
+                    seg_id=int(seg_idxc),
+                    entity_idx=entity_idx,
+                    link_idx=link_idx,
+                    geom_idx=-1,
+                )
+            elif len(seg_key) == 3:
+                # geom mode: (entity_idx, link_idx, geom_idx)
+                entity_idx, link_idx, geom_idx = int(seg_key[0]), int(seg_key[1]), int(seg_key[2])
+                return SegmentationTarget(
+                    seg_id=int(seg_idxc),
+                    entity_idx=entity_idx,
+                    link_idx=link_idx,
+                    geom_idx=geom_idx,
+                )
+            else:
+                return None
+        # Entity mode (int) is not supported by this tracker.
+        return None
 
     def _build_seg_to_entity_idx(self) -> Tuple[Dict[int, Tuple[int, int]], Dict[int, str]]:
-        """Build segmentation-ID to (entity_idx, link_idx) mapping.
+        """Build segmentation-ID → (entity_idx, link_idx) mapping.
+
+        This is the single place where Genesis segmentation metadata is
+        interpreted.  It reads ``sensor._visualizer.segmentation_idx_dict``
+        and resolves each entry to a concrete :class:`RigidEntity` and
+        :class:`RigidLink`.
+
+        Uses :attr:`CameraSensorNode.segmentation_sensor` to obtain the
+        correct Genesis-backed sensor (important for NYX hybrid cameras
+        where the primary sensor is a ``NyxCameraSensor``).
+
+        Also populates internal lookup structures for visibility checking:
+        - ``_seg_target_by_id``: seg_id → SegmentationTarget
 
         Returns:
-            seg_to_entity_idx: Maps seg_idxc -> (entity_idx, link_idx).
-            entity_names: Maps entity_idx -> entity name string.
+            seg_to_entity_link: Maps ``seg_id`` → ``(entity_idx, link_idx)``.
+            entity_names: Maps ``entity_idx`` → entity name string.
+
+        Raises:
+            RuntimeError: If the segmentation sensor does not expose a
+                visualizer or segmentation index dictionary.
         """
-        seg_to_entity_idx: Dict[int, Tuple[int, int]] = {}
+        seg_to_entity_link: Dict[int, Tuple[int, int]] = {}
         entity_names: Dict[int, str] = {}
         self._entity_by_idx.clear()
         self._link_by_idx.clear()
+        self._seg_target_by_id.clear()
 
-        sensor = self.camera_node.sensor
-        if not hasattr(sensor, "_visualizer"):
-            return seg_to_entity_idx, entity_names
+        sensor = self.camera_node.segmentation_sensor
+        if sensor is None:
+            raise RuntimeError(
+                f"Camera node '{self.camera_node.name}' has no Genesis sensor "
+                f"for segmentation metadata.  Ensure the camera was initialised "
+                f"(reload called) before the tracker."
+            )
 
-        seg_idx_dict = getattr(sensor._visualizer, "segmentation_idx_dict", None)
+        visualizer = getattr(sensor, "_visualizer", None)
+        if visualizer is None:
+            raise RuntimeError(
+                f"Camera node '{self.camera_node.name}': the Genesis sensor "
+                f"({type(sensor).__name__}) does not expose '_visualizer'.  "
+                f"The keypoint tracker requires Genesis segmentation metadata "
+                f"(segmentation_idx_dict) to map pixels to entities."
+            )
+
+        seg_idx_dict = getattr(visualizer, "segmentation_idx_dict", None)
         if seg_idx_dict is None:
-            return seg_to_entity_idx, entity_names
+            raise RuntimeError(
+                f"Camera node '{self.camera_node.name}': the Genesis sensor's "
+                f"visualizer does not have 'segmentation_idx_dict'.  "
+                f"Ensure the camera was created with segmentation rendering "
+                f"enabled (render_seg=True) and that the scene contains rigid "
+                f"entities."
+            )
 
         rigid_solver = self.world.scene.rigid_solver
         rigid_entities = rigid_solver.entities
@@ -522,7 +641,14 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         n_links = len(rigid_links)
 
         for seg_idxc, seg_key in seg_idx_dict.items():
-            entity_idx, link_idx = self._seg_key_to_entity_and_link(seg_key)
+            target = self._seg_key_to_target(int(seg_idxc), seg_key)
+            if target is None:
+                # Entity mode or unrecognized key format — skip.
+                continue
+
+            entity_idx = target.entity_idx
+            link_idx = target.link_idx
+
             if entity_idx < 0 or entity_idx >= n_entities:
                 continue
 
@@ -530,20 +656,22 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
             if not isinstance(entity, RigidEntity):
                 continue
 
-            resolved_link_idx = int(entity.base_link_idx) if link_idx is None else int(link_idx)
-            if resolved_link_idx < 0 or resolved_link_idx >= n_links:
+            if link_idx < 0 or link_idx >= n_links:
                 continue
 
-            link = rigid_links[resolved_link_idx]
+            link = rigid_links[link_idx]
             if not isinstance(link, RigidLink):
                 continue
 
-            seg_to_entity_idx[int(seg_idxc)] = (int(entity_idx), int(resolved_link_idx))
-            entity_names[int(entity_idx)] = entity.name
-            self._entity_by_idx[int(entity_idx)] = entity
-            self._link_by_idx[int(resolved_link_idx)] = link
+            seg_to_entity_link[target.seg_id] = (entity_idx, link_idx)
+            entity_names[entity_idx] = entity.name
+            self._entity_by_idx[entity_idx] = entity
+            self._link_by_idx[link_idx] = link
 
-        return seg_to_entity_idx, entity_names
+            # Populate lookup structures for visibility checking
+            self._seg_target_by_id[target.seg_id] = target
+
+        return seg_to_entity_link, entity_names
 
     def _populate_slots(
         self,
@@ -572,12 +700,18 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
 
         entity_indices = torch.full((n,), -1, dtype=torch.int64, device=self._device)
         link_indices = torch.full((n,), -1, dtype=torch.int64, device=self._device)
+        geom_indices = torch.full((n,), -1, dtype=torch.int64, device=self._device)
         for i in range(n):
-            assign = seg_to_entity_and_link.get(int(sids[i].item()), None)
+            seg_id_i = int(sids[i].item())
+            assign = seg_to_entity_and_link.get(seg_id_i, None)
             if assign is None:
                 continue
             entity_indices[i] = int(assign[0])
             link_indices[i] = int(assign[1])
+            # Look up geom_idx from the target if available
+            target = self._seg_target_by_id.get(seg_id_i, None)
+            if target is not None:
+                geom_indices[i] = target.geom_idx
 
         resolved = (entity_indices >= 0) & (link_indices >= 0)
         if not torch.any(resolved):
@@ -587,6 +721,7 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         pts = pts[resolved]
         entity_indices = entity_indices[resolved]
         link_indices = link_indices[resolved]
+        geom_indices = geom_indices[resolved]
         n_valid = entity_indices.shape[0]
 
         local_offsets = torch.zeros((n_valid, 3), dtype=torch.float32, device=self._device)
@@ -610,30 +745,42 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
             local_offsets[lm] = quaternion_apply(q_inv, delta)
 
         self._valid_mask[env_idx, :n_valid] = True
-        self._visibility_mask[env_idx, :n_valid] = True
         self._entity_idx[env_idx, :n_valid] = entity_indices.to(torch.int32)
         self._link_idx[env_idx, :n_valid] = link_indices.to(torch.int32)
-        self._seg_idxc[env_idx, :n_valid] = sids.to(torch.int32)
+        self._seg_ids[env_idx, :n_valid] = sids.to(torch.int32)
+        self._geom_idx[env_idx, :n_valid] = geom_indices.to(torch.int32)
         self._local_offsets[env_idx, :n_valid] = local_offsets
         self._points_world[env_idx, :n_valid] = pts
         self._prev_points_world[env_idx, :n_valid] = pts
         self._flow_world[env_idx, :n_valid].zero_()
 
     def _init_tracks(self, mask: Optional[PyTorchArrayType] = None) -> None:
-        seg, position, camera_env_indices = self._get_camera_maps()
+        """Initialise (or re-initialise) keypoint tracks from camera segmentation.
 
+        Args:
+            mask: Optional ``(B,)`` bool tensor indicating which environments
+                should be (re)initialised.  When ``None``, all environments
+                are initialised.
+        """
+        seg, position = self._get_camera_maps()
+        if position is None:
+            raise RuntimeError(
+                f"KeypointTrackerNode '{self.name}': camera node "
+                f"'{self.camera_node.name}' did not provide a position map "
+                f"(neither 'position' nor 'depth' in its observation). "
+                f"Track initialisation requires per-pixel 3D positions. "
+                f"Enable render_position or render_depth on the camera."
+            )
+        B = seg.shape[0]
+
+        # Determine which envs to (re)initialise.
         if mask is not None and self.world.batch_size is not None:
-            mask_t = mask
+            reset_envs = torch.where(mask)[0]
         else:
-            mask_t = None
+            reset_envs = torch.arange(B, dtype=torch.long, device=self._device)
 
-        if mask_t is None:
-            for env_idx in range(self._n_envs):
-                self._zero_env_slots(env_idx)
-        else:
-            reset_envs = torch.where(mask_t)[0]
-            for env_idx in reset_envs.tolist():
-                self._zero_env_slots(int(env_idx))
+        for env_idx in reset_envs.tolist():
+            self._zero_env_slots(int(env_idx))
 
         seg_to_entity_and_link, entity_names = self._build_seg_to_entity_idx()
         seg_to_entity_idx = {
@@ -641,7 +788,7 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
             for seg_idxc, (entity_idx, _link_idx) in seg_to_entity_and_link.items()
         }
 
-        # Build batched camera_obs with normalized seg/position from _get_camera_maps.
+        # Build batched camera_obs dict for the proposer.
         raw_obs = self.camera_node.get_observation()
         camera_obs: Dict[str, torch.Tensor] = {"seg": seg, "position": position}
         for key in ("rgb", "depth", "normal", "intrinsics_cv", "extrinsics_cv"):
@@ -652,21 +799,13 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 else:
                     camera_obs[key] = val.unsqueeze(0).expand(seg.shape[0], *val.shape)
 
-        # Build per-camera-batch active mask and pre-filter camera_obs.
-        active_mask = (camera_env_indices >= 0) & (camera_env_indices < self._n_envs)
-        if mask_t is not None:
-            for batch_i in range(seg.shape[0]):
-                ei = int(camera_env_indices[batch_i].item())
-                if 0 <= ei < self._n_envs:
-                    active_mask[batch_i] = active_mask[batch_i] & mask_t[ei]
-
-        active_indices = torch.where(active_mask)[0]
-        if active_indices.numel() == 0:
+        if reset_envs.numel() == 0:
+            self._update_visibility()
             self._refresh_observation()
             return
 
-        # Slice camera_obs to only active entries (B' = active_indices.numel()).
-        filtered_obs = {k: v[active_indices] for k, v in camera_obs.items()}
+        # Slice camera_obs to only the envs being (re)initialised.
+        filtered_obs = {k: v[reset_envs] for k, v in camera_obs.items()}
 
         points_world, seg_ids, proposer_valid = self.point_proposer.propose(
             camera_obs=filtered_obs,
@@ -676,17 +815,20 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
             generator=self._rng,
         )
 
-        # Map B' results back to env indices.
-        for i, batch_i in enumerate(active_indices.tolist()):
-            env_idx = int(camera_env_indices[batch_i].item())
+        # Write proposer results back to the corresponding env slots.
+        # Batch index i in proposer output corresponds to reset_envs[i].
+        for i, env_idx in enumerate(reset_envs.tolist()):
             self._populate_slots(
-                env_idx=env_idx,
+                env_idx=int(env_idx),
                 points_world=points_world[i],
                 seg_ids=seg_ids[i],
                 valid=proposer_valid[i],
                 seg_to_entity_and_link=seg_to_entity_and_link,
             )
 
+        # Compute points_2d and proper visibility_masks before publishing
+        # the first observation, so consumers see valid projections.
+        self._update_visibility()
         self._refresh_observation()
 
     def _update_points_from_entity_pose(self) -> None:
@@ -733,9 +875,18 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         """Project points to 2D and update visibility masks.
 
         Uses :func:`world_to_pixel_coordinate_and_depth` to project 3D points
-        into pixel space.  A point is visible when its nearest-integer pixel
-        falls inside the image and the segmentation at that pixel matches the
-        point's cached segmentation ID.
+        into pixel space.  A point is visible when:
+
+        1. Its nearest-integer pixel falls inside the image.
+        2. The segmentation at that pixel matches the point's expected seg ID
+           (link mode) or belongs to the same (entity_idx, link_idx) (geom mode).
+        3. *(Depth consistency)* The depth at that pixel in the rendered
+           depth/position map is consistent with the projected depth of the
+           tracked point (within a tolerance).  This catches self-occlusion
+           cases where the seg ID alone is insufficient.
+
+        Assumes all environments are rendered in order (batch index == env
+        index), consistent with :meth:`_validate_camera_batch`.
         """
         self._points_2d.zero_()
         self._visibility_mask.zero_()
@@ -758,43 +909,160 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
             extrinsics = extrinsics.unsqueeze(0)
 
         H, W = seg.shape[-2], seg.shape[-1]
-        camera_env_indices = self._camera_env_indices(seg.shape[0])
+        self._validate_camera_batch(seg.shape[0])
 
-        # Filter to valid env indices.
-        valid_cam = (camera_env_indices >= 0) & (camera_env_indices < self._n_envs)
-        cam_idx = torch.arange(seg.shape[0], device=self._device)[valid_cam]
-        env_idx = camera_env_indices[valid_cam]
-        if env_idx.numel() == 0:
-            return
-
-        # Gather points and project all envs at once: (B, max_points, 3).
-        pts = self._points_world[env_idx]
-        pixel_xy, depth = world_to_pixel_coordinate_and_depth(
-            pts, intrinsics[cam_idx], extrinsics[cam_idx],
-        )  # pixel_xy: (B, max_points, 2), depth: (B, max_points)
-        self._points_2d[env_idx] = pixel_xy
+        # Project all envs at once: (B, max_points, 3) → (B, max_points, 2).
+        pts = self._points_world  # (B, max_points, 3)
+        pixel_xy, proj_depth = world_to_pixel_coordinate_and_depth(
+            pts, intrinsics, extrinsics,
+        )  # pixel_xy: (B, max_points, 2), proj_depth: (B, max_points)
+        self._points_2d.copy_(pixel_xy)
 
         # Visibility: valid, in front of camera, within image bounds.
-        valid = self._valid_mask[env_idx]  # (B, max_points)
         u, v = pixel_xy[..., 0], pixel_xy[..., 1]
-        in_bounds = valid & (depth > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+        in_bounds = self._valid_mask & (proj_depth > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
 
         # Seg lookup via gather on flattened spatial dims.
         u_px = u.clamp(0, W - 1).round().long()
         v_px = v.clamp(0, H - 1).round().long()
-        seg_batch = seg[cam_idx]  # (B, H, W)
         pixel_flat = v_px * W + u_px  # (B, max_points)
-        seg_at_pixel = seg_batch.reshape(seg_batch.shape[0], -1).gather(1, pixel_flat)
+        seg_flat = seg.reshape(seg.shape[0], -1)  # (B, H*W)
+        seg_at_pixel = seg_flat.gather(1, pixel_flat)
 
-        expected_seg = self._seg_idxc[env_idx]  # (B, max_points)
-        self._visibility_mask[env_idx] = in_bounds & (seg_at_pixel == expected_seg)
+        # Level-aware seg visibility check
+        if self._segmentation_level == "link":
+            # Link mode: exact seg-ID match
+            seg_visible = in_bounds & (seg_at_pixel == self._seg_ids)
+        else:
+            # Geom mode: match on (entity_idx, link_idx) at the pixel
+            # For each point, check if the seg ID at its pixel belongs to
+            # the same (entity_idx, link_idx) as the tracked point.
+            seg_visible = in_bounds & self._check_geom_visibility(seg_at_pixel)
+
+        # Depth/position consistency check to catch self-occlusion.
+        depth_consistent = self._check_depth_consistency(
+            cam_obs, u_px, v_px, proj_depth, H, W,
+        )
+
+        self._visibility_mask = seg_visible & depth_consistent
+
+    def _check_geom_visibility(self, seg_at_pixel: torch.Tensor) -> torch.Tensor:
+        """Check geom-mode visibility: seg ID at pixel must belong to same (entity, link).
+
+        In geom mode, multiple seg IDs can correspond to the same (entity_idx, link_idx)
+        (one per geom). A tracked point is visible if the seg ID at its projected pixel
+        belongs to the same (entity_idx, link_idx) as the point's tracked target.
+
+        Args:
+            seg_at_pixel: ``(B, max_points)`` int tensor of seg IDs at projected pixels.
+
+        Returns:
+            ``(B, max_points)`` bool tensor.
+        """
+        B, max_points = seg_at_pixel.shape
+        result = torch.zeros((B, max_points), dtype=torch.bool, device=self._device)
+
+        # For each valid point, check if the seg ID at its pixel belongs to
+        # the same (entity_idx, link_idx).
+        for b in range(B):
+            for p in range(max_points):
+                if not self._valid_mask[b, p]:
+                    continue
+                seg_id_at_px = int(seg_at_pixel[b, p].item())
+                # Unknown/background seg IDs are invisible
+                if seg_id_at_px < 0:
+                    continue
+                target_at_px = self._seg_target_by_id.get(seg_id_at_px, None)
+                if target_at_px is None:
+                    # Seg ID not in our tracked set — invisible
+                    continue
+                # Check if the seg ID at the pixel belongs to the same (entity, link)
+                tracked_entity = int(self._entity_idx[b, p].item())
+                tracked_link = int(self._link_idx[b, p].item())
+                if (target_at_px.entity_idx == tracked_entity and
+                    target_at_px.link_idx == tracked_link):
+                    result[b, p] = True
+
+        return result
+
+    def _check_depth_consistency(
+        self,
+        cam_obs: Dict[str, torch.Tensor],
+        u_px: torch.Tensor,
+        v_px: torch.Tensor,
+        proj_depth: torch.Tensor,
+        H: int,
+        W: int,
+        *,
+        depth_tolerance: float = 0.05,
+    ) -> torch.Tensor:
+        """Check depth consistency at projected pixel locations.
+
+        Compares the projected depth of each tracked point with the actual
+        depth at the corresponding pixel in the rendered depth map (or
+        position map).  Returns a bool tensor of shape ``(B, max_points)``
+        that is ``True`` where the depth is consistent (within tolerance)
+        or where no depth data is available for the check.
+
+        Args:
+            cam_obs: Camera observation dictionary.
+            u_px: ``(B, max_points)`` integer u-pixel coordinates.
+            v_px: ``(B, max_points)`` integer v-pixel coordinates.
+            proj_depth: ``(B, max_points)`` expected camera-space depth.
+            H: Image height.
+            W: Image width.
+            depth_tolerance: Maximum allowed absolute depth difference (m).
+
+        Returns:
+            ``(B, max_points)`` bool tensor.
+        """
+        B = proj_depth.shape[0]
+        max_points = proj_depth.shape[1]
+
+        # Obtain a depth map (B, H, W) from the camera observation.
+        depth_map: Optional[torch.Tensor] = None
+        if "depth" in cam_obs:
+            depth_map = cam_obs["depth"]
+            if depth_map.ndim == 2:
+                depth_map = depth_map.unsqueeze(0)
+        elif "position" in cam_obs:
+            # Derive camera-space depth from the position map.
+            position = cam_obs["position"]
+            if position.ndim == 3:
+                position = position.unsqueeze(0)
+            # Transform world positions to camera space and take z.
+            # extrinsics: (B, 3, 4) or (B, 4, 4); position: (B, H, W, 3)
+            extrinsics = cam_obs["extrinsics_cv"]
+            if extrinsics.ndim == 2:
+                extrinsics = extrinsics.unsqueeze(0)
+            pos_flat = position.reshape(B, H * W, 3)
+            R = extrinsics[..., :3, :3]   # (B, 3, 3)
+            t = extrinsics[..., :3, 3:]   # (B, 3, 1)
+            cam_flat = R @ pos_flat.transpose(-1, -2) + t  # (B, 3, H*W)
+            depth_map = cam_flat[:, 2, :].reshape(B, H, W)
+
+        if depth_map is None:
+            # No depth data available — skip the check (all pass).
+            return torch.ones(
+                (B, max_points), dtype=torch.bool, device=proj_depth.device,
+            )
+
+        # Look up rendered depth at each projected pixel.
+        pixel_flat = v_px * W + u_px  # (B, max_points)
+        depth_flat = depth_map.reshape(B, -1)  # (B, H*W)
+        rendered_depth = depth_flat.gather(1, pixel_flat)  # (B, max_points)
+
+        # Consistent when both depths are positive and close.
+        both_positive = (proj_depth > 0) & (rendered_depth > 0)
+        depth_diff = (proj_depth - rendered_depth).abs()
+        return ~both_positive | (depth_diff < depth_tolerance)
 
     def _refresh_observation(self) -> None:
         obs: Dict[str, PyTorchArrayType] = {
             "point_positions": self._points_world,
             "points_2d": self._points_2d,
             "point_movements": self._flow_world,
-            "point_segmentations": self._seg_idxc,
+            "point_segmentations": self._seg_ids,
             "valid_masks": self._valid_mask.to(torch.uint8),
             "visibility_masks": self._visibility_mask.to(torch.uint8),
         }

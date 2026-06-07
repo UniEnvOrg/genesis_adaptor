@@ -107,7 +107,6 @@ class CameraSensorNodeOptions:
     Use ``AttachFromName(entity_name, link_name)`` for name-based attachment,
     or implement a custom ``AttachmentProvider``.
     """
-
     # ========== NYX-specific options ==========
     render_mode : Optional[Any] = None
     """``npr.ERenderMode`` value (e.g. ``npr.ERenderMode.FastPathTracer``).
@@ -844,6 +843,21 @@ class CameraSensorNode(SensorNode[
 
         self._last_observation = obs
     
+    @property
+    def segmentation_sensor(self) -> CameraSensor:
+        """Return the Genesis-backed sensor that provides segmentation metadata.
+
+        When using the NYX backend with a secondary Genesis camera for
+        depth/seg/normal, this returns the secondary ``_genesis_sensor``.
+        Otherwise it returns the primary ``sensor``.
+
+        This is the correct source for ``_visualizer.segmentation_idx_dict``
+        and other Genesis-specific segmentation metadata.
+        """
+        if self._genesis_sensor is not None:
+            return self._genesis_sensor
+        return self.sensor
+
     def get_observation(self) -> ObsType:
         """Get the latest camera observation."""
         return self._last_observation
