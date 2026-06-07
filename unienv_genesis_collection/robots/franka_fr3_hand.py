@@ -13,13 +13,26 @@ from unienv_genesis.nodes.entities.entity_controllers import CONTROL_MODE_T
 from unienv_genesis_collection.asset_path import get_asset_path
 
 # Default home joint positions for FR3 arm (7 DOF) + Franka Hand (2 DOF, fully open)
-HOME_JOINT_POSITIONS = torch.tensor([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853, 0.04, 0.04])
+ARM_HOME_JOINT_POSITIONS = torch.tensor([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
+GRIPPER_HOME_JOINT_POSITIONS = torch.tensor([0.04, 0.04])
+HOME_JOINT_POSITIONS = torch.cat([ARM_HOME_JOINT_POSITIONS, GRIPPER_HOME_JOINT_POSITIONS])
 
 # End-effector link name for IK control
 EE_LINK_NAME = "hand"
 
 # Finger link names for grasp contact detection
 FINGER_PAD_LINK_NAMES = ["left_finger", "right_finger"]
+
+# DROID IK/controller velocity limit for the Franka arm (rad/s).
+# This is the max joint velocity used by the DROID IK controller, not the
+# per-joint hardware limits from franka_hardware.yaml.
+# Ref: https://github.com/droid-dataset/droid/blob/main/droid/robot_ik/robot_ik_solver.py#L10
+DROID_FRANKA_ARM_IK_VEL_LIMIT = 0.2
+
+# Franka hardware per-joint velocity limits (rad/s) from franka_hardware.yaml.
+# Kept here for reference / documentation only; NOT used by the active
+# controller, which uses the DROID IK/controller limit above (0.2 rad/s).
+DROID_FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS = torch.tensor([2.075, 2.075, 2.075, 2.075, 2.51, 2.51, 2.51])
 
 
 def _make_is_grasping(pad_link_names):
@@ -65,6 +78,8 @@ _DEFAULT_SUB_CONTROLLERS = {
         # (see base_object.list_box_gripper_grasping_candidates_local).
         #   finger base z = 0.0584 m + finger pad extent z = 0.053 m
         "eef_offset_pos": [0.0, 0.0, 0.1114],
+        # DROID IK/controller velocity limit for the Franka arm (rad/s).
+        "max_joint_pos_vel": DROID_FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS,
     },
     "gripper": {
         "controller_type": "mimic_joint_position",
