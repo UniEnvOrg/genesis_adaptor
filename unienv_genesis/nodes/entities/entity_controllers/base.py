@@ -18,6 +18,7 @@ from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import (
     get_batch_aware_shape,
     is_batched,
+    broadcast_to_batch,
 )
 from ..base import EntityNode, EntityType, ContextType, ObsType, ActType
 
@@ -85,7 +86,7 @@ class EntityController(
     def get_observation(self) -> Optional[ObsType]:
         return None
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return a structured dict describing the commanded target.
 
         This is an introspection helper — it does **not** apply the action.
@@ -94,11 +95,16 @@ class EntityController(
 
         The base implementation wraps the raw action under the key
         ``"action"`` so that callers always receive a dict.
+
+        Args:
+            action: The raw action tensor or dict.
+            dt: Optional control timestep in seconds.  Used by subclasses that
+                apply rate-limit clipping (``max_joint_pos_vel``).
         """
         return {"action": action}
 
     @abc.abstractmethod
-    def apply_action(self, action : ActType) -> None:
+    def apply_action(self, action: Any, dt: Optional[float] = None) -> None:
         raise NotImplementedError
     
     def reload(self) -> None:
@@ -134,6 +140,9 @@ class DiscreteEntityController(
         base_frame : Optional[str] = None,
         eef_offset_pos : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
         eef_offset_quat : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
+        # Optional rate-limit / velocity clipping
+        max_joint_pos_vel : Optional[Union[float, PyTorchArrayType]] = None,
+        max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         **kwargs,
     ) -> None:
         joint_indexes = resolve_joint_indexes(entity, joint_indexes, joint_names)
@@ -233,6 +242,16 @@ class DiscreteEntityController(
 
         self._is_grasping_fn = is_grasping_fn
 
+        # ----- Rate-limit / velocity clipping tensors -----
+        self._max_joint_pos_vel = (
+            broadcast_to_batch(max_joint_pos_vel, batch_size, n_dofs, device=joint_position_low.device)
+            if max_joint_pos_vel is not None else None
+        )
+        self._max_joint_vel = (
+            broadcast_to_batch(max_joint_vel, batch_size, n_dofs, device=joint_position_low.device)
+            if max_joint_vel is not None else None
+        )
+
         # EEF offset: translates the virtual EEF point away from the physical
         # target_link origin.  Stored in the target_link's local frame.
         if self._has_eef and eef_offset_pos is not None:
@@ -258,6 +277,30 @@ class DiscreteEntityController(
             self.target_link = None
             self.base_frame = None
 
+    # ------------------------------------------------------------------
+    # Public rate-limit / velocity clipping accessors
+    # ------------------------------------------------------------------
+
+    @property
+    def max_joint_pos_vel(self) -> Optional[PyTorchArrayType]:
+        """Effective per-step position rate limit used by this controller.
+
+        Returns the expanded (possibly batch-broadcast) tensor of shape
+        ``(batch_size, n_dofs)`` or ``(n_dofs,)`` that is actually used for
+        clipping, or ``None`` if no rate limit was configured.
+        """
+        return self._max_joint_pos_vel
+
+    @property
+    def max_joint_vel(self) -> Optional[PyTorchArrayType]:
+        """Effective joint velocity limit used by this controller.
+
+        Returns the expanded (possibly batch-broadcast) tensor of shape
+        ``(batch_size, n_dofs)`` or ``(n_dofs,)`` that is actually used for
+        clipping, or ``None`` if no velocity limit was configured.
+        """
+        return self._max_joint_vel
+
     def is_grasping(self, target_entity):
         """Check if this controller's entity is grasping the target.
 
@@ -267,6 +310,52 @@ class DiscreteEntityController(
         if self._is_grasping_fn is None:
             return None
         return self._is_grasping_fn(self.entity, target_entity)
+
+    # ------------------------------------------------------------------
+    # Rate-limit / velocity clipping helpers
+    # ------------------------------------------------------------------
+
+    def _clip_target_qpos(
+        self,
+        target_qpos: PyTorchArrayType,
+        dt: Optional[float],
+    ) -> PyTorchArrayType:
+        """Clip *target_qpos* so that the per-step change respects ``max_joint_pos_vel``.
+
+        The allowed delta per controller step is ``max_joint_pos_vel * dt``.
+        If ``max_joint_pos_vel`` was not configured or *dt* is ``None`` the
+        target is returned unchanged (aside from joint-limit clipping which is
+        always applied when limits are finite).
+
+        Args:
+            target_qpos: Target joint positions for the controlled DOFs.
+            dt: Control timestep in seconds.
+
+        Returns:
+            Clipped target joint positions (same shape as *target_qpos*).
+        """
+        if self._max_joint_pos_vel is not None and dt is not None:
+            current_qpos = self.entity.get_dofs_position(dofs_idx_local=self.joint_indexes)
+            max_delta = self._max_joint_pos_vel * float(dt)
+            delta = target_qpos - current_qpos
+            clipped_delta = torch.clamp(delta, -max_delta, max_delta)
+            target_qpos = current_qpos + clipped_delta
+        # Always enforce joint position limits
+        target_qpos = torch.clamp(target_qpos, self.joint_position_low, self.joint_position_high)
+        return target_qpos
+
+    def _clip_target_qvel(
+        self,
+        target_qvel: PyTorchArrayType,
+    ) -> PyTorchArrayType:
+        """Clip *target_qvel* to ``[-max_joint_vel, max_joint_vel]``.
+
+        Velocity clipping is assumed symmetric around zero.  If
+        ``max_joint_vel`` was not configured the target is returned unchanged.
+        """
+        if self._max_joint_vel is None:
+            return target_qvel
+        return torch.clamp(target_qvel, -self._max_joint_vel, self._max_joint_vel)
 
     # ------------------------------------------------------------------
     # End-effector metadata helpers
@@ -443,14 +532,14 @@ class DiscreteEntityController(
             result["target_eef_quaternion"] = eef_quat
         return result
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return a structured dict describing the commanded target.
 
         ``DiscreteEntityController`` does not know the action semantics on its
         own; concrete subclasses (position, velocity, …) override this.
         The default delegates to the generic base implementation.
         """
-        return super().get_action_dict(action)
+        return super().get_action_dict(action, dt=dt)
 
     def get_observation(self):
         qpos = self.entity.get_dofs_position(dofs_idx_local=self.joint_indexes)
@@ -474,5 +563,5 @@ class DiscreteEntityController(
         return obs
 
     @abc.abstractmethod
-    def apply_action(self, action):
+    def apply_action(self, action, dt: Optional[float] = None):
         raise NotImplementedError

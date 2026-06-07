@@ -27,10 +27,12 @@ class JointPositionAndVelocityController(
         Kp : Optional[Union[float, PyTorchArrayType]] = None,
         Kd : Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes : Optional[Sequence[int]] = None,
-        min_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
+        max_joint_pos_vel : Optional[Union[float, PyTorchArrayType]] = None,
         joint_names : Optional[Sequence[str]] = None,
         is_grasping_fn = None,
+        position_control_low : Optional[Union[float, PyTorchArrayType]] = None,
+        position_control_high : Optional[Union[float, PyTorchArrayType]] = None,
         **kwargs,
     ) -> None:
         joint_indexes = resolve_joint_indexes(entity, joint_indexes, joint_names)
@@ -40,14 +42,21 @@ class JointPositionAndVelocityController(
         # Get limits from entity - returns (low, high) tuple of shape (batch_size, n_dofs) or (n_dofs,)
         joint_limit_low, joint_limit_high = entity.get_dofs_limit(dofs_idx_local=joint_indexes)
 
-        # Build velocity limit tensors if provided
-        vel_low = (
-            broadcast_to_batch(min_joint_vel, batch_size, n_dofs, device=joint_limit_low.device)
-            if min_joint_vel is not None else None
-        )
-        vel_high = (
+        # Build velocity limit tensor if provided (symmetric around zero)
+        vel_limit = (
             broadcast_to_batch(max_joint_vel, batch_size, n_dofs, device=joint_limit_low.device)
             if max_joint_vel is not None else None
+        )
+
+        # Position action-space bounds: use explicit overrides if provided,
+        # otherwise fall back to the entity's joint position limits.
+        pos_action_low = (
+            broadcast_to_batch(position_control_low, batch_size, n_dofs, device=joint_limit_low.device)
+            if position_control_low is not None else joint_limit_low
+        )
+        pos_action_high = (
+            broadcast_to_batch(position_control_high, batch_size, n_dofs, device=joint_limit_low.device)
+            if position_control_high is not None else joint_limit_high
         )
 
         action_space = DictSpace(
@@ -55,23 +64,29 @@ class JointPositionAndVelocityController(
             {
                 "target_joint_position": BoxSpace(
                     PyTorchComputeBackend,
-                    low=joint_limit_low,
-                    high=joint_limit_high,
+                    low=pos_action_low,
+                    high=pos_action_high,
                     dtype=joint_limit_low.dtype,
                     device=joint_limit_low.device,
                 ),
                 "target_joint_velocity": BoxSpace(
                     PyTorchComputeBackend,
-                    low=vel_low if vel_low is not None else -torch.inf,
-                    high=vel_high if vel_high is not None else torch.inf,
-                    shape=None if vel_low is not None else get_batch_aware_shape(batch_size, n_dofs),
+                    low=-vel_limit if vel_limit is not None else -torch.inf,
+                    high=vel_limit if vel_limit is not None else torch.inf,
+                    shape=None if vel_limit is not None else get_batch_aware_shape(batch_size, n_dofs),
                     dtype=joint_limit_low.dtype,
                     device=joint_limit_low.device,
                 ),
             },
             device=joint_limit_low.device,
         )
-        super().__init__(world, entity, joint_indexes, action_space, is_grasping_fn=is_grasping_fn, **kwargs)
+        super().__init__(
+            world, entity, joint_indexes, action_space,
+            is_grasping_fn=is_grasping_fn,
+            max_joint_vel=max_joint_vel,
+            max_joint_pos_vel=max_joint_pos_vel,
+            **kwargs,
+        )
         self.Kp = Kp
         self.Kd = Kd
 
@@ -117,22 +132,25 @@ class JointPositionAndVelocityController(
         if self._Kd_expanded is not None:
             self.entity.set_dofs_kv(self._Kd_expanded, dofs_idx_local=self.joint_indexes)
 
-    def apply_action(self, action):
+    def apply_action(self, action, dt: Optional[float] = None):
+        target_qpos = self._clip_target_qpos(action['target_joint_position'], dt)
+        target_qvel = self._clip_target_qvel(action['target_joint_velocity'])
         self.entity.control_dofs_position_velocity(
-            action['target_joint_position'],
-            action['target_joint_velocity'],
+            target_qpos,
+            target_qvel,
             dofs_idx_local=self.joint_indexes
         )
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict for combined position+velocity control.
 
         ``action`` is expected to be a dict with keys ``target_joint_position``
-        and ``target_joint_velocity``.  The returned dict includes both, plus
-        optional FK-based EEF pose derived from the position target.
+        and ``target_joint_velocity``.  The returned dict includes both
+        (after rate-limit / velocity clipping), plus optional FK-based EEF
+        pose derived from the clipped position target.
         """
-        target_qpos = action['target_joint_position']
-        target_qvel = action['target_joint_velocity']
+        target_qpos = self._clip_target_qpos(action['target_joint_position'], dt)
+        target_qvel = self._clip_target_qvel(action['target_joint_velocity'])
         result = self._get_action_dict_from_qpos(target_qpos)
         result['target_joint_velocity'] = target_qvel
         return result

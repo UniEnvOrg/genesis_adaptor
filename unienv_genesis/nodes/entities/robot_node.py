@@ -86,6 +86,29 @@ class RobotDescriptionNode(EntityNode[
     @property
     def action_space(self) -> Optional[Space[ActType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]]:
         return self.controller.action_space if self.controller is not None else None
+
+    @property
+    def max_joint_pos_vel(self) -> Optional[Any]:
+        """Effective position rate limit for this robot's controller.
+
+        Returns a tensor of shape ``([batch_size], n_dofs)`` representing the maximum allowed change in joint position per control step. Note that `batch_size` dimension is always consistent with the batch size of the world, if applicable.  Unconstrained joints have ``inf`` entries.
+
+        Returns ``None`` only when the controller does not expose a usable
+        rate limit (e.g. a sub-controller without ``max_joint_pos_vel``) or
+        no value was configured.
+        """
+        return getattr(self.controller, 'max_joint_pos_vel', None)
+
+    @property
+    def max_joint_vel(self) -> Optional[Any]:
+        """Effective joint velocity limit for this robot's controller.
+
+        Returns a tensor of shape ``([batch_size], n_dofs)`` representing the maximum allowed joint velocity. Note that `batch_size` dimension is always consistent with the batch size of the world, if applicable.  Unconstrained joints have ``inf`` entries.
+
+        Returns ``None`` if the controller does not support this value (e.g.
+        combined controllers) or no value was configured.
+        """
+        return getattr(self.controller, 'max_joint_vel', None)
     
     def __init__(
         self,
@@ -236,7 +259,7 @@ class RobotDescriptionNode(EntityNode[
     def pre_environment_step(self, dt, *, priority = 0):
         if priority == 0:
             if self._next_action is not None:
-                self.controller.apply_action(self._next_action)
+                self.controller.apply_action(self._next_action, dt=dt)
 
     def post_environment_step(
         self,
@@ -253,7 +276,7 @@ class RobotDescriptionNode(EntityNode[
     def set_next_action(self, action):
         self._next_action = action
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return a structured dict describing the commanded target.
 
         Delegates to the underlying controller's :meth:`get_action_dict`.
@@ -262,6 +285,9 @@ class RobotDescriptionNode(EntityNode[
         Args:
             action: The raw action tensor or dict in the format expected by
                 the controller's ``apply_action``.
+            dt: Optional control timestep in seconds used for rate-limit
+                clipping.  Defaults to ``self.control_timestep`` when not
+                supplied.
 
         Returns:
             A dict with semantically meaningful keys such as
@@ -276,7 +302,9 @@ class RobotDescriptionNode(EntityNode[
                 "Controller has not been initialised yet. "
                 "Call reload()/after_reload() first."
             )
-        return self.controller.get_action_dict(action)
+        if dt is None:
+            dt = self.control_timestep
+        return self.controller.get_action_dict(action, dt=dt)
 
     # ------------------------------------------------------------------
     # Genesis RigidEntity pass-through helpers
@@ -333,7 +361,7 @@ class RobotDescriptionNode(EntityNode[
         timeout: Optional[float] = None,
         max_retry: int = 1,
         smooth_path: bool = True,
-        num_waypoints: int = 300,
+        num_waypoints: Optional[int] = None,
         ignore_collision: bool = False,
         planner: str = "RRTConnect",
         envs_idx: Optional[PyTorchArrayType] = None,
@@ -356,7 +384,15 @@ class RobotDescriptionNode(EntityNode[
             timeout: Per-attempt timeout in seconds (``None`` = no timeout).
             max_retry: Number of retry attempts.
             smooth_path: Whether to smooth the resulting path.
-            num_waypoints: Number of waypoints after interpolation.
+            num_waypoints: Number of waypoints after interpolation.  When
+                ``None`` (the default), the method attempts to infer a
+                minimum waypoint count from the controller's
+                ``max_joint_pos_vel`` rate limit and the robot's
+                ``control_timestep`` so that adjacent waypoints obey
+                ``|Δq| <= max_joint_pos_vel * dt``.  Joints with ``inf``
+                rate limits (unconstrained) do not increase the count.
+                If inference is not possible (no rate limit configured at
+                all), falls back to **300**.
             ignore_collision: If ``True``, ignore collision checks.
             planner: Planner name (default ``"RRTConnect"``).
             envs_idx: Optional batch indices to plan for.
@@ -372,6 +408,8 @@ class RobotDescriptionNode(EntityNode[
             ``return_valid_mask=True``.
         """
         entity = self._require_rigid_entity()
+        if num_waypoints is None:
+            num_waypoints = self._infer_path_waypoint_count(qpos_goal, qpos_start)
         return entity.plan_path(
             qpos_goal,
             qpos_start=qpos_start,
@@ -389,3 +427,80 @@ class RobotDescriptionNode(EntityNode[
             with_entity=with_entity,
             **kwargs,
         )
+
+    # ------------------------------------------------------------------
+    # Motion-planning helpers
+    # ------------------------------------------------------------------
+
+    def _get_controller_max_joint_pos_vel(self) -> Optional[torch.Tensor]:
+        """Return the controller's ``max_joint_pos_vel`` as a 1-D ``(n_dofs,)`` tensor.
+
+        Reads the public ``max_joint_pos_vel`` property on the controller and
+        squeezes any batch dimension (the planner works on a single path).
+        Unconstrained joints retain ``inf`` entries, which are handled
+        correctly by :meth:`_infer_path_waypoint_count` (they contribute 0
+        steps and don't limit the waypoint count).
+
+        Returns ``None`` when the controller does not expose a rate limit or
+        has not been initialised.
+        """
+        if self.controller is None:
+            return None
+        v = getattr(self.controller, 'max_joint_pos_vel', None)
+        if v is None:
+            return None
+        # Squeeze batch dim if present → (n_dofs,)
+        if v.dim() == 2:
+            v = v[0]
+        return v
+
+    def _infer_path_waypoint_count(
+        self,
+        qpos_goal: PyTorchArrayType,
+        qpos_start: Optional[PyTorchArrayType] = None,
+    ) -> int:
+        """Infer a minimum waypoint count from ``max_joint_pos_vel`` and ``dt``.
+
+        The inferred count ensures that adjacent waypoints satisfy
+        ``|Δq_i| <= max_joint_pos_vel_i * dt`` for every joint *i*.
+        Joints with ``inf`` rate limits (unconstrained) contribute zero
+        steps and therefore do not increase the waypoint count.
+
+        Returns:
+            Inferred waypoint count (≥ 2), or the default fallback of **300**
+            when inference is not possible.
+        """
+        _DEFAULT_WAYPOINTS = 300
+        max_pos_vel = self._get_controller_max_joint_pos_vel()
+        if max_pos_vel is None:
+            return _DEFAULT_WAYPOINTS
+
+        dt = self.control_timestep
+        max_delta = max_pos_vel * float(dt)  # (n_dofs,)
+        if torch.any(max_delta <= 0):
+            return _DEFAULT_WAYPOINTS
+
+        # Resolve start qpos
+        if qpos_start is None:
+            try:
+                qpos_start = self.entity.get_dofs_position()
+            except Exception:
+                return _DEFAULT_WAYPOINTS
+
+        # Flatten to 1-D for the computation (handle batched case)
+        goal = qpos_goal.detach()
+        start = qpos_start.detach()
+        if goal.dim() == 2:
+            goal = goal[0]
+        if start.dim() == 2:
+            start = start[0]
+
+        # Ensure max_delta matches the goal dimensionality
+        if max_delta.shape[0] != goal.shape[0]:
+            # max_joint_pos_vel may only cover a subset of DOFs; fall back
+            return _DEFAULT_WAYPOINTS
+
+        delta = (goal - start).abs()
+        steps_per_joint = torch.ceil(delta / max_delta)
+        num_waypoints = int(steps_per_joint.max().item()) + 1  # +1 for start frame
+        return max(num_waypoints, 2)

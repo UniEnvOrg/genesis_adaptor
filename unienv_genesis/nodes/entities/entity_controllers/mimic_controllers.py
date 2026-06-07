@@ -42,7 +42,7 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
         actual_position = clip(action['target_joint_position'] * position_multiplier + position_shift,
                                joint_position_low, joint_position_high)
         actual_velocity = clip(action['target_joint_velocity'] * velocity_multiplier + velocity_shift,
-                               min_joint_vel, max_joint_vel)
+                               -max_joint_vel, max_joint_vel)
 
     where both action tensors have shape ``(n_envs, 1)`` (or ``(1,)`` unbatched).
 
@@ -74,8 +74,8 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
         Kp: Optional[Union[float, PyTorchArrayType]] = None,
         Kd: Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes: Optional[Sequence[int]] = None,
-        min_joint_vel: Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_vel: Optional[Union[float, PyTorchArrayType]] = None,
+        max_joint_pos_vel: Optional[Union[float, PyTorchArrayType]] = None,
         position_shift: Union[float, PyTorchArrayType] = 0.0,
         position_control_low: Optional[Union[float, PyTorchArrayType]] = None,
         position_control_high: Optional[Union[float, PyTorchArrayType]] = None,
@@ -86,7 +86,7 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
         is_grasping_fn = None,
         **kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, max_joint_vel, max_joint_pos_vel=max_joint_pos_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
         n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
@@ -127,21 +127,27 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
             device=dev,
         )
 
-    def apply_action(self, action):
+    def apply_action(self, action, dt: Optional[float] = None):
         pos = _apply_mimic(action['target_joint_position'], self._pos_multiplier, self._pos_shift)
         vel = _apply_mimic(action['target_joint_velocity'], self._vel_multiplier, self._vel_shift)
+        pos = torch.clamp(pos, self._pos_clip_low, self._pos_clip_high)
+        vel = torch.clamp(vel, self._vel_clip_low, self._vel_clip_high)
+        # Apply rate-limit / velocity clipping from base
+        pos = self._clip_target_qpos(pos, dt)
+        vel = self._clip_target_qvel(vel)
         mimic_action = {
-            'target_joint_position': torch.clamp(pos, self._pos_clip_low, self._pos_clip_high),
-            'target_joint_velocity': torch.clamp(vel, self._vel_clip_low, self._vel_clip_high),
+            'target_joint_position': pos,
+            'target_joint_velocity': vel,
         }
-        super().apply_action(mimic_action)
+        super().apply_action(mimic_action, dt=None)  # already clipped
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict with **actual** mapped targets.
 
         Applies the mimic mapping (multiplier + shift + clip) to the scalar
-        control signal and returns the resulting per-joint position and
-        velocity targets, plus optional FK-based EEF pose.
+        control signal, then applies rate-limit / velocity clipping, and
+        returns the resulting per-joint position and velocity targets, plus
+        optional FK-based EEF pose.
         """
         pos = torch.clamp(
             _apply_mimic(action['target_joint_position'], self._pos_multiplier, self._pos_shift),
@@ -153,6 +159,8 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
             self._vel_clip_low,
             self._vel_clip_high,
         )
+        pos = self._clip_target_qpos(pos, dt)
+        vel = self._clip_target_qvel(vel)
         result = self._get_action_dict_from_qpos(pos)
         result['target_joint_velocity'] = vel
         return result
@@ -187,6 +195,7 @@ class MimicJointPositionController(JointPositionController):
         Kp: Optional[Union[float, PyTorchArrayType]] = None,
         Kd: Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes: Optional[Sequence[int]] = None,
+        max_joint_pos_vel: Optional[Union[float, PyTorchArrayType]] = None,
         shift: Union[float, PyTorchArrayType] = 0.0,
         control_low: Optional[Union[float, PyTorchArrayType]] = None,
         control_high: Optional[Union[float, PyTorchArrayType]] = None,
@@ -194,7 +203,7 @@ class MimicJointPositionController(JointPositionController):
         is_grasping_fn = None,
         **kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, max_joint_pos_vel=max_joint_pos_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
         n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
@@ -214,26 +223,28 @@ class MimicJointPositionController(JointPositionController):
             device=dev,
         )
 
-    def apply_action(self, action):
+    def apply_action(self, action, dt: Optional[float] = None):
         actual = torch.clamp(
             _apply_mimic(action, self._multiplier, self._shift),
             self._clip_low,
             self._clip_high,
         )
-        super().apply_action(actual)
+        actual = self._clip_target_qpos(actual, dt)
+        super().apply_action(actual, dt=None)  # already clipped
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict with the **actual** mapped joint positions.
 
         Applies the mimic mapping (multiplier + shift + clip) to the scalar
-        control signal and returns the resulting per-joint position target,
-        plus optional FK-based EEF pose.
+        control signal, then applies rate-limit clipping, and returns the
+        resulting per-joint position target, plus optional FK-based EEF pose.
         """
         actual = torch.clamp(
             _apply_mimic(action, self._multiplier, self._shift),
             self._clip_low,
             self._clip_high,
         )
+        actual = self._clip_target_qpos(actual, dt)
         return self._get_action_dict_from_qpos(actual)
 
 
@@ -242,7 +253,7 @@ class MimicJointVelocityController(JointVelocityController):
 
     The command sent to the entity is::
 
-        actual_velocity = clip(action * multiplier + shift, min_joint_vel, max_joint_vel)
+        actual_velocity = clip(action * multiplier + shift, -max_joint_vel, max_joint_vel)
 
     where ``action`` has shape ``(n_envs, 1)`` (or ``(1,)`` unbatched).
 
@@ -265,7 +276,6 @@ class MimicJointVelocityController(JointVelocityController):
         Kp: Optional[Union[float, PyTorchArrayType]] = None,
         Kd: Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes: Optional[Sequence[int]] = None,
-        min_joint_vel: Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_vel: Optional[Union[float, PyTorchArrayType]] = None,
         shift: Union[float, PyTorchArrayType] = 0.0,
         control_low: Optional[Union[float, PyTorchArrayType]] = None,
@@ -274,7 +284,7 @@ class MimicJointVelocityController(JointVelocityController):
         is_grasping_fn = None,
         **kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
         n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else entity.n_dofs
         dev = world.device
 
@@ -295,23 +305,26 @@ class MimicJointVelocityController(JointVelocityController):
             device=dev,
         )
 
-    def apply_action(self, action):
+    def apply_action(self, action, dt: Optional[float] = None):
         actual = torch.clamp(
             _apply_mimic(action, self._multiplier, self._shift),
             self._clip_low,
             self._clip_high,
         )
-        super().apply_action(actual)
+        actual = self._clip_target_qvel(actual)
+        super().apply_action(actual, dt=None)  # already clipped
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict with the **actual** mapped joint velocities.
 
         Applies the mimic mapping (multiplier + shift + clip) to the scalar
-        control signal and returns the resulting per-joint velocity target.
+        control signal, then applies velocity clipping, and returns the
+        resulting per-joint velocity target.
         """
         actual = torch.clamp(
             _apply_mimic(action, self._multiplier, self._shift),
             self._clip_low,
             self._clip_high,
         )
+        actual = self._clip_target_qvel(actual)
         return {"target_joint_velocity": actual}

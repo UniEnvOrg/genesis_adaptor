@@ -49,7 +49,7 @@ class AbsoluteRotationConventionUtils:
     def get_action_space(
         representation: AVAILABLE_REPRESENTATIONS_T, 
         batch_size: Optional[int],
-        device: Optional[PyTorchDeviceType]
+        device: Optional[PyTorchDeviceType],
     ) -> BoxSpace[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
         if representation == "euler":
             rot_dim = 3
@@ -62,6 +62,7 @@ class AbsoluteRotationConventionUtils:
         
         # Position (3) + Rotation (rot_dim)
         action_dim = 3 + rot_dim
+
         return BoxSpace(
             PyTorchComputeBackend,
             low=-torch.inf,
@@ -161,10 +162,11 @@ class EndEffectorPoseController(
         self.ik_kwargs = ik_kwargs or {}
 
         batch_size = world.batch_size
-        
-        # Action space: 3D position + rotation (depends on representation)
+
+        # Action space: 3D position + rotation (depends on representation),
+        # unconstrained (no translational position bounds).
         self.action_space = AbsoluteRotationConventionUtils.get_action_space(
-            rotation_representation, batch_size, world.device
+            rotation_representation, batch_size, world.device,
         )
         # EEF observation keys (eef_position, eef_quaternion) are already added
         # by the DiscreteEntityController base when target_link is provided.
@@ -316,7 +318,7 @@ class EndEffectorPoseController(
             )
         return torch.cat([pos_base, rot], dim=-1)
 
-    def apply_action(self, action):
+    def apply_action(self, action, dt: Optional[float] = None):
         target_pos = action[..., :3]
         target_rot = action[..., 3:]
         if self.normalize_rotation_action:
@@ -326,19 +328,22 @@ class EndEffectorPoseController(
             target_pos, target_rot_quat
         ) # (batch_size, n_dof), (batch_size, 3), (batch_size, 4), (batch_size, 6)
         
-        super().apply_action(target_joint_positions)
+        # Delegate rate-limit clipping (max_joint_pos_vel) to the parent
+        # JointPositionController.apply_action, which handles dt-aware
+        # clipping internally.
+        super().apply_action(target_joint_positions, dt=dt)
         self._last_ik_result = {
             'target_joint_positions': target_joint_positions,
             'achieved_error': achieved_error,
         }
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict for EEF pose control.
 
         Parses the raw action tensor into position + rotation, solves IK to
-        obtain the target joint positions, and returns both the joint-space
-        target and the commanded EEF pose (in the configured base frame, or
-        world frame if no ``base_frame`` is set).
+        obtain the target joint positions, clips them by ``max_joint_pos_vel``
+        (if configured), and returns both the clipped joint-space target and
+        the corresponding clipped EEF pose (via FK of the clipped qpos).
         """
         target_pos = action[..., :3]
         target_rot = action[..., 3:]
@@ -353,10 +358,9 @@ class EndEffectorPoseController(
         # Solve IK to obtain target joint positions
         target_joint_positions, _ = self.solve_ik_base(target_pos, target_quat)
 
-        # The commanded EEF pose in the base/world frame is exactly what the
-        # user requested (pos + quat already in base frame from the action).
-        return {
-            "target_joint_position": target_joint_positions,
-            "target_eef_position": target_pos,
-            "target_eef_quaternion": target_quat,
-        }
+        # Clip by rate limit (max_joint_pos_vel * dt)
+        target_joint_positions = self._clip_target_qpos(target_joint_positions, dt)
+
+        # Return clipped joint positions and the *corresponding* EEF pose
+        # (via FK of the clipped qpos), not the raw commanded EEF pose.
+        return self._get_action_dict_from_qpos(target_joint_positions)

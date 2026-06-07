@@ -23,23 +23,34 @@ class JointPositionController(
         joint_indexes : Optional[Sequence[int]] = None,
         joint_names : Optional[Sequence[str]] = None,
         is_grasping_fn = None,
+        position_control_low : Optional[Union[float, PyTorchArrayType]] = None,
+        position_control_high : Optional[Union[float, PyTorchArrayType]] = None,
         **kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
+        super().__init__(
+            world, entity, Kp, Kd, joint_indexes,
+            joint_names=joint_names,
+            is_grasping_fn=is_grasping_fn,
+            position_control_low=position_control_low,
+            position_control_high=position_control_high,
+            **kwargs,
+        )
         self.action_space = self.action_space['target_joint_position']
 
-    def apply_action(self, action):
+    def apply_action(self, action, dt: Optional[float] = None):
+        target_qpos = self._clip_target_qpos(action, dt)
         self.entity.control_dofs_position(
-            action,
+            target_qpos,
             dofs_idx_local=self.joint_indexes
         )
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict for joint position control.
 
         ``action`` is a tensor of target joint positions.  The returned dict
-        includes ``target_joint_position`` and, when an end-effector is
-        configured, the FK-based ``target_eef_position`` /
-        ``target_eef_quaternion``.
+        includes ``target_joint_position`` (after rate-limit clipping) and,
+        when an end-effector is configured, the FK-based
+        ``target_eef_position`` / ``target_eef_quaternion``.
         """
-        return self._get_action_dict_from_qpos(action)
+        target_qpos = self._clip_target_qpos(action, dt)
+        return self._get_action_dict_from_qpos(target_qpos)

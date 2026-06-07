@@ -21,25 +21,26 @@ class JointVelocityController(
         Kp : Optional[Union[float, PyTorchArrayType]] = None,
         Kd : Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes : Optional[Sequence[int]] = None,
-        min_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         joint_names : Optional[Sequence[str]] = None,
         is_grasping_fn = None,
         **kwargs,
     ) -> None:
-        super().__init__(world, entity, Kp, Kd, joint_indexes, min_joint_vel, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
+        super().__init__(world, entity, Kp, Kd, joint_indexes, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
         self.action_space = self.action_space['target_joint_velocity']
 
-    def apply_action(self, action):
+    def apply_action(self, action, dt: Optional[float] = None):
+        target_qvel = self._clip_target_qvel(action)
         self.entity.control_dofs_velocity(
-            action,
+            target_qvel,
             dofs_idx_local=self.joint_indexes
         )
 
-    def get_action_dict(self, action: Any) -> Dict[str, Any]:
+    def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict for joint velocity control.
 
         ``action`` is a tensor of target joint velocities.  Only
-        ``target_joint_velocity`` is returned (no FK-based EEF pose).
+        ``target_joint_velocity`` is returned (after velocity clipping).
         """
-        return {"target_joint_velocity": action}
+        target_qvel = self._clip_target_qvel(action)
+        return {"target_joint_velocity": target_qvel}
