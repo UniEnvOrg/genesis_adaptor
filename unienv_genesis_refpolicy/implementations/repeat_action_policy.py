@@ -1,9 +1,11 @@
 """RepeatActionRefPolicy — output a fixed action for N steps."""
 
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import torch
 
+from unienv_interface.space import DictSpace, BoxSpace
+from unienv_interface.backends.pytorch import PyTorchComputeBackend
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import (
     is_batched,
@@ -79,6 +81,31 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
     @torch.inference_mode()
     def get_action(self) -> torch.Tensor:
         return self._action
+
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` matching the base :meth:`get_action_dict` output.
+
+        :class:`RepeatActionRefPolicy` does not override :meth:`get_action_dict`,
+        so the output is ``{"action": self._action}``.  The space describes
+        this with an unbounded :class:`BoxSpace` matching the action shape.
+        """
+        action_dim = self._action.shape[-1]
+        batch_size = self.world.batch_size
+        device = self.world.device
+        return DictSpace(
+            PyTorchComputeBackend,
+            {
+                "action": BoxSpace(
+                    PyTorchComputeBackend,
+                    low=-torch.inf,
+                    high=torch.inf,
+                    shape=get_batch_aware_shape(batch_size, action_dim),
+                    dtype=self._action.dtype,
+                    device=device,
+                ),
+            },
+            device=device,
+        )
 
     @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:

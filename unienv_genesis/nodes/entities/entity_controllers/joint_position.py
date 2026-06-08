@@ -6,6 +6,7 @@ import torch
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
 from .base import DiscreteEntityController, EntityType, ActType
 from .joint_position_velocity_control import JointPositionAndVelocityController
 
@@ -53,4 +54,48 @@ class JointPositionController(
         ``target_eef_position`` / ``target_eef_quaternion``.
         """
         target_qpos = self._clip_target_qpos(action, dt)
-        return self._get_action_dict_from_qpos(target_qpos)
+        result: Dict[str, PyTorchArrayType] = {
+            "target_joint_position": target_qpos,
+        }
+        if self._has_eef:
+            eef_pos, eef_quat = self._target_qpos_to_eef(target_qpos)
+            result["target_eef_position"] = eef_pos
+            result["target_eef_quaternion"] = eef_quat
+        return result
+
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        Includes ``target_joint_position`` and (when an end-effector is
+        configured) ``target_eef_position`` / ``target_eef_quaternion``.
+        """
+        batch_size = self.world.batch_size
+        device = self.world.device
+
+        spaces: Dict[str, Space] = {
+            "target_joint_position": BoxSpace(
+                PyTorchComputeBackend,
+                low=self.joint_position_low,
+                high=self.joint_position_high,
+                dtype=self.joint_position_low.dtype,
+                device=device,
+            ),
+        }
+        if self._has_eef:
+            spaces["target_eef_position"] = BoxSpace(
+                PyTorchComputeBackend,
+                low=-torch.inf,
+                high=torch.inf,
+                shape=get_batch_aware_shape(batch_size, 3),
+                dtype=torch.float32,
+                device=device,
+            )
+            spaces["target_eef_quaternion"] = BoxSpace(
+                PyTorchComputeBackend,
+                low=-1,
+                high=1,
+                shape=get_batch_aware_shape(batch_size, 4),
+                dtype=torch.float32,
+                device=device,
+            )
+        return DictSpace(PyTorchComputeBackend, spaces, device=device)

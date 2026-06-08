@@ -307,7 +307,19 @@ class RobotDescriptionNode(EntityNode[
         return self.controller.get_action_dict(action, dt=dt)
 
     # ------------------------------------------------------------------
-    # Genesis RigidEntity pass-through helpers
+    # Low-level robot kinematics / planning primitives
+    #
+    # The methods below are thin proxies over Genesis RigidEntity APIs.
+    # They operate on raw link frames and joint coordinates — they do
+    # **not** know about controller-owned EEF semantics (virtual EEF
+    # offsets, base-frame conventions, rotation representations, etc.).
+    #
+    # ``forward_kinematics`` is the **sole** robot-node FK primitive.
+    # For EEF-aware FK (target_link + base_frame + virtual offset), use
+    # ``DiscreteEntityController.compute_eef_pose_from_qpos`` on the
+    # controller — that is the single canonical entry point for EEF
+    # semantics.  The controller is the single source of truth for
+    # target_link, base_frame, EEF offsets, and action-space conventions.
     # ------------------------------------------------------------------
 
     def _require_rigid_entity(self) -> gs_entities.RigidEntity:
@@ -332,6 +344,16 @@ class RobotDescriptionNode(EntityNode[
     ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
         """Compute forward kinematics for the given joint positions.
 
+        .. note:: **Low-level robot primitive — sole FK entry point on the robot node.**
+            This method returns poses in the **physical link frame** and
+            knows nothing about virtual EEF offsets or base-frame
+            conventions.  Reference policies that need EEF-aware FK
+            should use
+            :meth:`DiscreteEntityController.compute_eef_pose_from_qpos`
+            on the controller instead, which is the single canonical
+            entry point for ``target_link`` / ``base_frame`` / virtual
+            EEF offset semantics.
+
         Proxy to :meth:`genesis.engine.entities.RigidEntity.forward_kinematics`.
 
         Args:
@@ -351,6 +373,82 @@ class RobotDescriptionNode(EntityNode[
             links_idx_local=links_idx_local,
             envs_idx=envs_idx,
         )
+
+    # ------------------------------------------------------------------
+    # Public kinematics API (IK)
+    #
+    # Low-level robot primitives.  They operate on physical link frames
+    # and require the caller to supply target_link and base-frame
+    # information explicitly.  Reference policies should prefer the
+    # controller's own IK / FK methods, which handle these semantics
+    # automatically.
+    #
+    # For EEF-aware FK from joint positions, use
+    # ``DiscreteEntityController.compute_eef_pose_from_qpos`` on the
+    # controller — that is the single canonical entry point for
+    # target_link / base_frame / virtual-EEF-offset semantics.
+    # ------------------------------------------------------------------
+
+    def solve_ik(
+        self,
+        target_link: Union[str, Any],
+        target_position: PyTorchArrayType,
+        target_quaternion: PyTorchArrayType,
+        *,
+        dofs_idx_local: Optional[Sequence[int]] = None,
+        max_samples: int = 1,
+        **ik_kwargs,
+    ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
+        """Solve inverse kinematics for a target link pose.
+
+        .. note:: **Low-level robot primitive.**
+            This method operates on the **physical** link frame and
+            requires the caller to specify ``target_link`` explicitly.
+            It does **not** apply any virtual EEF offset or base-frame
+            convention that a controller may configure.
+
+            **Reference policies should not call this method.**  Instead,
+            use :meth:`EndEffectorPoseController.solve_ik_absolute` (or
+            ``solve_ik_base``) on the controller, which handles the
+            virtual-EEF offset, base-frame transform, and rotation
+            representation automatically.  The controller is the single
+            source of truth for ``target_link``, ``base_frame``, EEF
+            offsets, and action-space semantics.
+
+            This method is intended for advanced use cases that need raw
+            IK on an arbitrary link (e.g. whole-body planning, custom
+            multi-link objectives) outside the controller's EEF model.
+
+        Public proxy to :meth:`genesis.engine.entities.RigidEntity.inverse_kinematics`.
+
+        Args:
+            target_link: Link name (str) or ``RigidLink`` instance.
+            target_position: Target position — shape ``(3,)`` or
+                ``(batch_size, 3)``.
+            target_quaternion: Target quaternion ``(w, x, y, z)`` — shape
+                ``(4,)`` or ``(batch_size, 4)``.
+            dofs_idx_local: Optional subset of DOFs the solver may use.
+            max_samples: Maximum IK solver attempts (default 1 = no random
+                restarts, for solution continuity).
+            **ik_kwargs: Forwarded to the Genesis IK solver.
+
+        Returns:
+            ``(target_joint_positions, achieved_error)`` — solved joint
+            positions and the 6-D pose error.
+        """
+        entity = self._require_rigid_entity()
+        if isinstance(target_link, str):
+            target_link = entity.get_link(target_link)
+        full_qpos, error = entity.inverse_kinematics(
+            target_link,
+            target_position,
+            target_quaternion,
+            return_error=True,
+            dofs_idx_local=dofs_idx_local,
+            max_samples=max_samples,
+            **ik_kwargs,
+        )
+        return full_qpos, error
 
     def plan_path(
         self,
@@ -372,6 +470,13 @@ class RobotDescriptionNode(EntityNode[
         **kwargs,
     ):
         """Plan a collision-free joint-space path to ``qpos_goal``.
+
+        .. note:: **Low-level robot primitive.**
+            This method plans in joint space using the Genesis RRT planner.
+            It does not know about controller-owned EEF semantics.  For
+            Cartesian goal planning, convert the goal to joint positions
+            via the controller's IK method first (e.g.
+            :meth:`EndEffectorPoseController.solve_ik_absolute`).
 
         Proxy to :meth:`genesis.engine.entities.RigidEntity.plan_path`.
 
@@ -429,7 +534,7 @@ class RobotDescriptionNode(EntityNode[
         )
 
     # ------------------------------------------------------------------
-    # Motion-planning helpers
+    # Motion-planning helpers (low-level, robot-node-internal)
     # ------------------------------------------------------------------
 
     def _get_controller_max_joint_pos_vel(self) -> Optional[torch.Tensor]:

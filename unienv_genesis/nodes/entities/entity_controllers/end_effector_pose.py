@@ -345,9 +345,10 @@ class EndEffectorPoseController(
         """Return structured action dict for EEF pose control.
 
         Parses the raw action tensor into position + rotation, solves IK to
-        obtain the target joint positions, clips them by ``max_joint_pos_vel``
-        (if configured), and returns both the clipped joint-space target and
-        the corresponding clipped EEF pose (via FK of the clipped qpos).
+        obtain the target joint positions, then delegates to
+        :meth:`JointPositionController.get_action_dict` which handles
+        rate-limit clipping and builds the structured dict (including
+        FK-based EEF pose of the clipped qpos).
         """
         target_pos = action[..., :3]
         target_rot = action[..., 3:]
@@ -362,9 +363,18 @@ class EndEffectorPoseController(
         # Solve IK to obtain target joint positions
         target_joint_positions, _ = self.solve_ik_base(target_pos, target_quat)
 
-        # Clip by rate limit (max_joint_pos_vel * dt)
-        target_joint_positions = self._clip_target_qpos(target_joint_positions, dt)
+        # Delegate to JointPositionController.get_action_dict which handles
+        # rate-limit clipping and builds the structured dict (including
+        # FK-based EEF pose of the clipped qpos).
+        return super().get_action_dict(target_joint_positions, dt=dt)
 
-        # Return clipped joint positions and the *corresponding* EEF pose
-        # (via FK of the clipped qpos), not the raw commanded EEF pose.
-        return self._get_action_dict_from_qpos(target_joint_positions)
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        The EEF pose controller's :meth:`get_action_dict` delegates to
+        :meth:`JointPositionController.get_action_dict`, so the space
+        mirrors that schema: ``target_joint_position`` plus (when an
+        end-effector is configured) ``target_eef_position`` /
+        ``target_eef_quaternion``.
+        """
+        return super().get_action_dict_space()

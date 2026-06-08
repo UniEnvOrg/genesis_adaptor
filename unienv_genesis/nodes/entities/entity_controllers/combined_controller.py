@@ -197,6 +197,21 @@ class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
             for name, ctrl in self._sub_controllers.items()
         }
 
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a nested :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        Each top-level key maps to the sub-controller's own
+        :meth:`get_action_dict_space`, preserving the hierarchical schema.
+        """
+        return DictSpace(
+            PyTorchComputeBackend,
+            {
+                name: ctrl.get_action_dict_space()
+                for name, ctrl in self._sub_controllers.items()
+            },
+            device=self.world.device,
+        )
+
     def reload(self) -> None:
         for ctrl in self._sub_controllers.values():
             ctrl.reload()

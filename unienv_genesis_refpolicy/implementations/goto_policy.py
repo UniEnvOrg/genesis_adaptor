@@ -1,6 +1,6 @@
 """GoToRefPolicy — move an end-effector to a target world-frame pose."""
 
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import torch
 
@@ -14,7 +14,7 @@ from unienv_genesis.utils.batch_dim_utils import (
     get_batch_aware_shape,
     broadcast_to_batch,
 )
-from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
+from unienv_genesis_refpolicy.base.policy import BaseRefPolicy, require_eef_controller
 
 class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
     """Move an end-effector to a target world-frame pose.
@@ -65,6 +65,7 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         max_seconds: float = 0.0,
     ) -> None:
         super().__init__(world)
+        require_eef_controller(controller, policy_name="GoToRefPolicy")
         self.controller = controller
         self.position_threshold = position_threshold
         self.orientation_threshold = orientation_threshold
@@ -209,6 +210,24 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         return self._action
 
     @torch.inference_mode()
+    def get_action_dict(self, dt: Optional[float] = None) -> Dict[str, Any]:
+        """Return a controller-native action dict for the current action.
+
+        Delegates to the EEF pose controller's :meth:`get_action_dict`,
+        producing keys such as ``target_joint_position``,
+        ``target_eef_position``, and ``target_eef_quaternion``.
+        """
+        return self.controller.get_action_dict(self._action, dt=dt)
+
+    def get_action_dict_space(self):
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        Delegates to the EEF pose controller's :meth:`get_action_dict_space`,
+        preserving the controller-native schema.
+        """
+        return self.controller.get_action_dict_space()
+
+    @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:
         return try_scalar(self._reached)
 
@@ -244,14 +263,22 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         method loops over *N* when present.
 
         Args:
-            eef_controller: The EEF pose controller to query.
+            eef_controller: The EEF pose controller to query.  Must have
+                ``has_eef=True`` (i.e. configured with ``target_link``).
             target_pos: Target positions, shape ``([B], [N], 3)``.
             target_quat: Target quaternions ``(w,x,y,z)``,
                 shape ``([B], [N], 4)``.
 
         Returns:
             Achieved IK error, shape ``([B], [N], 6)``.
+
+        Raises:
+            RuntimeError: If *eef_controller* does not expose EEF semantics.
         """
+        require_eef_controller(
+            eef_controller,
+            policy_name="GoToRefPolicy.check_reachable_error",
+        )
         batched = is_batched(eef_controller.world.batch_size)
         base_ndim = 2 if batched else 1  # expected ndim for ([B], dim)
         has_n = target_pos.ndim > base_ndim

@@ -103,6 +103,24 @@ class EntityController(
         """
         return {"action": action}
 
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` describing the output of :meth:`get_action_dict`.
+
+        The base implementation mirrors the base :meth:`get_action_dict`
+        fallback, which wraps the raw action under the key ``"action"``.
+        Subclasses should override this to match their own
+        :meth:`get_action_dict` schema (e.g. ``target_joint_position``,
+        ``target_eef_position``, …).
+
+        This is a structural introspection helper — it does **not** depend
+        on any particular action value.
+        """
+        return DictSpace(
+            PyTorchComputeBackend,
+            {"action": self.action_space},
+            device=self.world.device,
+        )
+
     @abc.abstractmethod
     def apply_action(self, action: Any, dt: Optional[float] = None) -> None:
         raise NotImplementedError
@@ -482,8 +500,62 @@ class DiscreteEntityController(
         return achieved_position_base, achieved_quaternion_base
 
     # ------------------------------------------------------------------
+    # Public EEF offset accessors
+    # ------------------------------------------------------------------
+
+    @property
+    def eef_offset_pos(self) -> Optional[PyTorchArrayType]:
+        """Virtual EEF offset position in the target_link frame, or ``None``."""
+        return self._eef_offset_pos
+
+    @property
+    def eef_offset_quat(self) -> Optional[PyTorchArrayType]:
+        """Virtual EEF offset quaternion in the target_link frame, or ``None``."""
+        return self._eef_offset_quat
+
+    @property
+    def has_eef(self) -> bool:
+        """Whether this controller has a configured end-effector link."""
+        return self._has_eef
+
+    # ------------------------------------------------------------------
     # Introspection helpers
     # ------------------------------------------------------------------
+
+    def compute_eef_pose_from_qpos(
+        self,
+        target_qpos: PyTorchArrayType,
+    ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
+        """Compute the virtual EEF pose (in base/world frame) for given joint positions.
+
+        This is the **single canonical entry point** for EEF-aware FK from
+        joint positions.  It uses :meth:`entity.forward_kinematics` for the
+        configured ``target_link`` while leaving un-controlled joints at
+        their current values.  The virtual EEF offset is applied and the
+        result is converted to the configured base frame (or world frame
+        if no ``base_frame`` is set).
+
+        The robot-node level exposes only the raw
+        :meth:`entity.forward_kinematics` primitive; all EEF semantics
+        (target_link, base_frame, virtual offset) live here on the
+        controller.
+
+        Args:
+            target_qpos: Target joint positions for the controlled DOFs —
+                shape ``(n_dofs,)`` or ``(batch_size, n_dofs)``.
+
+        Returns:
+            ``(eef_position, eef_quaternion)`` in the base/world frame.
+
+        Raises:
+            RuntimeError: If no end-effector link is configured.
+        """
+        if not self._has_eef:
+            raise RuntimeError(
+                "compute_eef_pose_from_qpos requires a configured end-effector "
+                "(target_link). This controller has no EEF."
+            )
+        return self._target_qpos_to_eef(target_qpos)
 
     def _target_qpos_to_eef(
         self,
@@ -516,26 +588,6 @@ class DiscreteEntityController(
         base_pos, base_quat = self.convert_absolute_to_base(virt_pos, virt_quat)
         return base_pos, base_quat
 
-    def _get_action_dict_from_qpos(
-        self,
-        target_qpos: PyTorchArrayType,
-    ) -> Dict[str, PyTorchArrayType]:
-        """Build a standard action dict from target joint positions.
-
-        Always includes ``target_joint_position``.  When an end-effector is
-        configured, also includes ``target_eef_position`` and
-        ``target_eef_quaternion`` obtained via FK + virtual offset + base-frame
-        conversion.
-        """
-        result: Dict[str, PyTorchArrayType] = {
-            "target_joint_position": target_qpos,
-        }
-        if self._has_eef:
-            eef_pos, eef_quat = self._target_qpos_to_eef(target_qpos)
-            result["target_eef_position"] = eef_pos
-            result["target_eef_quaternion"] = eef_quat
-        return result
-
     def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return a structured dict describing the commanded target.
 
@@ -544,6 +596,15 @@ class DiscreteEntityController(
         The default delegates to the generic base implementation.
         """
         return super().get_action_dict(action, dt=dt)
+
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` describing :meth:`get_action_dict` output.
+
+        ``DiscreteEntityController`` does not know the action semantics on
+        its own; concrete subclasses (position, velocity, …) override this.
+        The default delegates to the generic base implementation.
+        """
+        return super().get_action_dict_space()
 
     def get_observation(self):
         qpos = self.entity.get_dofs_position(dofs_idx_local=self.joint_indexes)

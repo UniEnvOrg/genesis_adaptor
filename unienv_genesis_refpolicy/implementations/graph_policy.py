@@ -1,6 +1,6 @@
 """GraphRefPolicy — chain reference policies via a success/failure transition graph."""
 
-from typing import Callable, Dict, List, Optional, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
 import torch
 
@@ -12,6 +12,7 @@ from unienv_genesis.utils.batch_dim_utils import (
     try_scalar
 )
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
+from unienv_interface.space.space_utils import batch_utils as sbu
 
 ActT = TypeVar("ActT")
 
@@ -165,6 +166,100 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
             action = {**self._static_actions, **action}
 
         return action
+
+    def get_action_dict(self, dt: Optional[float] = None) -> Dict[str, Any]:
+        """Return the action dict from the currently active node(s).
+
+        For unbatched worlds, delegates to the single active node's
+        :meth:`get_action_dict`.  For batched worlds with a single active
+        node, delegates to that node.  For batched worlds with multiple
+        active nodes, builds a merged batched action dict using the common
+        action-dict space: each node's action dict is placed into the env
+        slots where that node is active via :func:`sbu.set_at`.
+
+        Static actions are merged into the final result.  The node's own
+        keys take precedence over static actions on conflict (consistent
+        with the unbatched behavior).  Static actions are wrapped as
+        ``{key: {"action": value}}`` to match the action-dict structure.
+        """
+        batched = is_batched(self.world.batch_size)
+
+        if not batched:
+            node_name = self._node_names[self._current_idx.item()]
+            policy = self._get_or_create_node(node_name)
+            result = policy.get_action_dict(dt=dt)
+            if self._static_actions is not None and isinstance(result, dict):
+                result = {**{k: {"action": v} for k, v in self._static_actions.items()}, **result}
+            return result
+
+        active_nodes = self._current_idx.unique().tolist()
+        if len(active_nodes) == 1:
+            node_name = self._node_names[active_nodes[0]]
+            policy = self._get_or_create_node(node_name)
+            result = policy.get_action_dict(dt=dt)
+            if self._static_actions is not None and isinstance(result, dict):
+                result = {**{k: {"action": v} for k, v in self._static_actions.items()}, **result}
+            return result
+
+        # Multiple active nodes: build a merged batched action dict.
+        # Get the action-dict space (same for all nodes per the homogeneity assumption).
+        action_dict_space = self.get_action_dict_space()
+        batch_size = self.world.batch_size
+        batched_space = sbu.batch_space(action_dict_space, n=batch_size)
+
+        # Initialize an empty batched container matching the action-dict schema.
+        result = batched_space.create_empty()
+
+        # For each active node, get its full-batch action dict, compress it
+        # to the masked envs, and merge into the result.
+        for node_idx in active_nodes:
+            node_name = self._node_names[node_idx]
+            node_mask = self._current_idx == node_idx
+            if not node_mask.any():
+                continue
+
+            policy = self._get_or_create_node(node_name)
+            node_action_dict = policy.get_action_dict(dt=dt)
+
+            # Compress the full-batch action dict to only the masked envs.
+            compressed_action_dict = sbu.get_at(batched_space, node_action_dict, node_mask)
+
+            # Merge into the result at the masked positions.
+            result = sbu.set_at(batched_space, result, node_mask, compressed_action_dict)
+
+        if self._static_actions is not None and isinstance(result, dict):
+            result = {**{k: {"action": v} for k, v in self._static_actions.items()}, **result}
+
+        return result
+
+    def get_action_dict_space(self):
+        """Return a :class:`DictSpace` describing :meth:`get_action_dict` output.
+
+        Assumes all graph nodes produce the **same** action-dict schema
+        (homogeneous graph).
+
+        To avoid unnecessarily instantiating a lazy factory just to query its
+        space, this method prefers the first **already-initialized** policy
+        among the currently active nodes.  If no active node has been resolved
+        yet, it falls back to the first declared node (which may trigger lazy
+        instantiation via :meth:`_get_or_create_node`).
+
+        When ``static_actions`` are configured, the merged output includes
+        those keys alongside the node's own keys; the space reflects the
+        node's native schema (static actions are expected to be compatible
+        with or a subset of this schema).
+        """
+        # Prefer an already-resolved active node to avoid lazy-instantiating
+        # a factory policy solely for the space query.
+        for node_idx in self._current_idx.unique().tolist():
+            name = self._node_names[node_idx]
+            policy = self._node_policies.get(name)
+            if policy is not None:
+                return policy.get_action_dict_space()
+
+        # Fallback: first declared node (may trigger lazy creation).
+        first_policy = self._get_or_create_node(self._node_names[0])
+        return first_policy.get_action_dict_space()
 
     @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:

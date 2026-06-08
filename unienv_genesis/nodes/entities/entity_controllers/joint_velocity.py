@@ -44,3 +44,14 @@ class JointVelocityController(
         """
         target_qvel = self._clip_target_qvel(action)
         return {"target_joint_velocity": target_qvel}
+
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        Contains a single key ``target_joint_velocity``.
+        """
+        return DictSpace(
+            PyTorchComputeBackend,
+            {"target_joint_velocity": self.action_space},
+            device=self.world.device,
+        )

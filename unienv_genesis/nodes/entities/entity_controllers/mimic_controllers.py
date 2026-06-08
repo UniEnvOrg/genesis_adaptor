@@ -167,9 +167,22 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
         )
         pos = self._clip_target_qpos(pos, dt)
         vel = self._clip_target_qvel(vel)
-        result = self._get_action_dict_from_qpos(pos)
-        result['target_joint_velocity'] = vel
-        return result
+        # Delegate to JointPositionAndVelocityController.get_action_dict
+        # which builds the structured dict (position + optional EEF + velocity).
+        return super().get_action_dict(
+            {'target_joint_position': pos, 'target_joint_velocity': vel},
+            dt=None,  # already clipped
+        )
+
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        The output schema mirrors :class:`JointPositionAndVelocityController`:
+        ``target_joint_position``, ``target_joint_velocity``, and optional
+        EEF keys.  Bounds reflect the entity's joint/velocity limits (the
+        post-mapping output range), not the scalar control-signal bounds.
+        """
+        return super().get_action_dict_space()
 
 
 class MimicJointPositionController(JointPositionController):
@@ -255,7 +268,18 @@ class MimicJointPositionController(JointPositionController):
             self._clip_high,
         )
         actual = self._clip_target_qpos(actual, dt)
-        return self._get_action_dict_from_qpos(actual)
+        # Delegate to JointPositionController.get_action_dict which builds
+        # the structured dict (position + optional EEF keys).
+        return super().get_action_dict(actual, dt=None)  # already clipped
+
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        The output schema mirrors :class:`JointPositionController`:
+        ``target_joint_position`` and optional EEF keys.  Bounds reflect
+        the entity's joint position limits (the post-mapping output range).
+        """
+        return super().get_action_dict_space()
 
 
 class MimicJointVelocityController(JointVelocityController):
@@ -342,3 +366,28 @@ class MimicJointVelocityController(JointVelocityController):
         )
         actual = self._clip_target_qvel(actual)
         return {"target_joint_velocity": actual}
+
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        Contains a single key ``target_joint_velocity``.  Bounds reflect
+        the entity's velocity limits (the post-mapping output range), not
+        the scalar control-signal bounds.
+        """
+        batch_size = self.world.batch_size
+        n_dofs = len(self.joint_indexes) if self.joint_indexes is not None else self.entity.n_dofs
+        device = self.world.device
+        return DictSpace(
+            PyTorchComputeBackend,
+            {
+                "target_joint_velocity": BoxSpace(
+                    PyTorchComputeBackend,
+                    low=self._clip_low,
+                    high=self._clip_high,
+                    shape=get_batch_aware_shape(batch_size, n_dofs),
+                    dtype=self._clip_low.dtype,
+                    device=device,
+                ),
+            },
+            device=device,
+        )

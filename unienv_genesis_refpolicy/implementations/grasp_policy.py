@@ -1,6 +1,6 @@
 """BoxGripperGraspPolicy — grasp a ManipulatableObject with a parallel-jaw gripper."""
 
-from typing import Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -22,7 +22,7 @@ from unienv_genesis.utils.batch_dim_utils import (
     try_scalar
 )
 from unienv_genesis_collection.objects.base_object import ManipulatableObject, GraspCandidates
-from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
+from unienv_genesis_refpolicy.base.policy import BaseRefPolicy, require_eef_controller
 from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
 
 class GraspPhase:
@@ -114,6 +114,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
     ) -> None:
         super().__init__(world)
 
+        require_eef_controller(eef_controller, policy_name="BoxGripperGraspPolicy")
         self._eef_ctrl = eef_controller
         self._gripper_ctrl = gripper_controller
         self.target_object = target_object
@@ -438,6 +439,44 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 )
 
         return {self._eef_name: arm_action, self._gripper_name: gripper_val}
+
+    @torch.inference_mode()
+    def get_action_dict(self, dt: Optional[float] = None) -> Dict[str, Any]:
+        """Return a controller-native nested action dict.
+
+        Delegates the arm action to the EEF pose controller's
+        :meth:`get_action_dict` and the gripper action to the gripper
+        controller's :meth:`get_action_dict`.  The result is a dict keyed
+        by ``eef_name`` and ``gripper_name``, matching the format produced
+        by :class:`CombinedController.get_action_dict`.
+        """
+        action = self.get_action()
+        return {
+            self._eef_name: self._eef_ctrl.get_action_dict(
+                action[self._eef_name], dt=dt,
+            ),
+            self._gripper_name: self._gripper_ctrl.get_action_dict(
+                action[self._gripper_name], dt=dt,
+            ),
+        }
+
+    def get_action_dict_space(self):
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        The schema is ``{eef_name: eef_ctrl.get_action_dict_space(),
+        gripper_name: gripper_ctrl.get_action_dict_space()}``, mirroring
+        the controller-native nested structure.
+        """
+        from unienv_interface.space import DictSpace
+        from unienv_interface.backends.pytorch import PyTorchComputeBackend
+        return DictSpace(
+            PyTorchComputeBackend,
+            {
+                self._eef_name: self._eef_ctrl.get_action_dict_space(),
+                self._gripper_name: self._gripper_ctrl.get_action_dict_space(),
+            },
+            device=self.world.device,
+        )
 
     @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:

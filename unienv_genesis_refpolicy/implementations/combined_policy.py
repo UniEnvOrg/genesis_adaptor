@@ -1,9 +1,11 @@
 """CombinedRefPolicy — combine named sub-policies into a Dict action."""
 
-from typing import Dict, Optional, Sequence, Union
+from typing import Any, Dict, Optional, Sequence, Union
 
 import torch
 
+from unienv_interface.space import DictSpace
+from unienv_interface.backends.pytorch import PyTorchComputeBackend
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
 from unienv_genesis.utils.batch_dim_utils import (
@@ -75,6 +77,34 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             name: policy.get_action()
             for name, policy in self._policies.items()
         }
+
+    @torch.inference_mode()
+    def get_action_dict(self, dt: Optional[float] = None) -> Dict[str, Any]:
+        """Return a nested action dict by delegating to each sub-policy.
+
+        The result is keyed by sub-policy name, with each value being the
+        controller-native action dict produced by that sub-policy's
+        :meth:`get_action_dict`.
+        """
+        return {
+            name: policy.get_action_dict(dt=dt)
+            for name, policy in self._policies.items()
+        }
+
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        The schema is ``{name: policy.get_action_dict_space()}`` for each
+        sub-policy, preserving the controller-native nested structure.
+        """
+        return DictSpace(
+            PyTorchComputeBackend,
+            {
+                name: policy.get_action_dict_space()
+                for name, policy in self._policies.items()
+            },
+            device=self.world.device,
+        )
 
     @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:
