@@ -108,8 +108,12 @@ class JointPositionAndVelocityController(
     def Kp(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
         self._Kp = value
         if value is not None:
+            n_controlled_dofs = (
+                len(self.joint_indexes) if self.joint_indexes is not None
+                else self.entity.n_dofs
+            )
             self._Kp_expanded = broadcast_to_batch(
-                value, self.world.batch_size, self.entity.n_dofs, device=self.world.device
+                value, self.world.batch_size, n_controlled_dofs, device=self.world.device
             )
             self.entity.set_dofs_kp(
                 self._Kp_expanded, dofs_idx_local=self.joint_indexes
@@ -125,8 +129,12 @@ class JointPositionAndVelocityController(
     def Kd(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
         self._Kd = value
         if value is not None:
+            n_controlled_dofs = (
+                len(self.joint_indexes) if self.joint_indexes is not None
+                else self.entity.n_dofs
+            )
             self._Kd_expanded = broadcast_to_batch(
-                value, self.world.batch_size, self.entity.n_dofs, device=self.world.device
+                value, self.world.batch_size, n_controlled_dofs, device=self.world.device
             )
             self.entity.set_dofs_kv(
                 self._Kd_expanded, dofs_idx_local=self.joint_indexes

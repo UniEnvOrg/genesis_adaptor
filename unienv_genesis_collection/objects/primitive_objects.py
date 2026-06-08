@@ -76,6 +76,7 @@ class BoxObject(ManipulatableObject):
             pos=pos,
             quat=quat,
             fixed=self.fixed,
+            batch_fixed_verts=batch_fixed_verts,
         )
         surface = gs.surfaces.Plastic(color=self.color) if self.color else None
         return world.scene.add_entity(
@@ -140,6 +141,7 @@ class SphereObject(ManipulatableObject):
             pos=pos,
             quat=quat,
             fixed=self.fixed,
+            batch_fixed_verts=batch_fixed_verts,
         )
         surface = gs.surfaces.Plastic(color=self.color) if self.color else None
         return world.scene.add_entity(
@@ -211,6 +213,7 @@ class CylinderObject(ManipulatableObject):
             pos=pos,
             quat=quat,
             fixed=self.fixed,
+            batch_fixed_verts=batch_fixed_verts,
         )
         surface = gs.surfaces.Plastic(color=self.color) if self.color else None
         return world.scene.add_entity(

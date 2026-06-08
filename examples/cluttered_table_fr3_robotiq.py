@@ -53,7 +53,7 @@ N_EPISODES = 2
 def init_env():
     world = GenesisWorld(
         scene_init_kwargs=dict(
-            sim_options=gs.options.SimOptions(dt=1/15, substeps=5),
+            sim_options=gs.options.SimOptions(dt=1/15, substeps=10),
             rigid_options=gs.options.RigidOptions(box_box_detection=True)
         )
     )
@@ -165,11 +165,6 @@ def init_env():
     return env
 
 def init_ref_policy(env : WorldEnv):
-    def top_down_filter(candidates : GraspCandidates):
-        """Keep only grasps that approach from above (EEF approach-axis points down).
-        """
-        return candidates.approach_direction[..., 2] < 0
-
     GRIPPER_OPEN = torch.tensor([-1.0])
     GRIPPER_CLOSE = torch.tensor([1.0])
     world : GenesisWorld = env.get_wrapper_attr("world")
@@ -189,7 +184,7 @@ def init_ref_policy(env : WorldEnv):
             target_entity=task.target_object_entity,
             eef_name="arm",
             gripper_name="gripper",
-            filter_candidate_fn=top_down_filter,
+            filter_candidate_fn=BoxGripperGraspPolicy.filter_fn_top_down,
         )
     
     def construct_lift_policy():

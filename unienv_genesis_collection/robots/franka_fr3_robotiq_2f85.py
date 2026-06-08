@@ -14,6 +14,7 @@ from unienv_genesis.nodes.sensors.camera_node import CameraSensorNodeOptions
 from unienv_genesis.options.attach_option import AttachFromName
 from unienv_genesis_collection.sensors.cameras.zed import get_zed_mini_camera_options, ZedSupportedResolution
 from unienv_genesis_collection.asset_path import get_asset_path
+from genesis.engine.entities.rigid_entity import RigidEntity
 
 # Default home joint positions: FR3 arm (7 DOF) + Robotiq 2F-85 (6 passive joints, open)
 ARM_HOME_JOINT_POSITIONS = torch.tensor([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
@@ -45,7 +46,7 @@ def _make_is_grasping(pad_link_names):
     """Create a grasp-detection callable checking contacts on specific pad links."""
     _cached_pad_indices = {}  # id(entity) -> tensor of global link indices
 
-    def is_grasping(robot_entity, target_entity):
+    def is_grasping(robot_entity : RigidEntity, target_entity : RigidEntity):
         # Lazily resolve pad link global indices (cached per entity instance).
         key = id(robot_entity)
         if key not in _cached_pad_indices:
@@ -85,12 +86,16 @@ _DEFAULT_SUB_CONTROLLERS = {
         # Virtual EEF offset from the target_link (g_base) origin to the gripper fingertip along the approach direction, centred in the open direction.  This point is where grasp candidates place the EEF (see base_object.list_box_gripper_grasping_candidates_local).
         # ~0.159 m (Robotiq base to fingertip)
         "eef_offset_pos": [0.0, 0.0, 0.159],
+        "Kp": torch.tensor([4500, 4500, 3500, 3500, 2000, 2000, 2000], dtype=torch.float32),
+        "Kd": torch.tensor([450, 450, 350, 350, 200, 200, 200], dtype=torch.float32),
         # DROID IK/controller velocity limit for the Franka arm (rad/s).
         "max_joint_pos_vel": DROID_FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS,
     },
     "gripper": {
         "controller_type": "mimic_joint_position",
         "joint_names": GRIPPER_DRIVER_NAMES,
+        "Kp": 100.0,
+        "Kd": 10.0,
         # Gripper convention: -1 = fully open (driver=0), +1 = fully closed (driver=0.9)
         # finger_pos = action * multiplier + shift
         "multiplier": 0.45,

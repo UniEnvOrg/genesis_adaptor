@@ -584,6 +584,12 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             self._phase_elapsed_seconds.zero_()
             self._total_elapsed_seconds.zero_()
             self._failed.zero_()
+    
+    @staticmethod
+    def filter_fn_top_down(candidates : GraspCandidates):
+        """Keep only grasps that approach from above (EEF approach-axis points down).
+        """
+        return candidates.approach_direction[..., 2] < 0
 
 def _to_bool_tensor(value: Union[torch.Tensor, bool], like: torch.Tensor) -> torch.Tensor:
     """Coerce a bool or Tensor to a bool Tensor matching *like*'s shape/device."""
