@@ -237,7 +237,7 @@ class DiscreteEntityController(
                 low=-torch.inf,
                 high=torch.inf,
                 shape=get_batch_aware_shape(batch_size, 3),
-                dtype=torch.float32,
+                dtype=world.dtype,
                 device=world.device,
             )
             obs_space['eef_quaternion'] = BoxSpace(
@@ -245,7 +245,7 @@ class DiscreteEntityController(
                 low=-1,
                 high=1,
                 shape=get_batch_aware_shape(batch_size, 4),
-                dtype=torch.float32,
+                dtype=world.dtype,
                 device=world.device,
             )
         

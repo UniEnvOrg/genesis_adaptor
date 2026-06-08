@@ -90,14 +90,14 @@ class ObjectRelocateTask(WorldNode):
                     low=-float("inf"),
                     high=float("inf"),
                     shape=(3,),
-                    dtype=torch.float32,
+                    dtype=self.world.dtype,
                 ),
                 "goal_position": BoxSpace(
                     PyTorchComputeBackend,
                     low=-float("inf"),
                     high=float("inf"),
                     shape=(3,),
-                    dtype=torch.float32,
+                    dtype=self.world.dtype,
                 ),
             },
         )
@@ -124,7 +124,9 @@ class ObjectRelocateTask(WorldNode):
         )
 
         # Cache object dimensions for placement logic.
-        self._target_object_bbox_local = self.target_object.get_local_bounding_box(self.target_object_entity).to(device=self.world.device) # BoxSpace with low and high of shape (3, )
+        self._target_object_bbox_local = self.target_object.get_local_bounding_box(self.target_object_entity).to(
+            device=self.world.device
+        ) # BoxSpace with low and high of shape (3, )
         self._target_object_radius = self.target_object.get_footprint_radius(self.target_object_entity) # scalar
         self._target_object_extent_local = bbox_size(self._target_object_bbox_local) # (3,)
 
@@ -145,7 +147,9 @@ class ObjectRelocateTask(WorldNode):
         if isinstance(self.placement_margin, (int, float)):
             table_half_xy -= self.placement_margin
         else:
-            placement_margin = torch.tensor(self.placement_margin, device=table_half_xy.device)
+            placement_margin = torch.tensor(
+                self.placement_margin, device=table_half_xy.device, dtype=table_half_xy.dtype,
+            )
             if table_half_xy.ndim > 1:
                 placement_margin = placement_margin.unsqueeze(0)  # (1, 2)
             table_half_xy -= placement_margin
@@ -156,10 +160,13 @@ class ObjectRelocateTask(WorldNode):
         placement_z_scalar = self.table_builder.pos[2] - self._target_object_bbox_local.low[2] # scalar
 
         target_xy_shape = (n_samples, 2) if self.world.batch_size is None else (self.world.batch_size, n_samples, 2)
-        xy = torch.rand(target_xy_shape, generator=self.rng, device=self.world.device) * 2 - 1 # uniform in [-1,1], shape ([B], n_samples, 2)
+        xy = torch.rand(target_xy_shape, generator=self.rng, dtype=placement_half_xy.dtype, device=self.world.device) * 2 - 1 # uniform in [-1,1], shape ([B], n_samples, 2)
         target_xy = xy * placement_half_xy[..., None, :] # scale to valid range, shape ([B], n_samples, 2)
         target_world_xy = self.table_builder.xy_to_world(target_xy) # ([B], n_samples, 2)
-        target_world_z = torch.full(target_world_xy.shape[:-1] + (1,), placement_z_scalar, device=target_world_xy.device) # ([B], n_samples, 1)
+        target_world_z = torch.full(
+            target_world_xy.shape[:-1] + (1,), placement_z_scalar,
+            device=target_world_xy.device, dtype=target_world_xy.dtype,
+        ) # ([B], n_samples, 1)
         target_world_pos = torch.cat([target_world_xy, target_world_z], dim=-1) # ([B], n_samples, 3)
         return target_world_pos
 
@@ -191,7 +198,7 @@ class ObjectRelocateTask(WorldNode):
         ) # Only one zone to avoid
 
         if mask is None:
-            self._reward = 0.0 if self.world.batch_size is None else torch.zeros(self.world.batch_size, device=self.world.device)
+            self._reward = 0.0 if self.world.batch_size is None else torch.zeros(self.world.batch_size, dtype=self.world.dtype, device=self.world.device)
             self._terminated = False if self.world.batch_size is None else torch.zeros(self.world.batch_size, dtype=torch.bool, device=self.world.device)
         else:
             assert self.world.batch_size is not None, "Masking only supported in batched environments"

@@ -97,7 +97,7 @@ class GoalRegionBuilder(WorldNode):
         Returns:
             ``EntityGroup`` whose anchor is the goal region surface center.
         """
-        group = EntityGroup(pos=pos, quat=quat)
+        group = EntityGroup(pos=pos, quat=quat, dtype=world.dtype)
         opacity = float(visible)
 
         for i in range(4):

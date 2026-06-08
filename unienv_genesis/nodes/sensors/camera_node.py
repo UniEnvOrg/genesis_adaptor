@@ -472,7 +472,7 @@ class CameraSensorNode(SensorNode[
                 low=0.0,
                 high=float("inf"),
                 shape=get_batch_aware_shape(B, (H, W)),
-                dtype=torch.float32,
+                dtype=self.world.dtype,
                 device=self.world.device,
             )
 
@@ -492,7 +492,7 @@ class CameraSensorNode(SensorNode[
                 low=-1.0,
                 high=1.0,
                 shape=get_batch_aware_shape(B, (H, W, 3)),
-                dtype=torch.float32,
+                dtype=self.world.dtype,
                 device=self.world.device,
             )
 
@@ -502,7 +502,7 @@ class CameraSensorNode(SensorNode[
                 low=-float("inf"),
                 high=float("inf"),
                 shape=get_batch_aware_shape(B, (H, W, 3)),
-                dtype=torch.float32,
+                dtype=self.world.dtype,
                 device=self.world.device,
             )
 
@@ -511,7 +511,7 @@ class CameraSensorNode(SensorNode[
             low=-float("inf"),
             high=float("inf"),
             shape=get_batch_aware_shape(B, (3, 3)),
-            dtype=torch.float32,
+            dtype=self.world.dtype,
             device=self.world.device,
         )
         spaces["extrinsics_cv"] = BoxSpace(
@@ -519,7 +519,7 @@ class CameraSensorNode(SensorNode[
             low=-float("inf"),
             high=float("inf"),
             shape=get_batch_aware_shape(B, (3, 4)),
-            dtype=torch.float32,
+            dtype=self.world.dtype,
             device=self.world.device,
         )
         spaces["local_extrinsics_cv"] = BoxSpace(
@@ -527,7 +527,7 @@ class CameraSensorNode(SensorNode[
             low=-float("inf"),
             high=float("inf"),
             shape=get_batch_aware_shape(B, (3, 4)),
-            dtype=torch.float32,
+            dtype=self.world.dtype,
             device=self.world.device,
         )
 
@@ -565,7 +565,7 @@ class CameraSensorNode(SensorNode[
             [[fx, 0.0, cx],
              [0.0, fy, cy],
              [0.0, 0.0, 1.0]],
-            dtype=torch.float32,
+            dtype=self.world.dtype,
             device=self.world.device,
         )
         B = self.world.batch_size
@@ -589,7 +589,7 @@ class CameraSensorNode(SensorNode[
             [[fx, 0.0, cx],
              [0.0, fy, cy],
              [0.0, 0.0, 1.0]],
-            dtype=torch.float32,
+            dtype=self.world.dtype,
             device=self.world.device,
         )
         B = self.world.batch_size
@@ -614,7 +614,7 @@ class CameraSensorNode(SensorNode[
              [0.0, -1.0, 0.0, 0.0],
              [0.0, 0.0, -1.0, 0.0],
              [0.0, 0.0, 0.0, 1.0]],
-            dtype=torch.float32,
+            dtype=self.world.dtype,
             device=self.world.device,
         )
 
@@ -624,7 +624,7 @@ class CameraSensorNode(SensorNode[
         if hasattr(sensor, "get_transform"):
             camera_transform = torch.as_tensor(
                 sensor.get_transform(),
-                dtype=torch.float32,
+                dtype=self.world.dtype,
                 device=self.world.device,
             )
         elif self.option.backend == "nyx" and self._attach_link is not None:
@@ -633,7 +633,7 @@ class CameraSensorNode(SensorNode[
         elif self.option.backend == "nyx":
             # NYX static camera: use stored offset_T as world pose
             camera_transform = torch.as_tensor(
-                self._offset_T, dtype=torch.float32, device=self.world.device,
+                self._offset_T, dtype=self.world.dtype, device=self.world.device,
             )
         else:
             raise RuntimeError(
@@ -654,17 +654,17 @@ class CameraSensorNode(SensorNode[
         link_quat = self._attach_link.get_quat()  # (4,) or (B, 4) tensor (w, x, y, z)
 
         device = self.world.device
-        link_pos = torch.as_tensor(link_pos, dtype=torch.float32, device=device)
-        link_quat = torch.as_tensor(link_quat, dtype=torch.float32, device=device)
+        link_pos = torch.as_tensor(link_pos, dtype=self.world.dtype, device=device)
+        link_quat = torch.as_tensor(link_quat, dtype=self.world.dtype, device=device)
 
         offset_T = torch.as_tensor(
-            self._offset_T, dtype=torch.float32, device=device,
+            self._offset_T, dtype=self.world.dtype, device=device,
         )
 
         R_link = quaternion_to_matrix(PyTorchComputeBackend, link_quat).to(
-            dtype=torch.float32, device=device,
+            dtype=self.world.dtype, device=device,
         )
-        T_link = torch.eye(4, dtype=torch.float32, device=device)
+        T_link = torch.eye(4, dtype=self.world.dtype, device=device)
         if link_pos.ndim > 1:
             T_link = T_link.unsqueeze(0).expand(link_pos.shape[0], -1, -1).clone()
         T_link[..., :3, :3] = R_link
@@ -691,11 +691,11 @@ class CameraSensorNode(SensorNode[
              [0.0, -1.0, 0.0, 0.0],
              [0.0, 0.0, -1.0, 0.0],
              [0.0, 0.0, 0.0, 1.0]],
-            dtype=torch.float32,
+            dtype=self.world.dtype,
             device=self.world.device,
         )
 
-        offset_T = torch.from_numpy(self._offset_T).to(device=self.world.device)
+        offset_T = torch.from_numpy(self._offset_T).to(dtype=self.world.dtype, device=self.world.device)
 
         # offset_T is camera-to-link in OpenGL convention.
         # Convert to OpenCV and invert to get link-to-camera.
@@ -717,7 +717,7 @@ class CameraSensorNode(SensorNode[
         Returns:
             Position map with shape ``(H, W, 3)`` or ``(B, H, W, 3)``.
         """
-        depth_t = torch.as_tensor(depth, dtype=torch.float32, device=self.world.device)
+        depth_t = torch.as_tensor(depth, dtype=self.world.dtype, device=self.world.device)
         squeeze_batch = depth_t.ndim == 2
         if squeeze_batch:
             depth_t = depth_t.unsqueeze(0)
@@ -773,7 +773,7 @@ class CameraSensorNode(SensorNode[
             obs["rgb"] = _to_tensor(rgb)
 
         if self.render_depth:
-            obs["depth"] = _to_tensor(depth, dtype=torch.float32)
+            obs["depth"] = _to_tensor(depth, dtype=self.world.dtype)
 
         if self.render_position:
             obs["position"] = self._depth_to_position_map(depth)
@@ -782,7 +782,7 @@ class CameraSensorNode(SensorNode[
             obs["seg"] = _to_tensor(segmentation)
 
         if self.render_normal:
-            obs["normal"] = _to_tensor(normal, dtype=torch.float32)
+            obs["normal"] = _to_tensor(normal, dtype=self.world.dtype)
 
         obs["intrinsics_cv"] = self._get_intrinsics()
         obs["extrinsics_cv"] = self._get_extrinsics()
@@ -828,7 +828,7 @@ class CameraSensorNode(SensorNode[
                 return torch.from_numpy(np.ascontiguousarray(x)).to(device=device, **kwargs)
 
             if self.render_depth:
-                obs["depth"] = _to_tensor(depth, dtype=torch.float32)
+                obs["depth"] = _to_tensor(depth, dtype=self.world.dtype)
 
             if self.render_position:
                 obs["position"] = self._depth_to_position_map(depth)
@@ -837,7 +837,7 @@ class CameraSensorNode(SensorNode[
                 obs["seg"] = _to_tensor(segmentation)
 
             if self.render_normal:
-                obs["normal"] = _to_tensor(normal, dtype=torch.float32)
+                obs["normal"] = _to_tensor(normal, dtype=self.world.dtype)
 
         obs["intrinsics_cv"] = self._get_intrinsics()
         obs["extrinsics_cv"] = self._get_extrinsics()

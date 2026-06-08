@@ -130,8 +130,8 @@ class TableBuilder(WorldNode):
             tuple(float(v) for v in leg_color) if leg_color is not None else None
         )
 
-        size_t = torch.tensor(self.default_size, dtype=torch.float32)
-        height_t = torch.tensor(self.default_height, dtype=torch.float32)
+        size_t = torch.tensor(self.default_size, dtype=world.dtype)
+        height_t = torch.tensor(self.default_height, dtype=world.dtype)
         if world.batch_size is None:
             self.size = size_t
             self.height = height_t
@@ -145,8 +145,8 @@ class TableBuilder(WorldNode):
         self.quat = yaw_to_quat(yaw)
         self._cos_yaw = math.cos(yaw)
         self._sin_yaw = math.sin(yaw)
-        self._pos_t = torch.tensor(pos, dtype=torch.float32)
-        self._quat_t = torch.tensor(self.quat, dtype=torch.float32)
+        self._pos_t = torch.tensor(pos, dtype=world.dtype)
+        self._quat_t = torch.tensor(self.quat, dtype=world.dtype)
 
         # EntityGroup is created in reload() once entities exist.
         self._group: Optional[EntityGroup] = None
@@ -201,7 +201,7 @@ class TableBuilder(WorldNode):
 
         # Build the group first so we can use world_pose() for morph placement.
         # Anchor = surface center; parts hang downward (negative z in anchor frame).
-        group = EntityGroup(pos=pos, quat=quat)
+        group = EntityGroup(pos=pos, quat=quat, dtype=world.dtype)
 
         tabletop_local = (0.0, 0.0, -size[2] / 2)
         top_world_pos, top_world_quat = group.world_pose(tabletop_local)

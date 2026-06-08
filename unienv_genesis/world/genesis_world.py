@@ -135,6 +135,22 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         return gs.device
 
     @property
+    def dtype(self) -> PyTorchDtypeType:
+        """PyTorch dtype matching Genesis's initialized floating precision.
+        
+        Returns Genesis's canonical runtime float dtype (gs.tc_float), which
+        reflects the precision set during gs.init(precision="32"|"64").
+        
+        Raises:
+            RuntimeError: If Genesis has not been initialized via gs.init().
+        """
+        if not getattr(gs, "_initialized", False):
+            raise RuntimeError(
+                "Genesis is not initialized. Call gs.init() before accessing world.dtype."
+            )
+        return gs.tc_float
+
+    @property
     def batch_size(self) -> Optional[int]:
         """Number of parallel environments, or None for unbatched."""
         return self._batch_size

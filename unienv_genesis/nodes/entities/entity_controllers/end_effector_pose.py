@@ -179,7 +179,7 @@ class EndEffectorPoseController(
             low=-torch.inf,
             high=torch.inf,
             shape=get_batch_aware_shape(batch_size, 6),
-            dtype=torch.float32,
+            dtype=world.dtype,
             device=world.device,
         )
         self._last_ik_result = {}
@@ -287,7 +287,11 @@ class EndEffectorPoseController(
         if 'achieved_error' in self._last_ik_result:
             obs['last_ik_solved_error'] = self._last_ik_result['achieved_error']
         else:
-            obs['last_ik_solved_error'] = torch.zeros(get_batch_aware_shape(self.world.batch_size, 6), device=self.world.device)
+            obs['last_ik_solved_error'] = torch.zeros(
+                get_batch_aware_shape(self.world.batch_size, 6),
+                dtype=self.world.dtype,
+                device=self.world.device,
+            )
         return obs
 
     def get_action_world(

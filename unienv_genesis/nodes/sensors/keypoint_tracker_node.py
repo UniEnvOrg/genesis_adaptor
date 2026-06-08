@@ -203,7 +203,7 @@ class UniformSegmentationPointProposer(PointProposer):
         device = segmentation.device
 
         _empty = (
-            torch.empty((0, 3), dtype=torch.float32, device=device),
+            torch.empty((0, 3), dtype=position.dtype, device=device),
             torch.empty((0,), dtype=torch.int64, device=device),
         )
 
@@ -253,7 +253,7 @@ class UniformSegmentationPointProposer(PointProposer):
         # Look up 3D positions and seg IDs at selected pixels.
         y = chosen_pixels[:, 0].long()
         x = chosen_pixels[:, 1].long()
-        points_world = position[y, x].to(torch.float32)  # (N, 3)
+        points_world = position[y, x].to(position.dtype)  # (N, 3)
         seg_ids = segmentation[y, x].to(torch.int64)      # (N,)
         return points_world, seg_ids
 
@@ -277,7 +277,7 @@ class UniformSegmentationPointProposer(PointProposer):
             if self._name_allowed(entity_names.get(entity_idx, ""))
         }
 
-        out_points = torch.zeros((B, max_points, 3), dtype=torch.float32, device=device)
+        out_points = torch.zeros((B, max_points, 3), dtype=position.dtype, device=device)
         out_seg = torch.zeros((B, max_points), dtype=torch.int64, device=device)
         out_valid = torch.zeros((B, max_points), dtype=torch.bool, device=device)
 
@@ -365,22 +365,21 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         self.point_proposer = point_proposer or UniformSegmentationPointProposer()
 
         self._n_envs = self.world.batch_size if self.world.batch_size is not None else 1
-        self._device = self.world.device
         self._entity_by_idx: Dict[int, RigidEntity] = {}
         self._link_by_idx: Dict[int, RigidLink] = {}
-        self._rng = torch.Generator(device=self._device)
+        self._rng = torch.Generator(device=self.world.device)
 
-        self._points_world = torch.zeros((self._n_envs, self.max_points, 3), dtype=torch.float32, device=self._device)
+        self._points_world = torch.zeros((self._n_envs, self.max_points, 3), dtype=self.world.dtype, device=self.world.device)
         self._prev_points_world = torch.zeros_like(self._points_world)
         self._flow_world = torch.zeros_like(self._points_world)
         self._local_offsets = torch.zeros_like(self._points_world)
-        self._valid_mask = torch.zeros((self._n_envs, self.max_points), dtype=torch.bool, device=self._device)
-        self._entity_idx = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self._device)
-        self._link_idx = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self._device)
-        self._seg_ids = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self._device)
-        self._geom_idx = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self._device)
-        self._points_2d = torch.zeros((self._n_envs, self.max_points, 2), dtype=torch.float32, device=self._device)
-        self._visibility_mask = torch.zeros((self._n_envs, self.max_points), dtype=torch.bool, device=self._device)
+        self._valid_mask = torch.zeros((self._n_envs, self.max_points), dtype=torch.bool, device=self.world.device)
+        self._entity_idx = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self.world.device)
+        self._link_idx = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self.world.device)
+        self._seg_ids = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self.world.device)
+        self._geom_idx = torch.full((self._n_envs, self.max_points), -1, dtype=torch.int32, device=self.world.device)
+        self._points_2d = torch.zeros((self._n_envs, self.max_points, 2), dtype=self.world.dtype, device=self.world.device)
+        self._visibility_mask = torch.zeros((self._n_envs, self.max_points), dtype=torch.bool, device=self.world.device)
 
         # Lookup structures for visibility checking
         # seg_id -> SegmentationTarget (for all tracked seg IDs)
@@ -401,24 +400,24 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 low=-float("inf"),
                 high=float("inf"),
                 shape=get_batch_aware_shape(B, (self.max_points, 3)),
-                dtype=torch.float32,
-                device=self._device,
+                dtype=self.world.dtype,
+                device=self.world.device,
             ),
             "points_2d": BoxSpace(
                 PyTorchComputeBackend,
                 low=-float("inf"),
                 high=float("inf"),
                 shape=get_batch_aware_shape(B, (self.max_points, 2)),
-                dtype=torch.float32,
-                device=self._device,
+                dtype=self.world.dtype,
+                device=self.world.device,
             ),
             "point_movements": BoxSpace(
                 PyTorchComputeBackend,
                 low=-float("inf"),
                 high=float("inf"),
                 shape=get_batch_aware_shape(B, (self.max_points, 3)),
-                dtype=torch.float32,
-                device=self._device,
+                dtype=self.world.dtype,
+                device=self.world.device,
             ),
             "point_segmentations": BoxSpace(
                 PyTorchComputeBackend,
@@ -426,7 +425,7 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 high=2**31 - 1,
                 shape=get_batch_aware_shape(B, (self.max_points,)),
                 dtype=torch.int32,
-                device=self._device,
+                device=self.world.device,
             ),
             "valid_masks": BoxSpace(
                 PyTorchComputeBackend,
@@ -434,7 +433,7 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 high=1,
                 shape=get_batch_aware_shape(B, (self.max_points,)),
                 dtype=torch.uint8,
-                device=self._device,
+                device=self.world.device,
             ),
             "visibility_masks": BoxSpace(
                 PyTorchComputeBackend,
@@ -442,10 +441,10 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 high=1,
                 shape=get_batch_aware_shape(B, (self.max_points,)),
                 dtype=torch.uint8,
-                device=self._device,
+                device=self.world.device,
             ),
         }
-        return DictSpace(PyTorchComputeBackend, spaces, device=self._device)
+        return DictSpace(PyTorchComputeBackend, spaces, device=self.world.device)
 
     def _zero_env_slots(self, env_idx: int) -> None:
         self._points_world[env_idx].zero_()
@@ -694,13 +693,13 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         if not torch.any(valid):
             return
 
-        pts = points_world[valid].float()
+        pts = points_world[valid].to(dtype=self.world.dtype)
         sids = seg_ids[valid].long()
         n = pts.shape[0]
 
-        entity_indices = torch.full((n,), -1, dtype=torch.int64, device=self._device)
-        link_indices = torch.full((n,), -1, dtype=torch.int64, device=self._device)
-        geom_indices = torch.full((n,), -1, dtype=torch.int64, device=self._device)
+        entity_indices = torch.full((n,), -1, dtype=torch.int64, device=self.world.device)
+        link_indices = torch.full((n,), -1, dtype=torch.int64, device=self.world.device)
+        geom_indices = torch.full((n,), -1, dtype=torch.int64, device=self.world.device)
         for i in range(n):
             seg_id_i = int(sids[i].item())
             assign = seg_to_entity_and_link.get(seg_id_i, None)
@@ -724,7 +723,7 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         geom_indices = geom_indices[resolved]
         n_valid = entity_indices.shape[0]
 
-        local_offsets = torch.zeros((n_valid, 3), dtype=torch.float32, device=self._device)
+        local_offsets = torch.zeros((n_valid, 3), dtype=self.world.dtype, device=self.world.device)
         for link_idx in torch.unique(link_indices):
             link_idx_i = int(link_idx.item())
             link = self._link_by_idx.get(link_idx_i, None)
@@ -732,8 +731,8 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 continue
 
             env_query = env_idx if self.world.batch_size is not None else None
-            link_pos = link.get_pos(env_query).float()
-            link_quat = link.get_quat(env_query).float()
+            link_pos = link.get_pos(env_query).to(dtype=self.world.dtype)
+            link_quat = link.get_quat(env_query).to(dtype=self.world.dtype)
             if link_pos.ndim == 2:
                 link_pos = link_pos[0]
             if link_quat.ndim == 2:
@@ -777,7 +776,7 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
         if mask is not None and self.world.batch_size is not None:
             reset_envs = torch.where(mask)[0]
         else:
-            reset_envs = torch.arange(B, dtype=torch.long, device=self._device)
+            reset_envs = torch.arange(B, dtype=torch.long, device=self.world.device)
 
         for env_idx in reset_envs.tolist():
             self._zero_env_slots(int(env_idx))
@@ -851,8 +850,8 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 continue
 
             # get_pos()/get_quat() returns (D,) unbatched or (B, D) batched.
-            link_pos = link.get_pos().float()
-            link_quat = link.get_quat().float()
+            link_pos = link.get_pos().to(dtype=self.world.dtype)
+            link_quat = link.get_quat().to(dtype=self.world.dtype)
 
             if link_pos.ndim == 1:
                 pos = link_pos.unsqueeze(0).expand(env_ids.numel(), -1)
@@ -960,7 +959,7 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
             ``(B, max_points)`` bool tensor.
         """
         B, max_points = seg_at_pixel.shape
-        result = torch.zeros((B, max_points), dtype=torch.bool, device=self._device)
+        result = torch.zeros((B, max_points), dtype=torch.bool, device=self.world.device)
 
         # For each valid point, check if the seg ID at its pixel belongs to
         # the same (entity_idx, link_idx).

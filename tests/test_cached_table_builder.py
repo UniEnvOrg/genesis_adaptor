@@ -35,8 +35,8 @@ _DEFAULT_SIZE = (1.05, 0.58, 0.03)
 _DEFAULT_HEIGHT = 0.64
 _DEFAULT_LEG_COLOR = (0.21, 0.22, 0.23, 1.0)
 
-_TARGET_POS_T = torch.tensor(_TABLE_POS, dtype=torch.float32)
-_PARK_POS_T = torch.tensor(_PARK_POS, dtype=torch.float32)
+_TARGET_POS = _TABLE_POS
+_PARK_POS = _PARK_POS
 
 
 def test_cached_table_builder():
@@ -75,11 +75,11 @@ def test_cached_table_builder():
     chosen_initial = table._chosen_indices[0]
     expected_size_t = torch.tensor(
         table._variant_params[chosen_initial]["size"],
-        dtype=torch.float32,
+        dtype=world.dtype,
     )
     expected_height_t = torch.tensor(
         table._variant_params[chosen_initial]["height"],
-        dtype=torch.float32,
+        dtype=world.dtype,
     )
     assert torch.allclose(table.size, expected_size_t)
     assert torch.isclose(table.height, expected_height_t)
@@ -102,18 +102,20 @@ def test_cached_table_builder():
     # ------------------------------------------------------------------
     # Active at target position; others parked
     # ------------------------------------------------------------------
+    target_pos_t = torch.tensor(_TARGET_POS, dtype=world.dtype)
+    park_pos_t = torch.tensor(_PARK_POS, dtype=world.dtype)
     chosen = table._chosen_indices[0]
     active_pos = table._variants[chosen].pos
-    assert torch.allclose(active_pos, _TARGET_POS_T), \
-        f"Active variant {chosen} pos {active_pos} != target {_TARGET_POS_T}"
+    assert torch.allclose(active_pos, target_pos_t), \
+        f"Active variant {chosen} pos {active_pos} != target {target_pos_t}"
     assert table._chosen_indices[0] == chosen
 
     for i, group in enumerate(table._variants):
         if i == chosen:
             continue
         parked_pos = group.pos
-        assert torch.allclose(parked_pos, _PARK_POS_T), \
-            f"Variant {i} pos {parked_pos} != park {_PARK_POS_T}"
+        assert torch.allclose(parked_pos, park_pos_t), \
+            f"Variant {i} pos {parked_pos} != park {park_pos_t}"
 
     print("  PASS: active variant at target, others parked")
 
@@ -183,11 +185,11 @@ def test_cached_table_builder_batched():
     assert table.height.shape == (N_ENVS,)
     expected_sizes_t = torch.tensor(
         [table._variant_params[i]["size"] for i in table._chosen_indices],
-        dtype=torch.float32,
+        dtype=world.dtype,
     )
     expected_heights_t = torch.tensor(
         [table._variant_params[i]["height"] for i in table._chosen_indices],
-        dtype=torch.float32,
+        dtype=world.dtype,
     )
     assert torch.allclose(table.size, expected_sizes_t)
     assert torch.allclose(table.height, expected_heights_t)
@@ -201,12 +203,14 @@ def test_cached_table_builder_batched():
 
     # For every variant, its (N_ENVS, 3) pos tensor should be correct:
     #   target pos for envs that chose it, park pos for all others
+    target_pos_t = torch.tensor(_TARGET_POS, dtype=world.dtype)
+    park_pos_t = torch.tensor(_PARK_POS, dtype=world.dtype)
     for i, group in enumerate(table._variants):
         group_pos = group.pos  # (N_ENVS, 3)
         assert group_pos.shape == (N_ENVS, 3), \
             f"Variant {i} pos shape {group_pos.shape} != ({N_ENVS}, 3)"
         for env_j in range(N_ENVS):
-            expected = _TARGET_POS_T if table._chosen_indices[env_j] == i else _PARK_POS_T
+            expected = target_pos_t if table._chosen_indices[env_j] == i else park_pos_t
             assert torch.allclose(group_pos[env_j], expected), \
                 f"Variant {i}, env {env_j}: pos {group_pos[env_j]} != expected {expected} " \
                 f"(chosen={table._chosen_indices[env_j]})"

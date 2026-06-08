@@ -148,11 +148,11 @@ class ClutteredTableManager(WorldNode):
         if self.avoid_spaces:
             world_xy = torch.tensor(
                 [[c[0], c[1]] for c, _r in self.avoid_spaces],
-                dtype=torch.float32,
+                dtype=world.dtype,
             )  # (n_static, 2)
             # Inverse-rotate world → local table frame.
             offset = world_xy - torch.tensor(
-                [table_pos[0], table_pos[1]], dtype=torch.float32,
+                [table_pos[0], table_pos[1]], dtype=world.dtype,
             )
             c_y, s_y = self._cos_yaw, self._sin_yaw
             self._static_avoid_xy = torch.stack([
@@ -161,11 +161,11 @@ class ClutteredTableManager(WorldNode):
             ], dim=-1)  # (n_static, 2)
             self._static_avoid_r = torch.tensor(
                 [r for _c, r in self.avoid_spaces],
-                dtype=torch.float32,
+                dtype=world.dtype,
             )  # (n_static,)
         else:
-            self._static_avoid_xy = torch.empty(0, 2)
-            self._static_avoid_r = torch.empty(0)
+            self._static_avoid_xy = torch.empty(0, 2, dtype=world.dtype)
+            self._static_avoid_r = torch.empty(0, dtype=world.dtype)
 
         # Populated during reload().
         self._loaded_entities: List = []
@@ -240,13 +240,13 @@ class ClutteredTableManager(WorldNode):
         if self._bboxes:
             self._dims_t = torch.stack(
                 [bbox_size(b) for b in self._bboxes]
-            )  # (n_pool, 3)
+            ).to(dtype=self.world.dtype)  # (n_pool, 3)
             self._centers_t = torch.stack(
                 [bbox_center(b) for b in self._bboxes]
-            )  # (n_pool, 3)
+            ).to(dtype=self.world.dtype)  # (n_pool, 3)
             self._footprint_r_t = (
                 torch.linalg.norm(self._dims_t[:, :2], dim=1) / 2.0
-            )  # (n_pool,)
+            )  # (n_pool,) — inherits dtype from _dims_t
 
     def after_reload(self, *, priority=0, mask=None, **kwargs):
         if priority != 25:
@@ -383,22 +383,23 @@ class ClutteredTableManager(WorldNode):
                 ext_r = ext_r[reset_idx]
             # Inverse-rotate world → local table frame.
             tp = torch.tensor(
-                [self.table_pos[0], self.table_pos[1]], dtype=torch.float32,
+                [self.table_pos[0], self.table_pos[1]],
+                dtype=ext_xy.dtype, device=ext_xy.device,
             )
-            offset = ext_xy.float() - tp
+            offset = ext_xy.to(dtype=tp.dtype) - tp
             c_y, s_y = self._cos_yaw, self._sin_yaw
             local_xy = torch.stack([
                 offset[..., 0] * c_y + offset[..., 1] * s_y,
                 -offset[..., 0] * s_y + offset[..., 1] * c_y,
             ], dim=-1)
             parts_xy.append(local_xy)
-            parts_r.append(ext_r.float())
+            parts_r.append(ext_r.to(dtype=ext_xy.dtype))
 
         if parts_xy:
             return torch.cat(parts_xy, dim=1), torch.cat(parts_r, dim=1)
         return (
-            torch.empty(n_reset, 0, 2),
-            torch.empty(n_reset, 0),
+            torch.empty(n_reset, 0, 2, dtype=self.world.dtype),
+            torch.empty(n_reset, 0, dtype=self.world.dtype),
         )
 
     # ------------------------------------------------------------------
@@ -433,9 +434,9 @@ class ClutteredTableManager(WorldNode):
         n_pool = len(self.object_pool)
 
         # Start every object at the parking position.
-        positions = torch.zeros(n_pool, n_envs, 3)
+        positions = torch.zeros(n_pool, n_envs, 3, dtype=self.world.dtype, device=self.world.device)
         positions[:, :, 2] = _PARK_POS[2]
-        active_mask = torch.zeros(n_pool, n_envs, dtype=torch.bool)
+        active_mask = torch.zeros(n_pool, n_envs, dtype=torch.bool, device=self.world.device)
 
         if n_pool == 0:
             return positions, active_mask
@@ -453,23 +454,23 @@ class ClutteredTableManager(WorldNode):
             return positions, active_mask
 
         # Random permutations via argsort of uniform noise.
-        noise = torch.rand(n_envs, n_pool, generator=self.rng)
+        noise = torch.rand(n_envs, n_pool, generator=self.rng, dtype=self.world.dtype, device=self.world.device)
         perms = noise.argsort(dim=1)  # (n_envs, n_pool)
 
         # --- Table geometry -------------------------------------------
         table_half_x = self.table_size[0] / 2.0 - self.placement_margin
         table_half_y = self.table_size[1] / 2.0 - self.placement_margin
         table_half = torch.tensor(
-            [table_half_x, table_half_y], dtype=torch.float32,
+            [table_half_x, table_half_y], dtype=self.world.dtype, device=self.world.device,
         )
-        table_pos = torch.tensor(self.table_pos, dtype=torch.float32)
+        table_pos = torch.tensor(self.table_pos, dtype=self.world.dtype, device=self.world.device)
 
         n_avoid = avoid_xy.shape[1]
 
         # --- Footprint tracking ---------------------------------------
-        placed_xy = torch.zeros(max_n, n_envs, 2)
-        placed_r = torch.zeros(max_n, n_envs)
-        placed_valid = torch.zeros(max_n, n_envs, dtype=torch.bool)
+        placed_xy = torch.zeros(max_n, n_envs, 2, dtype=self.world.dtype, device=self.world.device)
+        placed_r = torch.zeros(max_n, n_envs, dtype=self.world.dtype, device=self.world.device)
+        placed_valid = torch.zeros(max_n, n_envs, dtype=torch.bool, device=self.world.device)
         n_placed = 0
 
         for k in range(max_n):
@@ -498,8 +499,8 @@ class ClutteredTableManager(WorldNode):
                 continue
 
             # --- Rejection sampling across all envs simultaneously ----
-            placed = torch.zeros(n_envs, dtype=torch.bool)
-            best_xy = torch.zeros(n_envs, 2)
+            placed = torch.zeros(n_envs, dtype=torch.bool, device=self.world.device)
+            best_xy = torch.zeros(n_envs, 2, dtype=self.world.dtype, device=self.world.device)
 
             for _att in range(self.max_placement_attempts):
                 need = valid & ~placed  # (n_envs,)
@@ -507,12 +508,12 @@ class ClutteredTableManager(WorldNode):
                     break
 
                 n_need = int(need.sum().item())
-                raw = torch.rand(n_need, 2, generator=self.rng) * 2 - 1
-                cand = torch.zeros(n_envs, 2)
+                raw = torch.rand(n_need, 2, generator=self.rng, dtype=self.world.dtype, device=self.world.device) * 2 - 1
+                cand = torch.zeros(n_envs, 2, dtype=self.world.dtype, device=self.world.device)
                 cand[need] = raw * xy_range[need]
 
                 # Check overlap with already-placed footprints.
-                overlap = torch.zeros(n_envs, dtype=torch.bool)
+                overlap = torch.zeros(n_envs, dtype=torch.bool, device=self.world.device)
                 if n_placed > 0:
                     dx = placed_xy[:n_placed, :, 0] - cand[:, 0].unsqueeze(0)
                     dy = placed_xy[:n_placed, :, 1] - cand[:, 1].unsqueeze(0)

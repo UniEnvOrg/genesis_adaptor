@@ -58,9 +58,8 @@ class BoxObject(ManipulatableObject):
         self.color = color
 
     def get_local_bounding_box(self, entity) -> "BoxSpace":
-        half = torch.tensor(self.size, dtype=torch.float32) / 2.0
+        half = torch.tensor(self.size) / 2.0
         return make_bbox(-half, half)
-
     def load_into_scene(
         self,
         world: "GenesisWorld",
@@ -122,8 +121,8 @@ class SphereObject(ManipulatableObject):
     def get_local_bounding_box(self, entity) -> "BoxSpace":
         r = self.radius
         return make_bbox(
-            torch.tensor([-r, -r, -r], dtype=torch.float32),
-            torch.tensor([r, r, r], dtype=torch.float32),
+            torch.tensor([-r, -r, -r]),
+            torch.tensor([r, r, r]),
         )
 
     def load_into_scene(
@@ -193,8 +192,8 @@ class CylinderObject(ManipulatableObject):
         r = self.radius
         h = self.height / 2.0
         return make_bbox(
-            torch.tensor([-r, -r, -h], dtype=torch.float32),
-            torch.tensor([r, r, h], dtype=torch.float32),
+            torch.tensor([-r, -r, -h]),
+            torch.tensor([r, r, h]),
         )
 
     def load_into_scene(

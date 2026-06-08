@@ -44,8 +44,8 @@ def test_table_builder_defaults_unbatched():
     assert isinstance(table.height, torch.Tensor)
     assert table.size.shape == (3,)
     assert table.height.ndim == 0
-    assert torch.allclose(table.size, torch.tensor(table_size, dtype=torch.float32))
-    assert torch.isclose(table.height, torch.tensor(table_height, dtype=torch.float32))
+    assert torch.allclose(table.size, torch.tensor(table_size, dtype=world.dtype))
+    assert torch.isclose(table.height, torch.tensor(table_height, dtype=world.dtype))
     assert table._group is not None
 
     env.close()
@@ -73,11 +73,11 @@ def test_table_builder_defaults_batched():
     assert table.height.shape == (n_envs,)
     assert torch.allclose(
         table.size,
-        torch.tensor(table_size, dtype=torch.float32).unsqueeze(0).repeat(n_envs, 1),
+        torch.tensor(table_size, dtype=world.dtype).unsqueeze(0).repeat(n_envs, 1),
     )
     assert torch.allclose(
         table.height,
-        torch.full((n_envs,), table_height, dtype=torch.float32),
+        torch.full((n_envs,), table_height, dtype=world.dtype),
     )
 
     env.close()

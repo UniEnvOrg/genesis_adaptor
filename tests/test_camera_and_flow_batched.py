@@ -68,8 +68,8 @@ class MovingBoxNode(WorldNode):
     ):
         self.world = world
         self._name = name
-        self.start_pos = torch.tensor(start_pos, dtype=torch.float32)
-        self.step_delta = torch.tensor(step_delta, dtype=torch.float32)
+        self.start_pos = torch.tensor(start_pos, dtype=world.dtype)
+        self.step_delta = torch.tensor(step_delta, dtype=world.dtype)
         self._step = 0
         self.entity = None
 

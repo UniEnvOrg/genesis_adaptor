@@ -73,7 +73,7 @@ class CachedTableBuilder(TableBuilder):
 
     @size.setter
     def size(self, value) -> None:
-        self._fixed_size_t = torch.as_tensor(value, dtype=torch.float32)
+        self._fixed_size_t = torch.as_tensor(value, dtype=self.world.dtype)
 
     @property
     def height(self) -> torch.Tensor:
@@ -87,7 +87,7 @@ class CachedTableBuilder(TableBuilder):
 
     @height.setter
     def height(self, value) -> None:
-        self._fixed_height_t = torch.as_tensor(value, dtype=torch.float32)
+        self._fixed_height_t = torch.as_tensor(value, dtype=self.world.dtype)
 
     def __init__(
         self,
@@ -220,8 +220,8 @@ class CachedTableBuilder(TableBuilder):
             sampled_sizes.append(variant_size)
             sampled_heights.append(variant_height)
 
-        self._sampled_sizes_t = torch.tensor(sampled_sizes, dtype=torch.float32)
-        self._sampled_heights_t = torch.tensor(sampled_heights, dtype=torch.float32)
+        self._sampled_sizes_t = torch.tensor(sampled_sizes, dtype=self.world.dtype)
+        self._sampled_heights_t = torch.tensor(sampled_heights, dtype=self.world.dtype)
 
     def after_reload(self, *, priority: int = 0, mask=None, **kwargs) -> None:
         # Scene is now built. Select initial active variant without reseeding.
@@ -263,10 +263,10 @@ class CachedTableBuilder(TableBuilder):
             chosen_t = torch.randint(self.n_variants, (n_envs,), generator=self.rng)
             self._chosen_indices = chosen_t.tolist()
 
-            target_pos = torch.tensor(self.pos, dtype=torch.float32)
-            target_quat = torch.tensor(self.quat, dtype=torch.float32)
-            park_pos = torch.tensor(_PARK_POS, dtype=torch.float32)
-            park_quat = torch.tensor(_PARK_QUAT, dtype=torch.float32)
+            target_pos = torch.tensor(self.pos, dtype=self.world.dtype)
+            target_quat = torch.tensor(self.quat, dtype=self.world.dtype)
+            park_pos = torch.tensor(_PARK_POS, dtype=self.world.dtype)
+            park_quat = torch.tensor(_PARK_QUAT, dtype=self.world.dtype)
 
             for i, group in enumerate(self._variants):
                 is_active = (chosen_t == i).unsqueeze(-1)

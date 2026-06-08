@@ -45,10 +45,25 @@ from xbarray.transformations.rotation_conversions.pytorch import (
 # Tensor helper
 # ---------------------------------------------------------------------------
 
-def _as_tensor(v, dtype=torch.float32) -> torch.Tensor:
+def _as_tensor(v, dtype: Optional[torch.dtype] = None) -> torch.Tensor:
+    """Coerce *v* to a :class:`torch.Tensor`.
+
+    - If *v* is already a tensor:
+        - with an explicit *dtype*, cast to it;
+        - otherwise, if *v* is floating-point, **preserve its dtype** (so
+          float64 worlds are not silently downcast to float32);
+        - otherwise (non-floating input tensor), cast to *dtype* or
+          ``torch.float32`` as a safe float fallback.
+    - If *v* is a plain Python sequence / scalar, build a tensor with the
+      explicit *dtype* (or ``torch.float32`` when *dtype* is ``None``).
+    """
     if isinstance(v, torch.Tensor):
-        return v.to(dtype=dtype)
-    return torch.tensor(v, dtype=dtype)
+        if dtype is not None:
+            return v.to(dtype=dtype)
+        if v.dtype.is_floating_point:
+            return v
+        return v.to(dtype=torch.float32)
+    return torch.tensor(v, dtype=dtype if dtype is not None else torch.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -78,15 +93,22 @@ class EntityGroup:
             ``(n_envs, 3)`` for batched initialisation.
         quat: Initial orientation of the anchor ``(w, x, y, z)`` or
             ``(n_envs, 4)``.  Defaults to identity.
+        dtype: Optional floating-point dtype for internally stored pose
+            tensors.  When ``None``, the dtype is inferred from the inputs
+            (preserving a floating tensor's dtype, or falling back to
+            ``torch.float32`` for plain Python sequences).  Pass
+            ``world.dtype`` to keep group poses consistent with the world.
     """
 
     def __init__(
         self,
         pos: Sequence[float] = (0.0, 0.0, 0.0),
         quat: Sequence[float] = (1.0, 0.0, 0.0, 0.0),
+        dtype: Optional[torch.dtype] = None,
     ) -> None:
-        self._pos: torch.Tensor = _as_tensor(pos)
-        self._quat: torch.Tensor = _as_tensor(quat)
+        self._dtype = dtype
+        self._pos: torch.Tensor = _as_tensor(pos, dtype=dtype)
+        self._quat: torch.Tensor = _as_tensor(quat, dtype=dtype)
         # list of (entity, local_pos (3,), local_quat (4,))
         self._members: list[tuple] = []
 
@@ -112,8 +134,8 @@ class EntityGroup:
         """
         self._members.append((
             entity,
-            _as_tensor(local_pos),
-            _as_tensor(local_quat),
+            _as_tensor(local_pos, dtype=self._dtype),
+            _as_tensor(local_quat, dtype=self._dtype),
         ))
 
     @property
@@ -141,9 +163,14 @@ class EntityGroup:
             local_quat: Orientation relative to the anchor ``(w, x, y, z)``.
 
         Returns:
-            ``(world_pos, world_quat)`` as float32 tensors.
+            ``(world_pos, world_quat)`` as floating-point tensors.  The
+            dtype matches the group's ``dtype`` (if set), the dtype of any
+            floating tensor input, or ``torch.float32`` otherwise.
         """
-        return self._world_pose(_as_tensor(local_pos), _as_tensor(local_quat))
+        return self._world_pose(
+            _as_tensor(local_pos, dtype=self._dtype),
+            _as_tensor(local_quat, dtype=self._dtype),
+        )
 
     # ------------------------------------------------------------------
     # Pose manipulation
@@ -206,8 +233,8 @@ class EntityGroup:
             quat: New anchor orientation ``(w, x, y, z)`` or ``(n_envs, 4)``.
             envs_idx: Optional environment indices for batched resets.
         """
-        self._pos = _as_tensor(pos)
-        self._quat = _as_tensor(quat)
+        self._pos = _as_tensor(pos, dtype=self._dtype)
+        self._quat = _as_tensor(quat, dtype=self._dtype)
         self._apply_all(envs_idx=envs_idx)
 
     def set_pos(
@@ -221,7 +248,7 @@ class EntityGroup:
             pos: New anchor world position ``(x, y, z)``.
             envs_idx: Optional environment indices for batched resets.
         """
-        self._pos = _as_tensor(pos)
+        self._pos = _as_tensor(pos, dtype=self._dtype)
         self._apply_all(envs_idx=envs_idx)
 
     def set_quat(
@@ -235,7 +262,7 @@ class EntityGroup:
             quat: New anchor orientation ``(w, x, y, z)``.
             envs_idx: Optional environment indices for batched resets.
         """
-        self._quat = _as_tensor(quat)
+        self._quat = _as_tensor(quat, dtype=self._dtype)
         self._apply_all(envs_idx=envs_idx)
 
     # ------------------------------------------------------------------

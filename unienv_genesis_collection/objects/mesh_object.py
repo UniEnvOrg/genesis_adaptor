@@ -89,8 +89,8 @@ class MeshObject(ManipulatableObject):
     def get_local_bounding_box(self, entity) -> "BoxSpace":
         mesh = self._load_trimesh()
         return make_bbox(
-            torch.from_numpy(mesh.bounds[0].astype(np.float32)),
-            torch.from_numpy(mesh.bounds[1].astype(np.float32)),
+            torch.from_numpy(mesh.bounds[0]),
+            torch.from_numpy(mesh.bounds[1]),
         )
 
     # ------------------------------------------------------------------
@@ -165,9 +165,9 @@ class MeshObject(ManipulatableObject):
             return result.clone()
 
         result = GraspCandidates(
-            position=torch.from_numpy(np.stack(local_positions).astype(np.float32)),
-            approach_direction=torch.from_numpy(np.stack(local_approaches).astype(np.float32)),
-            opening_direction=torch.from_numpy(np.stack(local_openings).astype(np.float32)),
+            position=torch.from_numpy(np.stack(local_positions)),
+            approach_direction=torch.from_numpy(np.stack(local_approaches)),
+            opening_direction=torch.from_numpy(np.stack(local_openings)),
         )
         self._local_grasp_cache[key] = result
         return result.clone()

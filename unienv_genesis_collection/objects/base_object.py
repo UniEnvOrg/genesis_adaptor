@@ -8,9 +8,12 @@ entity as a parameter so they can reflect runtime state (e.g. articulated
 joints).
 
 Bounding boxes are represented as ``BoxSpace`` instances from
-``unienv_interface.space`` (PyTorch backend, float32, shape ``(3,)``).  The
-``low`` / ``high`` of the box correspond to the min / max corners of the
-axis-aligned bounding box in the object's local frame.
+``unienv_interface.space`` (PyTorch backend, shape ``(3,)``).  The ``low``
+/ ``high`` of the box correspond to the min / max corners of the
+axis-aligned bounding box in the object's local frame.  The dtype of the
+bbox tensors follows the source data: tensor inputs preserve their
+floating dtype, while plain Python sequences fall back to
+``torch.float32`` (see :func:`make_bbox`).
 
 Grasp candidates are computed in the **object's local frame** (and cached)
 via ``list_box_gripper_grasping_candidates_local``.  The world-frame
@@ -55,23 +58,35 @@ __all__ = [
 def make_bbox(
     min_point: Union[torch.Tensor, Sequence[float]],
     max_point: Union[torch.Tensor, Sequence[float]],
+    dtype: Optional[torch.dtype] = None,
 ) -> BoxSpace:
     """Create a ``BoxSpace`` representing an axis-aligned bounding box.
 
     Args:
         min_point: Minimum corner ``(x, y, z)``.
         max_point: Maximum corner ``(x, y, z)``.
+        dtype: Optional tensor dtype.  When ``None``, preserves the dtype
+            of tensor inputs or falls back to ``torch.float32`` for plain
+            Python sequences.
 
     Returns:
-        A ``BoxSpace`` with PyTorch backend, float32, shape ``(3,)``.
+        A ``BoxSpace`` with PyTorch backend, shape ``(3,)``.
     """
-    low = torch.as_tensor(min_point, dtype=torch.float32)
-    high = torch.as_tensor(max_point, dtype=torch.float32)
+    low = torch.as_tensor(min_point)
+    high = torch.as_tensor(max_point)
+    if dtype is not None:
+        low = low.to(dtype=dtype)
+        high = high.to(dtype=dtype)
+    elif low.dtype.is_floating_point:
+        pass  # keep the dtype from the input tensor
+    else:
+        low = low.to(dtype=torch.float32)
+        high = high.to(dtype=torch.float32)
     return BoxSpace(
         backend=PyTorchComputeBackend,
         low=low,
         high=high,
-        dtype=torch.float32,
+        dtype=low.dtype,
     )
 
 
@@ -304,8 +319,11 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             entity: The loaded Genesis entity.
 
         Returns:
-            ``BoxSpace`` (PyTorch backend, float32, shape ``(3,)``) whose
-            ``low`` / ``high`` are the min / max corners.
+            ``BoxSpace`` (PyTorch backend, shape ``(3,)``) whose
+            ``low`` / ``high`` are the min / max corners.  The dtype
+            is determined by the intrinsic geometry data (typically
+            ``torch.float32``), independent of the entity's current
+            pose or the world's dtype.
         """
         ...
 
@@ -333,11 +351,11 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         from xbarray.transformations.rotation_conversions.pytorch import quaternion_apply
 
         local_bbox = self.get_local_bounding_box(entity)
-        pos = entity.get_pos().detach().float()
-        quat = entity.get_quat().detach().float()
+        pos = entity.get_pos().detach()
+        quat = entity.get_quat().detach()
 
-        lo = local_bbox.low.to(pos.device)
-        hi = local_bbox.high.to(pos.device)
+        lo = local_bbox.low.to(device=pos.device, dtype=pos.dtype)
+        hi = local_bbox.high.to(device=pos.device, dtype=pos.dtype)
         # All 8 corners of the local AABB: (8, 3)
         corners = torch.stack([
             torch.stack([lo[0], lo[1], lo[2]]),
@@ -394,7 +412,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         """
         center = bbox_center(self.get_bounding_box(entity))[..., :2]
         radius = self.get_footprint_radius(entity)
-        radius = torch.tensor(radius, device=center.device)
+        radius = torch.tensor(radius, device=center.device, dtype=center.dtype)
         if center.ndim == 1:
             return center, radius
         return center, radius.unsqueeze(0).expand(center.shape[0])
@@ -552,15 +570,17 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         bbox = self.get_local_bounding_box(entity)
         center = bbox_center(bbox)
         dims = bbox_size(bbox)
+        _dt = center.dtype
+        _dev = center.device
 
         positions: List[torch.Tensor] = []
         approach_dirs: List[torch.Tensor] = []
         opening_dirs: List[torch.Tensor] = []
 
         axes = [
-            torch.tensor([1.0, 0.0, 0.0]),
-            torch.tensor([0.0, 1.0, 0.0]),
-            torch.tensor([0.0, 0.0, 1.0]),
+            torch.tensor([1.0, 0.0, 0.0], dtype=_dt, device=_dev),
+            torch.tensor([0.0, 1.0, 0.0], dtype=_dt, device=_dev),
+            torch.tensor([0.0, 0.0, 1.0], dtype=_dt, device=_dev),
         ]
         for i, opening_dir in enumerate(axes):
             if dims[i] >= gripper_width:
@@ -583,7 +603,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
                         opening_dirs.append(sign_o * opening_dir)
 
         if not positions:
-            result = GraspCandidates.empty()
+            result = GraspCandidates.empty(device=_dev, dtype=_dt)
         else:
             result = GraspCandidates(
                 position=torch.stack(positions),
@@ -624,7 +644,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         local = self.list_box_gripper_grasping_candidates_local(
             entity, gripper_width, gripper_depth=gripper_depth,
         )
-        pos = entity.get_pos().detach().float()
-        quat = entity.get_quat().detach().float()
+        pos = entity.get_pos().detach()
+        quat = entity.get_quat().detach()
         return _local_to_world_candidates(local, pos, quat)
 
