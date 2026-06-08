@@ -210,7 +210,9 @@ class RobotDescriptionNode(EntityNode[
         if 'reset' in self.keyframes and isinstance(self.entity, gs_entities.RigidEntity):
             reset_keyframe = self.keyframes['reset']
             if mask is not None:
-                env_idx = mask.nonzero(as_tuple=True)[0]
+                # Genesis accepts boolean masks for indexing
+                # env_idx = mask.nonzero(as_tuple=True)[0]
+                env_idx = mask 
             else:
                 env_idx = None
             if reset_keyframe.pos is not None:

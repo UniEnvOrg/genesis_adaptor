@@ -408,7 +408,9 @@ class CameraSensorNode(SensorNode[
     ) -> None:
         """Reset camera state if needed."""
         if mask is not None:
-            env_indices = mask.nonzero(as_tuple=True)[0]
+            # Genesis accepts boolean masks for indexing
+            # env_indices = mask.nonzero(as_tuple=True)[0]
+            env_indices = mask
         else:
             env_indices = None
         # BatchRenderer exposes reset(); the plain Camera class does not.

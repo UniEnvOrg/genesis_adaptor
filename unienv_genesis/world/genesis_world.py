@@ -192,7 +192,9 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             gs.set_random_seed(seed)
         
         if mask is not None:
-            env_indices = mask.nonzero(as_tuple=True)[0]
+            # Genesis accepts boolean masks for indexing
+            # env_indices = mask.nonzero(as_tuple=True)[0]
+            env_indices = mask
             self.scene.reset(envs_idx=env_indices)
         else:
             self.scene.reset()

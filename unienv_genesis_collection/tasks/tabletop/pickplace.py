@@ -182,7 +182,8 @@ class ObjectRelocateTask(WorldNode):
             initial_placement_xyz[mask] if mask is not None else initial_placement_xyz,
             random_quaternion=False,
             rng=self.rng,
-            envs_idx=mask.nonzero(as_tuple=True)[0] if mask is not None else None,
+            # envs_idx=mask.nonzero(as_tuple=True)[0] if mask is not None else None,
+            envs_idx=mask if mask is not None else None,
         )
         avoid_xy, avoid_radius = self.target_object.get_footprint(self.target_object_entity) # ([n_envs], 2), ([n_envs], )
         self.clutter_manager.set_next_reset_avoid_spaces(
