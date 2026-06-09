@@ -1,6 +1,10 @@
 # Genesis-compiled files
 __nyx_cache__/
 
+# Collection assets — hosted on Hugging Face (UniEnvOrg/unienv_genesis_collection_assets),
+# downloaded on demand via unienv_genesis_collection.asset_path. Not committed or packaged.
+unienv_genesis_collection/assets/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

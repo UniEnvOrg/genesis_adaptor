@@ -1,4 +1,7 @@
 include README.md
 include LICENSE
 include CHANGELOG.md
-recursive-include unienv_genesis_collection/assets **/*.xml **/*.urdf **/*.usd **/*.usda **/*.usdc **/*.stl **/*.obj **/*.dae **/*.png **/*.jpg **/*.mtl
+
+# Collection assets are hosted on Hugging Face (UniEnvOrg/unienv_genesis_collection_assets)
+# and downloaded on demand at runtime; they are intentionally excluded from the package.
+prune unienv_genesis_collection/assets

@@ -1,16 +1,12 @@
 """Goal region builder for simulation scenes."""
 
-import random
-from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 import genesis as gs
-from matplotlib.pylab import size
 
 from unienv_genesis import GenesisWorld
 from unienv_genesis.utils.entity_group import EntityGroup
 from unienv_interface.world.node import WorldNode
-from unienv_genesis_collection.asset_path import get_asset_path
 
 # Default goal region radius (in meters)
 DEFAULT_GOAL_RADIUS = 0.03
