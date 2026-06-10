@@ -90,8 +90,9 @@ def get_ycb_catalog() -> Dict[str, ObjectInfo]:
     Loaded from ``objects/ycb/catalog.json`` in the assets folder
     (downloaded on first use) and cached.  Annotations are ordered from
     broad to detailed; tags include categories (``food``, ``tool``, ...)
-    plus the curated ``box_graspable`` hint that the object plausibly fits
-    a typical ~8.5 cm parallel-jaw gripper (for an exact mesh-based check
+    plus ``box_gripper_graspable`` when the object's smallest mesh
+    bounding-box dimension fits a ~8.5 cm parallel-jaw gripper (computed by
+    ``scripts/compute_graspable.py``; for a per-pose mesh check at runtime
     use :meth:`ManipulatableObject.is_box_gripper_graspable`).
     """
     return load_catalog(YCB_CATALOG_PATH)

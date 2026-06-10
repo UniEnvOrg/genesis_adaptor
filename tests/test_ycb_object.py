@@ -6,7 +6,7 @@ temporary assets dir, so catalog content checks run against the real data.
 
 Covers:
   - Catalog integrity (multi-annotations broad → detailed, separate tags,
-    box_graspable)
+    box_gripper_graspable)
   - list_ycb_objects tag filtering
   - make_ycb_pool selection / sampling / validation
   - YCBObject construction and asset path resolution
@@ -132,10 +132,11 @@ def test_catalog_integrity(assets_dir):
 def test_catalog_spot_checks(assets_dir):
     banana = get_ycb_catalog()["banana"]
     assert banana.language_annotations == ("fruit", "banana", "yellow banana")
-    assert "food" in banana.tags and "box_graspable" in banana.tags
-    # box_graspable is curated: large items don't carry it.
-    assert "box_graspable" not in get_ycb_catalog()["wood_block"].tags
-    assert len(list_ycb_objects(tags="box_graspable")) == 67
+    assert "food" in banana.tags and "box_gripper_graspable" in banana.tags
+    # box_gripper_graspable is computed (min mesh bbox dim < ~8.5 cm); large
+    # items that exceed the gripper on every axis don't carry it.
+    assert "box_gripper_graspable" not in get_ycb_catalog()["wood_block"].tags
+    assert len(list_ycb_objects(tags="box_gripper_graspable")) == 71
     # Variant families are fully present.
     assert sum(1 for i in get_ycb_catalog() if i.endswith("_cups")) == 10
     assert sum(1 for i in get_ycb_catalog() if i.endswith("_lego_duplo")) == 7
@@ -180,9 +181,9 @@ def test_pool_ids_and_tags_mutually_exclusive(assets_dir):
         make_ycb_pool(["banana"], tags="food")
 
 def test_pool_sampling_reproducible(assets_dir, no_download):
-    pool_a = make_ycb_pool(tags="box_graspable", n=5,
+    pool_a = make_ycb_pool(tags="box_gripper_graspable", n=5,
                            rng=torch.Generator().manual_seed(42))
-    pool_b = make_ycb_pool(tags="box_graspable", n=5,
+    pool_b = make_ycb_pool(tags="box_gripper_graspable", n=5,
                            rng=torch.Generator().manual_seed(42))
     ids_a = [o.object_id for o in pool_a]
     assert ids_a == [o.object_id for o in pool_b]

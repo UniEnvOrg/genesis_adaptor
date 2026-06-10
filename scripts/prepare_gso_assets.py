@@ -21,12 +21,14 @@ MuJoCo/Genesis.  For each object this script generates a
 for ``fixed=True``).
 
 It also writes ``<output>/objects/gso/catalog.json`` — per-object language
-annotations (broad category terms → detailed product description) and
-category tags, sourced from the original dataset's metadata on Gazebo Fuel
-(https://fuel.gazebosim.org, owner ``GoogleResearch``).  The metadata comes
-from the checked-in cache under ``scripts/data/``; deleting that file (or
-pointing ``--fuel-metadata`` elsewhere) re-fetches it from the Fuel API
-(~1030 calls).
+annotations (broad category terms → detailed product description) and tags:
+the normalized category labels from the original dataset's metadata on
+Gazebo Fuel (https://fuel.gazebosim.org, owner ``GoogleResearch``), plus a
+``box_gripper_graspable`` tag for objects in the checked-in
+``scripts/data/gso_graspable.json`` (regenerate with
+``scripts/compute_graspable.py gso``).  The Fuel metadata comes from the
+checked-in cache under ``scripts/data/``; deleting that file (or pointing
+``--fuel-metadata`` elsewhere) re-fetches it from the Fuel API (~1030 calls).
 
 Usage::
 
@@ -63,6 +65,11 @@ FUEL_MODEL_URL = "https://fuel.gazebosim.org/1.0/GoogleResearch/models/{name}"
 
 # Checked-in cache of the Gazebo Fuel metadata (descriptions + categories).
 _FUEL_METADATA_CACHE = Path(__file__).parent / "data" / "gso_fuel_metadata.json"
+
+# Checked-in list of box-gripper-graspable object ids, produced by
+# ``scripts/compute_graspable.py`` (smallest mesh bbox dimension < gripper width).
+_GRASPABLE_CACHE = Path(__file__).parent / "data" / "gso_graspable.json"
+GRASPABLE_TAG = "box_gripper_graspable"
 
 # Broad language-annotation terms per category tag.  Together with the
 # detailed product description these give annotations spanning broad →
@@ -236,14 +243,29 @@ def fetch_fuel_metadata(object_ids: list[str]) -> dict:
     return metadata
 
 
-def build_catalog(object_ids: list[str], metadata: dict) -> dict:
+def _load_graspable_ids() -> set:
+    """Load the checked-in set of box-gripper-graspable object ids."""
+    if _GRASPABLE_CACHE.is_file():
+        return set(json.loads(_GRASPABLE_CACHE.read_text()))
+    print(f"WARNING: {_GRASPABLE_CACHE} missing; no {GRASPABLE_TAG} tags applied. "
+          f"Run scripts/compute_graspable.py gso to generate it.")
+    return set()
+
+
+def build_catalog(
+    object_ids: list[str], metadata: dict, graspable_ids: set | None = None,
+) -> dict:
     """Build catalog entries (annotations broad → detailed, plus tags).
 
     Per object, the language annotations are the broad terms for its
     categories (see :data:`CATEGORY_ANNOTATIONS`) followed by the detailed
-    product description; the tags are the normalized category labels.
-    Objects without Fuel metadata get an id-derived annotation and no tags.
+    product description; the tags are the normalized category labels plus
+    ``box_gripper_graspable`` for ids in *graspable_ids* (defaults to the
+    checked-in ``gso_graspable.json``).  Objects without Fuel metadata get
+    an id-derived annotation and no category tags.
     """
+    if graspable_ids is None:
+        graspable_ids = _load_graspable_ids()
     missing = sorted(set(object_ids) - set(metadata))
     for object_id in missing:
         print(f"WARNING: no Fuel metadata for {object_id}; using id-derived annotation")
@@ -253,6 +275,8 @@ def build_catalog(object_ids: list[str], metadata: dict) -> dict:
         meta = metadata.get(object_id, {})
         detailed = annotation_from_description(object_id, meta.get("description", ""))
         tags = sorted(tag_from_category(c) for c in meta.get("categories", []))
+        if object_id in graspable_ids:
+            tags = sorted(tags + [GRASPABLE_TAG])
         annotations = []
         for tag in tags:
             for term in CATEGORY_ANNOTATIONS.get(tag, ()):
@@ -264,12 +288,17 @@ def build_catalog(object_ids: list[str], metadata: dict) -> dict:
     return catalog
 
 
-def write_catalog(out_root: Path, object_ids: list[str], metadata: dict) -> None:
-    catalog = build_catalog(object_ids, metadata)
+def write_catalog(
+    out_root: Path, object_ids: list[str], metadata: dict,
+    graspable_ids: set | None = None,
+) -> None:
+    catalog = build_catalog(object_ids, metadata, graspable_ids)
     (out_root / "catalog.json").write_text(
         json.dumps(catalog, indent=1, ensure_ascii=False) + "\n"
     )
-    print(f"Wrote {out_root / 'catalog.json'} with {len(catalog)} entries.")
+    n_graspable = sum(1 for e in catalog.values() if GRASPABLE_TAG in e["tags"])
+    print(f"Wrote {out_root / 'catalog.json'} with {len(catalog)} entries "
+          f"({n_graspable} {GRASPABLE_TAG}).")
 
 
 def main(argv: list[str] | None = None) -> int:

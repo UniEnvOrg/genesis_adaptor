@@ -6,9 +6,8 @@
    "colored wood block"
   ],
   "tags": [
-   "toy",
    "block",
-   "box_graspable"
+   "toy"
   ]
  },
  "a_cups": {
@@ -18,10 +17,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "a_lego_duplo": {
@@ -31,9 +30,9 @@
    "lego duplo brick"
   ],
   "tags": [
-   "toy",
    "block",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "a_marbles": {
@@ -42,8 +41,8 @@
    "bag of marbles"
   ],
   "tags": [
-   "toy",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "a_toy_airplane": {
@@ -53,8 +52,8 @@
    "toy airplane body"
   ],
   "tags": [
-   "toy",
-   "large"
+   "large",
+   "toy"
   ]
  },
  "adjustable_wrench": {
@@ -64,8 +63,8 @@
    "adjustable wrench"
   ],
   "tags": [
-   "tool",
-   "box_graspable"
+   "box_gripper_graspable",
+   "tool"
   ]
  },
  "apple": {
@@ -75,8 +74,8 @@
    "red apple"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "b_colored_wood_blocks": {
@@ -86,9 +85,9 @@
    "colored wood block"
   ],
   "tags": [
-   "toy",
    "block",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "b_cups": {
@@ -98,10 +97,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "b_lego_duplo": {
@@ -111,9 +110,9 @@
    "lego duplo brick"
   ],
   "tags": [
-   "toy",
    "block",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "b_marbles": {
@@ -122,8 +121,8 @@
    "bag of marbles"
   ],
   "tags": [
-   "toy",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "b_toy_airplane": {
@@ -132,8 +131,8 @@
    "toy airplane part"
   ],
   "tags": [
-   "toy",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "banana": {
@@ -143,8 +142,8 @@
    "yellow banana"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "baseball": {
@@ -154,8 +153,8 @@
    "baseball"
   ],
   "tags": [
-   "sports",
-   "box_graspable"
+   "box_gripper_graspable",
+   "sports"
   ]
  },
  "bleach_cleanser": {
@@ -165,9 +164,9 @@
    "bottle of bleach cleanser"
   ],
   "tags": [
+   "box_gripper_graspable",
    "household",
-   "large",
-   "box_graspable"
+   "large"
   ]
  },
  "bowl": {
@@ -177,8 +176,9 @@
    "red bowl"
   ],
   "tags": [
-   "kitchen",
+   "box_gripper_graspable",
    "container",
+   "kitchen",
    "large"
   ]
  },
@@ -189,10 +189,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "c_lego_duplo": {
@@ -202,9 +202,9 @@
    "lego duplo brick"
   ],
   "tags": [
-   "toy",
    "block",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "c_toy_airplane": {
@@ -213,8 +213,8 @@
    "toy airplane part"
   ],
   "tags": [
-   "toy",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "chain": {
@@ -223,6 +223,7 @@
    "metal chain"
   ],
   "tags": [
+   "box_gripper_graspable",
    "household"
   ]
  },
@@ -233,9 +234,9 @@
    "red box of crackers"
   ],
   "tags": [
+   "box_gripper_graspable",
    "food",
-   "large",
-   "box_graspable"
+   "large"
   ]
  },
  "d_cups": {
@@ -245,10 +246,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "d_lego_duplo": {
@@ -258,9 +259,9 @@
    "lego duplo brick"
   ],
   "tags": [
-   "toy",
    "block",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "d_toy_airplane": {
@@ -269,8 +270,8 @@
    "toy airplane part"
   ],
   "tags": [
-   "toy",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "dice": {
@@ -280,8 +281,8 @@
    "small white die"
   ],
   "tags": [
-   "toy",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "e_cups": {
@@ -291,10 +292,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "e_lego_duplo": {
@@ -304,9 +305,9 @@
    "lego duplo brick"
   ],
   "tags": [
-   "toy",
    "block",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "e_toy_airplane": {
@@ -315,8 +316,8 @@
    "toy airplane part"
   ],
   "tags": [
-   "toy",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "extra_large_clamp": {
@@ -326,9 +327,9 @@
    "extra-large spring clamp"
   ],
   "tags": [
-   "tool",
+   "box_gripper_graspable",
    "large",
-   "box_graspable"
+   "tool"
   ]
  },
  "f_cups": {
@@ -338,10 +339,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "f_lego_duplo": {
@@ -351,9 +352,9 @@
    "lego duplo brick"
   ],
   "tags": [
-   "toy",
    "block",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "flat_screwdriver": {
@@ -363,8 +364,8 @@
    "flat-head screwdriver"
   ],
   "tags": [
-   "tool",
-   "box_graspable"
+   "box_gripper_graspable",
+   "tool"
   ]
  },
  "foam_brick": {
@@ -374,9 +375,9 @@
    "red foam brick"
   ],
   "tags": [
-   "household",
    "block",
-   "box_graspable"
+   "box_gripper_graspable",
+   "household"
   ]
  },
  "fork": {
@@ -386,8 +387,8 @@
    "metal fork"
   ],
   "tags": [
-   "kitchen",
-   "box_graspable"
+   "box_gripper_graspable",
+   "kitchen"
   ]
  },
  "g_cups": {
@@ -397,10 +398,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "g_lego_duplo": {
@@ -410,9 +411,9 @@
    "lego duplo brick"
   ],
   "tags": [
-   "toy",
    "block",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "gelatin_box": {
@@ -422,8 +423,8 @@
    "red box of gelatin mix"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "golf_ball": {
@@ -433,8 +434,8 @@
    "golf ball"
   ],
   "tags": [
-   "sports",
-   "box_graspable"
+   "box_gripper_graspable",
+   "sports"
   ]
  },
  "h_cups": {
@@ -444,10 +445,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "hammer": {
@@ -456,8 +457,8 @@
    "hammer"
   ],
   "tags": [
-   "tool",
-   "box_graspable"
+   "box_gripper_graspable",
+   "tool"
   ]
  },
  "i_cups": {
@@ -467,10 +468,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "j_cups": {
@@ -480,10 +481,10 @@
    "plastic stacking cup"
   ],
   "tags": [
-   "toy",
-   "cup",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "cup",
+   "toy"
   ]
  },
  "knife": {
@@ -493,8 +494,8 @@
    "table knife"
   ],
   "tags": [
-   "kitchen",
-   "box_graspable"
+   "box_gripper_graspable",
+   "kitchen"
   ]
  },
  "large_clamp": {
@@ -504,8 +505,8 @@
    "large spring clamp"
   ],
   "tags": [
-   "tool",
-   "box_graspable"
+   "box_gripper_graspable",
+   "tool"
   ]
  },
  "large_marker": {
@@ -515,8 +516,8 @@
    "large marker pen"
   ],
   "tags": [
-   "household",
-   "box_graspable"
+   "box_gripper_graspable",
+   "household"
   ]
  },
  "lemon": {
@@ -526,8 +527,8 @@
    "yellow lemon"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "master_chef_can": {
@@ -537,8 +538,8 @@
    "blue can of coffee"
   ],
   "tags": [
-   "food",
    "can",
+   "food",
    "large"
   ]
  },
@@ -549,8 +550,8 @@
    "medium spring clamp"
   ],
   "tags": [
-   "tool",
-   "box_graspable"
+   "box_gripper_graspable",
+   "tool"
   ]
  },
  "mini_soccer_ball": {
@@ -560,8 +561,8 @@
    "mini soccer ball"
   ],
   "tags": [
-   "sports",
-   "large"
+   "large",
+   "sports"
   ]
  },
  "mug": {
@@ -571,9 +572,9 @@
    "red mug"
   ],
   "tags": [
-   "kitchen",
+   "box_gripper_graspable",
    "container",
-   "box_graspable"
+   "kitchen"
   ]
  },
  "mustard_bottle": {
@@ -583,8 +584,8 @@
    "yellow mustard bottle"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "nine_hole_peg_test": {
@@ -594,8 +595,9 @@
    "nine-hole peg test board"
   ],
   "tags": [
-   "toy",
-   "large"
+   "box_gripper_graspable",
+   "large",
+   "toy"
   ]
  },
  "orange": {
@@ -604,8 +606,8 @@
    "orange"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "padlock": {
@@ -615,8 +617,8 @@
    "brass padlock"
   ],
   "tags": [
-   "tool",
-   "box_graspable"
+   "box_gripper_graspable",
+   "tool"
   ]
  },
  "peach": {
@@ -625,8 +627,8 @@
    "peach"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "pear": {
@@ -636,8 +638,8 @@
    "green pear"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "phillips_screwdriver": {
@@ -647,8 +649,8 @@
    "phillips screwdriver"
   ],
   "tags": [
-   "tool",
-   "box_graspable"
+   "box_gripper_graspable",
+   "tool"
   ]
  },
  "pitcher_base": {
@@ -658,8 +660,8 @@
    "blue pitcher"
   ],
   "tags": [
-   "kitchen",
    "container",
+   "kitchen",
    "large"
   ]
  },
@@ -670,6 +672,7 @@
    "white plate"
   ],
   "tags": [
+   "box_gripper_graspable",
    "kitchen",
    "large"
   ]
@@ -681,8 +684,8 @@
    "purple plum"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "potted_meat_can": {
@@ -691,9 +694,9 @@
    "can of potted meat"
   ],
   "tags": [
-   "food",
+   "box_gripper_graspable",
    "can",
-   "box_graspable"
+   "food"
   ]
  },
  "power_drill": {
@@ -703,9 +706,9 @@
    "power drill"
   ],
   "tags": [
-   "tool",
+   "box_gripper_graspable",
    "large",
-   "box_graspable"
+   "tool"
   ]
  },
  "pudding_box": {
@@ -715,8 +718,8 @@
    "box of chocolate pudding mix"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "racquetball": {
@@ -726,8 +729,8 @@
    "racquetball"
   ],
   "tags": [
-   "sports",
-   "box_graspable"
+   "box_gripper_graspable",
+   "sports"
   ]
  },
  "rubiks_cube": {
@@ -737,8 +740,8 @@
    "rubik's cube"
   ],
   "tags": [
-   "toy",
-   "box_graspable"
+   "box_gripper_graspable",
+   "toy"
   ]
  },
  "scissors": {
@@ -748,8 +751,8 @@
    "pair of scissors"
   ],
   "tags": [
-   "tool",
-   "box_graspable"
+   "box_gripper_graspable",
+   "tool"
   ]
  },
  "skillet_lid": {
@@ -759,6 +762,7 @@
    "glass skillet lid"
   ],
   "tags": [
+   "box_gripper_graspable",
    "kitchen",
    "large"
   ]
@@ -770,8 +774,8 @@
    "softball"
   ],
   "tags": [
-   "sports",
-   "large"
+   "large",
+   "sports"
   ]
  },
  "spatula": {
@@ -781,9 +785,9 @@
    "black spatula"
   ],
   "tags": [
+   "box_gripper_graspable",
    "kitchen",
-   "tool",
-   "box_graspable"
+   "tool"
   ]
  },
  "sponge": {
@@ -792,8 +796,8 @@
    "yellow and green sponge"
   ],
   "tags": [
-   "household",
-   "box_graspable"
+   "box_gripper_graspable",
+   "household"
   ]
  },
  "spoon": {
@@ -803,8 +807,8 @@
    "metal spoon"
   ],
   "tags": [
-   "kitchen",
-   "box_graspable"
+   "box_gripper_graspable",
+   "kitchen"
   ]
  },
  "strawberry": {
@@ -813,8 +817,8 @@
    "strawberry"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "sugar_box": {
@@ -824,8 +828,8 @@
    "yellow box of sugar"
   ],
   "tags": [
-   "food",
-   "box_graspable"
+   "box_gripper_graspable",
+   "food"
   ]
  },
  "tennis_ball": {
@@ -835,8 +839,8 @@
    "tennis ball"
   ],
   "tags": [
-   "sports",
-   "box_graspable"
+   "box_gripper_graspable",
+   "sports"
   ]
  },
  "tomato_soup_can": {
@@ -846,9 +850,9 @@
    "can of tomato soup"
   ],
   "tags": [
-   "food",
+   "box_gripper_graspable",
    "can",
-   "box_graspable"
+   "food"
   ]
  },
  "tuna_fish_can": {
@@ -857,9 +861,9 @@
    "can of tuna fish"
   ],
   "tags": [
-   "food",
+   "box_gripper_graspable",
    "can",
-   "box_graspable"
+   "food"
   ]
  },
  "windex_bottle": {
@@ -869,9 +873,9 @@
    "spray bottle of window cleaner"
   ],
   "tags": [
+   "box_gripper_graspable",
    "household",
-   "large",
-   "box_graspable"
+   "large"
   ]
  },
  "wood_block": {

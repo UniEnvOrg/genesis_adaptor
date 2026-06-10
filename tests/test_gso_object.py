@@ -136,17 +136,21 @@ def test_catalog_integrity(assets_dir):
             assert "(" not in annotation and "[" not in annotation
         for tag in info.tags:
             assert tag == tag.lower() and " " not in tag
-        # Tagged objects carry at least one broad term + the detailed one.
-        if info.tags:
+        # Objects with a category tag carry a broad term + the detailed one
+        # (box_gripper_graspable is not a category and adds no annotation).
+        if info.tags - {"box_gripper_graspable"}:
             assert len(info.language_annotations) >= 2
 
 def test_catalog_spot_checks(assets_dir):
     lamp = get_gso_catalog()[_SAMPLE_ID]
     assert lamp.language_annotations == ("toy", "3d dollhouse lamp")
-    assert lamp.tags == frozenset({"toys"})
+    assert lamp.tags == frozenset({"toys", "box_gripper_graspable"})
     # Categories follow the GSO paper's taxonomy; shoes dominate.
     assert len(list_gso_objects(tags="shoe")) > 200
     assert get_gso_catalog()["adistar_boost_m"].language_annotations[0] == "shoe"
+    # Graspability is computed from the mesh; ~half of GSO objects qualify.
+    n_graspable = len(list_gso_objects(tags="box_gripper_graspable"))
+    assert 400 < n_graspable < 700
 
 
 # ------------------------------------------------------------------
@@ -226,7 +230,7 @@ def test_construction_downloads_no_object_assets(assets_dir, no_download):
     assert obj.object_id == _SAMPLE_ID
     assert obj.name == _SAMPLE_ID
     assert obj.language_annotations == ("toy", "3d dollhouse lamp")
-    assert obj.info.tags == frozenset({"toys"})
+    assert obj.info.tags == frozenset({"toys", "box_gripper_graspable"})
     assert not no_download  # only the (already local) catalog was touched
 
 def test_paths_and_freejoint_variant(assets_dir):
@@ -340,7 +344,8 @@ def test_build_catalog_broad_to_detailed():
         },
         "Mystery_Item": {"description": "", "categories": []},
     }
-    catalog = script.build_catalog(list(metadata), metadata)
+    # graspable_ids={} isolates the category-tag/annotation logic.
+    catalog = script.build_catalog(list(metadata), metadata, graspable_ids=set())
     lion = catalog["Schleich_Lion_Action_Figure"]
     assert lion["language_annotations"] == [
         "toy", "action figure", "schleich lion action figure",
@@ -350,3 +355,15 @@ def test_build_catalog_broad_to_detailed():
     mystery = catalog["Mystery_Item"]
     assert mystery["language_annotations"] == ["mystery item"]
     assert mystery["tags"] == []
+
+def test_build_catalog_injects_graspable_tag():
+    script = _load_prepare_script()
+    metadata = {
+        "Toy_A": {"description": "Toy A", "categories": ["Toys"]},
+        "Toy_B": {"description": "Toy B", "categories": ["Toys"]},
+    }
+    catalog = script.build_catalog(list(metadata), metadata, graspable_ids={"Toy_A"})
+    assert "box_gripper_graspable" in catalog["Toy_A"]["tags"]
+    assert "box_gripper_graspable" not in catalog["Toy_B"]["tags"]
+    # Graspability is a tag only, never a language annotation.
+    assert "box_gripper_graspable" not in catalog["Toy_A"]["language_annotations"]
