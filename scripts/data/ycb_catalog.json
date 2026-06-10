@@ -1,0 +1,888 @@
+{
+ "a_colored_wood_blocks": {
+  "language_annotations": [
+   "block",
+   "wood block",
+   "colored wood block"
+  ],
+  "tags": [
+   "toy",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "a_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "a_lego_duplo": {
+  "language_annotations": [
+   "building toy",
+   "toy brick",
+   "lego duplo brick"
+  ],
+  "tags": [
+   "toy",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "a_marbles": {
+  "language_annotations": [
+   "toy",
+   "bag of marbles"
+  ],
+  "tags": [
+   "toy",
+   "box_graspable"
+  ]
+ },
+ "a_toy_airplane": {
+  "language_annotations": [
+   "toy",
+   "toy airplane",
+   "toy airplane body"
+  ],
+  "tags": [
+   "toy",
+   "large"
+  ]
+ },
+ "adjustable_wrench": {
+  "language_annotations": [
+   "tool",
+   "wrench",
+   "adjustable wrench"
+  ],
+  "tags": [
+   "tool",
+   "box_graspable"
+  ]
+ },
+ "apple": {
+  "language_annotations": [
+   "fruit",
+   "apple",
+   "red apple"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "b_colored_wood_blocks": {
+  "language_annotations": [
+   "block",
+   "wood block",
+   "colored wood block"
+  ],
+  "tags": [
+   "toy",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "b_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "b_lego_duplo": {
+  "language_annotations": [
+   "building toy",
+   "toy brick",
+   "lego duplo brick"
+  ],
+  "tags": [
+   "toy",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "b_marbles": {
+  "language_annotations": [
+   "toy",
+   "bag of marbles"
+  ],
+  "tags": [
+   "toy",
+   "box_graspable"
+  ]
+ },
+ "b_toy_airplane": {
+  "language_annotations": [
+   "toy",
+   "toy airplane part"
+  ],
+  "tags": [
+   "toy",
+   "box_graspable"
+  ]
+ },
+ "banana": {
+  "language_annotations": [
+   "fruit",
+   "banana",
+   "yellow banana"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "baseball": {
+  "language_annotations": [
+   "ball",
+   "white ball",
+   "baseball"
+  ],
+  "tags": [
+   "sports",
+   "box_graspable"
+  ]
+ },
+ "bleach_cleanser": {
+  "language_annotations": [
+   "bottle",
+   "white bottle",
+   "bottle of bleach cleanser"
+  ],
+  "tags": [
+   "household",
+   "large",
+   "box_graspable"
+  ]
+ },
+ "bowl": {
+  "language_annotations": [
+   "dish",
+   "bowl",
+   "red bowl"
+  ],
+  "tags": [
+   "kitchen",
+   "container",
+   "large"
+  ]
+ },
+ "c_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "c_lego_duplo": {
+  "language_annotations": [
+   "building toy",
+   "toy brick",
+   "lego duplo brick"
+  ],
+  "tags": [
+   "toy",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "c_toy_airplane": {
+  "language_annotations": [
+   "toy",
+   "toy airplane part"
+  ],
+  "tags": [
+   "toy",
+   "box_graspable"
+  ]
+ },
+ "chain": {
+  "language_annotations": [
+   "chain",
+   "metal chain"
+  ],
+  "tags": [
+   "household"
+  ]
+ },
+ "cracker_box": {
+  "language_annotations": [
+   "box",
+   "red box",
+   "red box of crackers"
+  ],
+  "tags": [
+   "food",
+   "large",
+   "box_graspable"
+  ]
+ },
+ "d_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "d_lego_duplo": {
+  "language_annotations": [
+   "building toy",
+   "toy brick",
+   "lego duplo brick"
+  ],
+  "tags": [
+   "toy",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "d_toy_airplane": {
+  "language_annotations": [
+   "toy",
+   "toy airplane part"
+  ],
+  "tags": [
+   "toy",
+   "box_graspable"
+  ]
+ },
+ "dice": {
+  "language_annotations": [
+   "toy",
+   "die",
+   "small white die"
+  ],
+  "tags": [
+   "toy",
+   "box_graspable"
+  ]
+ },
+ "e_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "e_lego_duplo": {
+  "language_annotations": [
+   "building toy",
+   "toy brick",
+   "lego duplo brick"
+  ],
+  "tags": [
+   "toy",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "e_toy_airplane": {
+  "language_annotations": [
+   "toy",
+   "toy airplane part"
+  ],
+  "tags": [
+   "toy",
+   "box_graspable"
+  ]
+ },
+ "extra_large_clamp": {
+  "language_annotations": [
+   "tool",
+   "clamp",
+   "extra-large spring clamp"
+  ],
+  "tags": [
+   "tool",
+   "large",
+   "box_graspable"
+  ]
+ },
+ "f_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "f_lego_duplo": {
+  "language_annotations": [
+   "building toy",
+   "toy brick",
+   "lego duplo brick"
+  ],
+  "tags": [
+   "toy",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "flat_screwdriver": {
+  "language_annotations": [
+   "tool",
+   "screwdriver",
+   "flat-head screwdriver"
+  ],
+  "tags": [
+   "tool",
+   "box_graspable"
+  ]
+ },
+ "foam_brick": {
+  "language_annotations": [
+   "block",
+   "foam brick",
+   "red foam brick"
+  ],
+  "tags": [
+   "household",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "fork": {
+  "language_annotations": [
+   "utensil",
+   "fork",
+   "metal fork"
+  ],
+  "tags": [
+   "kitchen",
+   "box_graspable"
+  ]
+ },
+ "g_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "g_lego_duplo": {
+  "language_annotations": [
+   "building toy",
+   "toy brick",
+   "lego duplo brick"
+  ],
+  "tags": [
+   "toy",
+   "block",
+   "box_graspable"
+  ]
+ },
+ "gelatin_box": {
+  "language_annotations": [
+   "box",
+   "red box",
+   "red box of gelatin mix"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "golf_ball": {
+  "language_annotations": [
+   "ball",
+   "white ball",
+   "golf ball"
+  ],
+  "tags": [
+   "sports",
+   "box_graspable"
+  ]
+ },
+ "h_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "hammer": {
+  "language_annotations": [
+   "tool",
+   "hammer"
+  ],
+  "tags": [
+   "tool",
+   "box_graspable"
+  ]
+ },
+ "i_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "j_cups": {
+  "language_annotations": [
+   "cup",
+   "plastic cup",
+   "plastic stacking cup"
+  ],
+  "tags": [
+   "toy",
+   "cup",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "knife": {
+  "language_annotations": [
+   "utensil",
+   "knife",
+   "table knife"
+  ],
+  "tags": [
+   "kitchen",
+   "box_graspable"
+  ]
+ },
+ "large_clamp": {
+  "language_annotations": [
+   "tool",
+   "clamp",
+   "large spring clamp"
+  ],
+  "tags": [
+   "tool",
+   "box_graspable"
+  ]
+ },
+ "large_marker": {
+  "language_annotations": [
+   "pen",
+   "marker",
+   "large marker pen"
+  ],
+  "tags": [
+   "household",
+   "box_graspable"
+  ]
+ },
+ "lemon": {
+  "language_annotations": [
+   "fruit",
+   "lemon",
+   "yellow lemon"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "master_chef_can": {
+  "language_annotations": [
+   "can",
+   "blue can",
+   "blue can of coffee"
+  ],
+  "tags": [
+   "food",
+   "can",
+   "large"
+  ]
+ },
+ "medium_clamp": {
+  "language_annotations": [
+   "tool",
+   "clamp",
+   "medium spring clamp"
+  ],
+  "tags": [
+   "tool",
+   "box_graspable"
+  ]
+ },
+ "mini_soccer_ball": {
+  "language_annotations": [
+   "ball",
+   "soccer ball",
+   "mini soccer ball"
+  ],
+  "tags": [
+   "sports",
+   "large"
+  ]
+ },
+ "mug": {
+  "language_annotations": [
+   "cup",
+   "mug",
+   "red mug"
+  ],
+  "tags": [
+   "kitchen",
+   "container",
+   "box_graspable"
+  ]
+ },
+ "mustard_bottle": {
+  "language_annotations": [
+   "bottle",
+   "yellow bottle",
+   "yellow mustard bottle"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "nine_hole_peg_test": {
+  "language_annotations": [
+   "toy",
+   "peg board",
+   "nine-hole peg test board"
+  ],
+  "tags": [
+   "toy",
+   "large"
+  ]
+ },
+ "orange": {
+  "language_annotations": [
+   "fruit",
+   "orange"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "padlock": {
+  "language_annotations": [
+   "lock",
+   "padlock",
+   "brass padlock"
+  ],
+  "tags": [
+   "tool",
+   "box_graspable"
+  ]
+ },
+ "peach": {
+  "language_annotations": [
+   "fruit",
+   "peach"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "pear": {
+  "language_annotations": [
+   "fruit",
+   "pear",
+   "green pear"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "phillips_screwdriver": {
+  "language_annotations": [
+   "tool",
+   "screwdriver",
+   "phillips screwdriver"
+  ],
+  "tags": [
+   "tool",
+   "box_graspable"
+  ]
+ },
+ "pitcher_base": {
+  "language_annotations": [
+   "container",
+   "pitcher",
+   "blue pitcher"
+  ],
+  "tags": [
+   "kitchen",
+   "container",
+   "large"
+  ]
+ },
+ "plate": {
+  "language_annotations": [
+   "dish",
+   "plate",
+   "white plate"
+  ],
+  "tags": [
+   "kitchen",
+   "large"
+  ]
+ },
+ "plum": {
+  "language_annotations": [
+   "fruit",
+   "plum",
+   "purple plum"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "potted_meat_can": {
+  "language_annotations": [
+   "can",
+   "can of potted meat"
+  ],
+  "tags": [
+   "food",
+   "can",
+   "box_graspable"
+  ]
+ },
+ "power_drill": {
+  "language_annotations": [
+   "tool",
+   "drill",
+   "power drill"
+  ],
+  "tags": [
+   "tool",
+   "large",
+   "box_graspable"
+  ]
+ },
+ "pudding_box": {
+  "language_annotations": [
+   "box",
+   "brown box",
+   "box of chocolate pudding mix"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "racquetball": {
+  "language_annotations": [
+   "ball",
+   "blue ball",
+   "racquetball"
+  ],
+  "tags": [
+   "sports",
+   "box_graspable"
+  ]
+ },
+ "rubiks_cube": {
+  "language_annotations": [
+   "toy",
+   "puzzle cube",
+   "rubik's cube"
+  ],
+  "tags": [
+   "toy",
+   "box_graspable"
+  ]
+ },
+ "scissors": {
+  "language_annotations": [
+   "tool",
+   "scissors",
+   "pair of scissors"
+  ],
+  "tags": [
+   "tool",
+   "box_graspable"
+  ]
+ },
+ "skillet_lid": {
+  "language_annotations": [
+   "lid",
+   "glass lid",
+   "glass skillet lid"
+  ],
+  "tags": [
+   "kitchen",
+   "large"
+  ]
+ },
+ "softball": {
+  "language_annotations": [
+   "ball",
+   "white ball",
+   "softball"
+  ],
+  "tags": [
+   "sports",
+   "large"
+  ]
+ },
+ "spatula": {
+  "language_annotations": [
+   "utensil",
+   "spatula",
+   "black spatula"
+  ],
+  "tags": [
+   "kitchen",
+   "tool",
+   "box_graspable"
+  ]
+ },
+ "sponge": {
+  "language_annotations": [
+   "sponge",
+   "yellow and green sponge"
+  ],
+  "tags": [
+   "household",
+   "box_graspable"
+  ]
+ },
+ "spoon": {
+  "language_annotations": [
+   "utensil",
+   "spoon",
+   "metal spoon"
+  ],
+  "tags": [
+   "kitchen",
+   "box_graspable"
+  ]
+ },
+ "strawberry": {
+  "language_annotations": [
+   "fruit",
+   "strawberry"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "sugar_box": {
+  "language_annotations": [
+   "box",
+   "yellow box",
+   "yellow box of sugar"
+  ],
+  "tags": [
+   "food",
+   "box_graspable"
+  ]
+ },
+ "tennis_ball": {
+  "language_annotations": [
+   "ball",
+   "green ball",
+   "tennis ball"
+  ],
+  "tags": [
+   "sports",
+   "box_graspable"
+  ]
+ },
+ "tomato_soup_can": {
+  "language_annotations": [
+   "can",
+   "red can",
+   "can of tomato soup"
+  ],
+  "tags": [
+   "food",
+   "can",
+   "box_graspable"
+  ]
+ },
+ "tuna_fish_can": {
+  "language_annotations": [
+   "can",
+   "can of tuna fish"
+  ],
+  "tags": [
+   "food",
+   "can",
+   "box_graspable"
+  ]
+ },
+ "windex_bottle": {
+  "language_annotations": [
+   "bottle",
+   "spray bottle",
+   "spray bottle of window cleaner"
+  ],
+  "tags": [
+   "household",
+   "large",
+   "box_graspable"
+  ]
+ },
+ "wood_block": {
+  "language_annotations": [
+   "block",
+   "wood block",
+   "large wooden block"
+  ],
+  "tags": [
+   "block",
+   "large"
+  ]
+ }
+}
