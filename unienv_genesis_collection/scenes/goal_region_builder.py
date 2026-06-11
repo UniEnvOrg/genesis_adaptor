@@ -37,11 +37,7 @@ class GoalRegionBuilder(WorldNode):
     has_termination_signal = False
     has_truncation_signal = False
 
-    # Priority for scene building - create goal region early (before robots)
     reload_priorities = {100}
-    reset_priorities = {0}
-    after_reload_priorities = set()
-    after_reset_priorities = {0}
 
     def __init__(
         self,
@@ -132,9 +128,6 @@ class GoalRegionBuilder(WorldNode):
                 visible=self.visible,
                 batch_fixed_verts=False,
             )
-
-    def reset(self, *, priority: int = 0, seed: Optional[int] = None, mask=None, **kwargs):
-        pass
 
     def get_observation(self):
         return None

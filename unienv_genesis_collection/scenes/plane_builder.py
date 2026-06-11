@@ -32,11 +32,7 @@ class PlaneBuilder(WorldNode):
     has_termination_signal = False
     has_truncation_signal = False
 
-    # Build before robots (priority 50) and alongside other scene elements
     reload_priorities = {100}
-    reset_priorities = {0}
-    after_reload_priorities = set()
-    after_reset_priorities = {0}
 
     def __init__(
         self,
@@ -70,9 +66,6 @@ class PlaneBuilder(WorldNode):
             name=self._name,
             **self.build_plane_kwargs
         )
-
-    def reset(self, *, priority: int = 0, seed: Optional[int] = None, mask=None, **kwargs):
-        pass
 
     def get_observation(self):
         return None
