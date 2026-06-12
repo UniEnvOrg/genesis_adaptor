@@ -12,7 +12,6 @@ from unienv_genesis.utils.batch_dim_utils import (
     try_scalar
 )
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
-from unienv_interface.space.space_utils import batch_utils as sbu
 
 ActT = TypeVar("ActT")
 
@@ -92,6 +91,13 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         self._terminal_success = torch.zeros(scalar_shape, dtype=torch.bool, device=device)
         self._terminal_failure = torch.zeros(scalar_shape, dtype=torch.bool, device=device)
 
+        # CPU-side mirror of the set of node indices currently occupied by at
+        # least one env.  Kept as a (possibly slightly stale superset) list so
+        # that get_action/get_action_dict don't need a GPU→CPU sync
+        # (``unique().tolist()``) on every call.  Refreshed exactly once per
+        # ``_step_batched`` and on ``reset``; transitions append eagerly.
+        self._active_node_indices: List[int] = [self._name_to_idx[initial]]
+
     # ------------------------------------------------------------------
     # Node resolution
     # ------------------------------------------------------------------
@@ -124,17 +130,26 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         mask: Optional[torch.Tensor] = None,
         seed: Optional[int] = None,
     ) -> None:
-        self._clear_factory_nodes()
         initial_idx = self._name_to_idx[self._initial]
 
         if mask is not None:
+            # Partial reset: do NOT clear factory nodes — other envs may be
+            # mid-episode inside a lazily-created node, and discarding the
+            # policy object would destroy their state.  The masked envs are
+            # re-targeted via the node's own reset(mask) on (re-)entry.
             self._current_idx[mask] = initial_idx
             self._terminal_success[mask] = False
             self._terminal_failure[mask] = False
+            # Exact refresh of the active-node mirror (single sync; resets
+            # are infrequent).  Keeping it exact here avoids spuriously
+            # instantiating factory nodes that are no longer occupied.
+            self._active_node_indices = torch.unique(self._current_idx).tolist()
         else:
+            self._clear_factory_nodes()
             self._current_idx.fill_(initial_idx)
             self._terminal_success.zero_()
             self._terminal_failure.zero_()
+            self._active_node_indices = [initial_idx]
 
         initial_policy = self._get_or_create_node(self._initial)
         initial_policy.reset(mask=mask, seed=seed)
@@ -173,9 +188,10 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         For unbatched worlds, delegates to the single active node's
         :meth:`get_action_dict`.  For batched worlds with a single active
         node, delegates to that node.  For batched worlds with multiple
-        active nodes, builds a merged batched action dict using the common
-        action-dict space: each node's action dict is placed into the env
-        slots where that node is active via :func:`sbu.set_at`.
+        active nodes, the per-node **raw** actions are merged first (cheap
+        elementwise masking) and the controller-native conversion — which
+        may involve an IK solve — runs **once** on the merged action via
+        :meth:`convert_action_dict`, instead of once per active node.
 
         Static actions are merged into the final result.  The node's own
         keys take precedence over static actions on conflict (consistent
@@ -192,7 +208,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
                 result = {**{k: {"action": v} for k, v in self._static_actions.items()}, **result}
             return result
 
-        active_nodes = self._current_idx.unique().tolist()
+        active_nodes = self._active_node_indices
         if len(active_nodes) == 1:
             node_name = self._node_names[active_nodes[0]]
             policy = self._get_or_create_node(node_name)
@@ -201,36 +217,34 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
                 result = {**{k: {"action": v} for k, v in self._static_actions.items()}, **result}
             return result
 
-        # Multiple active nodes: build a merged batched action dict.
-        # Get the action-dict space (same for all nodes per the homogeneity assumption).
-        action_dict_space = self.get_action_dict_space()
-        batch_size = self.world.batch_size
-        batched_space = sbu.batch_space(action_dict_space, n=batch_size)
-
-        # Initialize an empty batched container matching the action-dict schema.
-        result = batched_space.create_empty()
-
-        # For each active node, get its full-batch action dict, compress it
-        # to the masked envs, and merge into the result.
-        for node_idx in active_nodes:
-            node_name = self._node_names[node_idx]
-            node_mask = self._current_idx == node_idx
-            if not node_mask.any():
-                continue
-
-            policy = self._get_or_create_node(node_name)
-            node_action_dict = policy.get_action_dict(dt=dt)
-
-            # Compress the full-batch action dict to only the masked envs.
-            compressed_action_dict = sbu.get_at(batched_space, node_action_dict, node_mask)
-
-            # Merge into the result at the masked positions.
-            result = sbu.set_at(batched_space, result, node_mask, compressed_action_dict)
+        # Multiple active nodes: merge raw actions, then convert once.
+        # All nodes share the same action/action-dict schema (homogeneity
+        # assumption), so any active node's converter is valid for the
+        # merged action.
+        action = self._get_action_batched()
+        policy = self._get_or_create_node(self._node_names[active_nodes[0]])
+        result = policy.convert_action_dict(action, dt=dt)
 
         if self._static_actions is not None and isinstance(result, dict):
             result = {**{k: {"action": v} for k, v in self._static_actions.items()}, **result}
 
         return result
+
+    def convert_action_dict(
+        self, action: ActT, dt: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Convert a raw action by delegating to an active node's converter.
+
+        Valid because all graph nodes share the same action schema
+        (homogeneity assumption).  Prefers an already-resolved active node
+        to avoid lazily instantiating a factory policy.
+        """
+        for node_idx in self._active_node_indices:
+            policy = self._node_policies.get(self._node_names[node_idx])
+            if policy is not None:
+                return policy.convert_action_dict(action, dt=dt)
+        first_policy = self._get_or_create_node(self._node_names[0])
+        return first_policy.convert_action_dict(action, dt=dt)
 
     def get_action_dict_space(self):
         """Return a :class:`DictSpace` describing :meth:`get_action_dict` output.
@@ -251,7 +265,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         """
         # Prefer an already-resolved active node to avoid lazy-instantiating
         # a factory policy solely for the space query.
-        for node_idx in self._current_idx.unique().tolist():
+        for node_idx in self._active_node_indices:
             name = self._node_names[node_idx]
             policy = self._node_policies.get(name)
             if policy is not None:
@@ -309,7 +323,9 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
                 self._terminal_failure.fill_(True)
 
     def _transition_to_unbatched(self, next_name: str) -> None:
-        self._current_idx.fill_(self._name_to_idx[next_name])
+        next_idx = self._name_to_idx[next_name]
+        self._current_idx.fill_(next_idx)
+        self._active_node_indices = [next_idx]
         next_policy = self._get_or_create_node(next_name)
         next_policy.reset()
     
@@ -317,8 +333,23 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         alive = mask if mask is not None else torch.ones_like(self._terminal_success)
         alive = alive & ~self._terminal_success & ~self._terminal_failure
 
-        for node_idx, node_name in enumerate(self._node_names):
-            node_mask = alive & (self._current_idx == node_idx)
+        # Refresh the CPU-side active-node mirror — the single intentional
+        # GPU→CPU sync of this step.  The unfiltered unique keeps nodes that
+        # only hold terminal envs: get_action still needs those.
+        active_nodes = torch.unique(self._current_idx).tolist()
+        self._active_node_indices = active_nodes
+
+        # Snapshot node assignment so that an env transitioning this step is
+        # NOT stepped again by its destination node in the same tick.  This
+        # matches the unbatched semantics (one transition per step); without
+        # it, an env moving to a node visited later in this loop would be
+        # reset and immediately stepped, and could even cascade through
+        # several nodes in a single tick.
+        current_idx_snapshot = self._current_idx.clone()
+
+        for node_idx in active_nodes:
+            node_name = self._node_names[node_idx]
+            node_mask = alive & (current_idx_snapshot == node_idx)
             if not node_mask.any():
                 continue
 
@@ -348,16 +379,18 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
                     self._terminal_failure[fail_envs] = True
 
     def _transition_to_batched(self, next_name: str, env_mask: torch.Tensor) -> None:
-        self._current_idx.masked_fill_(
-            env_mask, self._name_to_idx[next_name]
-        )
+        next_idx = self._name_to_idx[next_name]
+        self._current_idx.masked_fill_(env_mask, next_idx)
+        if next_idx not in self._active_node_indices:
+            self._active_node_indices.append(next_idx)
         next_policy = self._get_or_create_node(next_name)
         next_policy.reset(mask=env_mask)
 
     def _get_action_batched(self) -> ActT:
         """Compute actions from all active nodes and combine."""
-        # Find which nodes are active.
-        active_nodes = self._current_idx.unique().tolist()
+        # CPU-side mirror — no GPU sync.  May be a slight superset right
+        # after transitions; extra nodes only contribute no-op overlays.
+        active_nodes = self._active_node_indices
 
         if len(active_nodes) == 1:
             # Fast path: all envs at the same node.
@@ -386,9 +419,3 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
                 func=mask_fn
             )
         return result
-
-def _to_tensor(value: Union[torch.Tensor, bool], like: torch.Tensor) -> torch.Tensor:
-    """Coerce a bool or Tensor to a Tensor matching *like*'s shape/device."""
-    if isinstance(value, torch.Tensor):
-        return value
-    return torch.full_like(like, value, dtype=torch.bool)

@@ -192,7 +192,12 @@ class EndEffectorPoseController(
         """Reset the controller's IK result cache."""
         self._last_ik_result = {}
     
-    def solve_ik_absolute(self, target_position : Optional[PyTorchArrayType], target_quaternion : Optional[PyTorchArrayType]) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
+    def solve_ik_absolute(
+        self,
+        target_position : Optional[PyTorchArrayType],
+        target_quaternion : Optional[PyTorchArrayType],
+        envs_idx : Optional[PyTorchArrayType] = None,
+    ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
         """Solve IK for the target end-effector position and rotation.
 
         Seeds the solver with the current joint positions to ensure solution
@@ -201,13 +206,23 @@ class EndEffectorPoseController(
 
         Args:
             target_position: ``(3,)`` or ``(batch_size, 3)`` target EEF positions.
+                When *envs_idx* is given, the leading dimension must instead
+                match the number of selected envs ``M``.
             target_quaternion: ``(4,)`` or ``(batch_size, 4)`` target EEF orientations (w, x, y, z).
+                Same sub-batch convention as *target_position*.
+            envs_idx: Optional env selection for **batched** worlds — an index
+                tensor or boolean mask over the batch dimension.  When given,
+                IK is solved only for the selected envs and the returned
+                tensors have leading dimension ``M`` (the number of selected
+                envs) instead of ``batch_size``.  Must be ``None`` for
+                unbatched worlds.
 
         Returns:
-            target_joint_positions: ``(n_dof,)`` or ``(batch_size, n_dof)`` solved joint positions.
-            achieved_error: ``(6,)`` or ``(batch_size, 6)`` pose error
+            target_joint_positions: ``(n_dof,)``, ``(batch_size, n_dof)`` or
+                ``(M, n_dof)`` solved joint positions.
+            achieved_error: ``(6,)``, ``(batch_size, 6)`` or ``(M, 6)`` pose error
                 ``[pos_err_x, pos_err_y, pos_err_z, rot_err_x, rot_err_y, rot_err_z]``.
-        
+
         .. note:: **IK solver seeding and solution continuity**
 
         Genesis's IK solver (``entity.inverse_kinematics``) uses an iterative DLS method.  
@@ -235,6 +250,9 @@ class EndEffectorPoseController(
         link_position, link_quaternion = self._virtual_to_link(
             target_position, target_quaternion,
         )
+
+        if envs_idx is not None:
+            ik_call_kwargs["envs_idx"] = envs_idx
 
         full_target_joint_positions, achieved_error = self.entity.inverse_kinematics(
             self.target_link,

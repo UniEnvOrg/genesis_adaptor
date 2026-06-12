@@ -79,15 +79,17 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         }
 
     @torch.inference_mode()
-    def get_action_dict(self, dt: Optional[float] = None) -> Dict[str, Any]:
-        """Return a nested action dict by delegating to each sub-policy.
+    def convert_action_dict(
+        self, action: Dict[str, torch.Tensor], dt: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Convert a raw action dict by delegating to each sub-policy.
 
         The result is keyed by sub-policy name, with each value being the
         controller-native action dict produced by that sub-policy's
-        :meth:`get_action_dict`.
+        :meth:`convert_action_dict`.
         """
         return {
-            name: policy.get_action_dict(dt=dt)
+            name: policy.convert_action_dict(action[name], dt=dt)
             for name, policy in self._policies.items()
         }
 

@@ -197,7 +197,9 @@ def init_ref_policy(env : WorldEnv):
                 "arm": GoToRefPolicy(
                     world, arm_eef, lift_pos, eef_quat.detach().clone(),
                 ),
-                "gripper": RepeatActionRefPolicy(world, GRIPPER_CLOSE, steps=0),
+                "gripper": RepeatActionRefPolicy(
+                    world, GRIPPER_CLOSE, steps=0, controller=gripper,
+                ),
             },
             success_keys=["arm"],
         )

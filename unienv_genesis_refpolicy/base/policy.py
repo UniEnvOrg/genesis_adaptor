@@ -81,10 +81,13 @@ class BaseRefPolicy(abc.ABC, Generic[ActT]):
     def get_action(self) -> ActT:
         raise NotImplementedError
 
-    def get_action_dict(self, dt: Optional[float] = None) -> Dict[str, Any]:
-        """Return a controller-native action dict for the current action.
+    def convert_action_dict(
+        self, action: ActT, dt: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Convert a raw action (as produced by :meth:`get_action`) to a
+        controller-native action dict.
 
-        The default implementation wraps :meth:`get_action` under the key
+        The default implementation wraps *action* under the key
         ``"action"``, matching the base :class:`EntityController` convention.
         Concrete subclasses that hold a reference to a controller should
         override this to delegate to the controller's own
@@ -92,13 +95,33 @@ class BaseRefPolicy(abc.ABC, Generic[ActT]):
         controller-native schema (e.g. ``target_joint_position``,
         ``target_eef_position``, …) rather than a ref-policy-specific one.
 
+        Separating the conversion from the current action lets composite
+        policies (e.g. :class:`GraphRefPolicy`) merge raw actions across
+        sub-policies first and run the (potentially expensive, e.g. IK)
+        conversion **once** on the merged action.
+
+        Args:
+            action: Raw action in the same format as :meth:`get_action`.
+            dt: Optional control timestep in seconds, forwarded to the
+                controller for rate-limit clipping.
+        """
+        return {"action": action}
+
+    def get_action_dict(self, dt: Optional[float] = None) -> Dict[str, Any]:
+        """Return a controller-native action dict for the current action.
+
+        The default implementation converts :meth:`get_action` via
+        :meth:`convert_action_dict`.  Subclasses should normally override
+        :meth:`convert_action_dict` (not this method) so that composite
+        policies can convert merged actions efficiently.
+
         This is an introspection helper — it does **not** apply the action.
 
         Args:
             dt: Optional control timestep in seconds, forwarded to the
                 controller for rate-limit clipping.
         """
-        return {"action": self.get_action()}
+        return self.convert_action_dict(self.get_action(), dt=dt)
 
     def get_action_dict_space(self) -> DictSpace:
         """Return a :class:`DictSpace` describing the output of :meth:`get_action_dict`.

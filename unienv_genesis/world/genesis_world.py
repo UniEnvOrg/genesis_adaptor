@@ -168,6 +168,21 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         self._batch_size = value
 
     @property
+    def dofs_info_batched(self) -> bool:
+        """Whether the scene stores per-env DOF info (gains, limits, ...).
+
+        Genesis only allows per-env values for ``set_dofs_kp`` / ``set_dofs_kv``
+        etc. when the scene was created with
+        ``RigidOptions(batch_dofs_info=True)``.  Otherwise DOF info is a single
+        ``(n_dofs,)`` table shared by all envs.  Controllers use this to decide
+        whether to broadcast gains over the batch dimension.
+        """
+        if not self.is_batched:
+            return False
+        rigid_options = getattr(self.scene, "rigid_options", None)
+        return bool(getattr(rigid_options, "batch_dofs_info", False))
+
+    @property
     def world_timestep(self) -> float:
         """Simulation timestep in seconds."""
         return self.scene.sim.dt
@@ -182,12 +197,12 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         
     def step(self) -> float:
         """Step the Genesis simulation.
-        
+
         Returns:
             float: Simulation timestep (world_timestep)
-        """        
+        """
         self.scene.step()
-        
+
         return self.world_timestep
         
     def reset(
@@ -206,7 +221,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         """  
         if seed is not None:
             gs.set_random_seed(seed)
-        
+
         if mask is not None:
             # Genesis accepts boolean masks for indexing
             # env_indices = mask.nonzero(as_tuple=True)[0]

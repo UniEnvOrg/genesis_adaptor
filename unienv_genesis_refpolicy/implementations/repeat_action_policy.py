@@ -7,6 +7,7 @@ import torch
 from unienv_interface.space import DictSpace, BoxSpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend
 from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_genesis.nodes.entities.entity_controllers.base import EntityController
 from unienv_genesis.utils.batch_dim_utils import (
     is_batched,
     get_batch_aware_shape,
@@ -31,6 +32,13 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
             ``True``.  ``0`` means **infinite** — the policy never
             reports success on its own (useful as a "background" policy
             inside :class:`CombinedRefPolicy`).
+        controller: Optional controller the action is destined for.  When
+            given, :meth:`convert_action_dict` / :meth:`get_action_dict_space`
+            delegate to it, producing the controller-native action-dict
+            schema instead of the generic ``{"action": ...}`` wrapper.
+            Pass it whenever this policy stands in for another policy that
+            drives the same controller (e.g. as a graph node alongside a
+            grasp policy), so all nodes share one action-dict schema.
     """
 
     def __init__(
@@ -38,9 +46,11 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
         world: GenesisWorld,
         action: torch.Tensor,
         steps: int = 0,
+        controller: Optional[EntityController] = None,
     ) -> None:
         super().__init__(world)
         self.steps = steps
+        self.controller = controller
 
         batch_size = world.batch_size
         device = world.device
@@ -82,13 +92,29 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
     def get_action(self) -> torch.Tensor:
         return self._action
 
-    def get_action_dict_space(self) -> DictSpace:
-        """Return a :class:`DictSpace` matching the base :meth:`get_action_dict` output.
+    @torch.inference_mode()
+    def convert_action_dict(
+        self, action: torch.Tensor, dt: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Convert a raw action to an action dict.
 
-        :class:`RepeatActionRefPolicy` does not override :meth:`get_action_dict`,
-        so the output is ``{"action": self._action}``.  The space describes
-        this with an unbounded :class:`BoxSpace` matching the action shape.
+        Delegates to the configured controller's :meth:`get_action_dict`
+        (controller-native schema) when one was provided; otherwise falls
+        back to the generic ``{"action": ...}`` wrapper.
         """
+        if self.controller is not None:
+            return self.controller.get_action_dict(action, dt=dt)
+        return super().convert_action_dict(action, dt=dt)
+
+    def get_action_dict_space(self) -> DictSpace:
+        """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
+
+        With a configured controller this is the controller-native schema;
+        otherwise the output is ``{"action": self._action}``, described with
+        an unbounded :class:`BoxSpace` matching the action shape.
+        """
+        if self.controller is not None:
+            return self.controller.get_action_dict_space()
         action_dim = self._action.shape[-1]
         batch_size = self.world.batch_size
         device = self.world.device

@@ -100,26 +100,56 @@ class JointPositionAndVelocityController(
         self.Kp = Kp
         self.Kd = Kd
 
+    def _expand_gains(
+        self, value: Union[float, PyTorchArrayType], gain_name: str,
+    ) -> PyTorchArrayType:
+        """Broadcast a PD gain to the shape Genesis accepts for DOF info.
+
+        Genesis stores DOF gains per env only when the scene was created with
+        ``RigidOptions(batch_dofs_info=True)``; otherwise the gain table is a
+        single ``(n_dofs,)`` row shared by all envs.  Accordingly this returns
+        ``(batch_size, n_dofs)`` when per-env DOF info is enabled and
+        ``(n_dofs,)`` otherwise — even in batched worlds.
+
+        Raises:
+            ValueError: If *value* is a per-env ``(batch_size, n_dofs)`` tensor
+                but the scene does not store batched DOF info.
+        """
+        n_controlled_dofs = (
+            len(self.joint_indexes) if self.joint_indexes is not None
+            else self.entity.n_dofs
+        )
+        dofs_info_batched = self.world.dofs_info_batched
+        if (
+            not dofs_info_batched
+            and isinstance(value, torch.Tensor)
+            and value.ndim == 2
+        ):
+            raise ValueError(
+                f"Per-env {gain_name} of shape {tuple(value.shape)} requires the "
+                f"scene to store batched DOF info, but it does not.  Construct "
+                f"the world with scene_init_kwargs=dict(rigid_options="
+                f"gs.options.RigidOptions(batch_dofs_info=True), ...) or pass a "
+                f"scalar / (n_dofs,) {gain_name} shared by all envs."
+            )
+        gains_batch_size = self.world.batch_size if dofs_info_batched else None
+        return broadcast_to_batch(
+            value, gains_batch_size, n_controlled_dofs, device=self.world.device
+        )
+
     @property
     def Kp(self) -> Optional[Union[float, PyTorchArrayType]]:
         return self._Kp
 
     @Kp.setter
     def Kp(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
-        self._Kp = value
         if value is not None:
-            n_controlled_dofs = (
-                len(self.joint_indexes) if self.joint_indexes is not None
-                else self.entity.n_dofs
-            )
-            self._Kp_expanded = broadcast_to_batch(
-                value, self.world.batch_size, n_controlled_dofs, device=self.world.device
-            )
-            self.entity.set_dofs_kp(
-                self._Kp_expanded, dofs_idx_local=self.joint_indexes
-            )
+            expanded = self._expand_gains(value, "Kp")
+            self.entity.set_dofs_kp(expanded, dofs_idx_local=self.joint_indexes)
+            self._Kp_expanded = expanded
         else:
             self._Kp_expanded = None
+        self._Kp = value
 
     @property
     def Kd(self) -> Optional[Union[float, PyTorchArrayType]]:
@@ -127,20 +157,13 @@ class JointPositionAndVelocityController(
 
     @Kd.setter
     def Kd(self, value: Optional[Union[float, PyTorchArrayType]]) -> None:
-        self._Kd = value
         if value is not None:
-            n_controlled_dofs = (
-                len(self.joint_indexes) if self.joint_indexes is not None
-                else self.entity.n_dofs
-            )
-            self._Kd_expanded = broadcast_to_batch(
-                value, self.world.batch_size, n_controlled_dofs, device=self.world.device
-            )
-            self.entity.set_dofs_kv(
-                self._Kd_expanded, dofs_idx_local=self.joint_indexes
-            )
+            expanded = self._expand_gains(value, "Kd")
+            self.entity.set_dofs_kv(expanded, dofs_idx_local=self.joint_indexes)
+            self._Kd_expanded = expanded
         else:
             self._Kd_expanded = None
+        self._Kd = value
 
     def reload(self):
         super().reload()

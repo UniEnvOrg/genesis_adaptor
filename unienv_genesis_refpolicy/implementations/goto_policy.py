@@ -210,14 +210,16 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         return self._action
 
     @torch.inference_mode()
-    def get_action_dict(self, dt: Optional[float] = None) -> Dict[str, Any]:
-        """Return a controller-native action dict for the current action.
+    def convert_action_dict(
+        self, action: torch.Tensor, dt: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Convert a raw action to a controller-native action dict.
 
         Delegates to the EEF pose controller's :meth:`get_action_dict`,
         producing keys such as ``target_joint_position``,
         ``target_eef_position``, and ``target_eef_quaternion``.
         """
-        return self.controller.get_action_dict(self._action, dt=dt)
+        return self.controller.get_action_dict(action, dt=dt)
 
     def get_action_dict_space(self):
         """Return a :class:`DictSpace` matching :meth:`get_action_dict` output.
@@ -251,6 +253,7 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         eef_controller: EndEffectorPoseController,
         target_pos: torch.Tensor,
         target_quat: torch.Tensor,
+        envs_idx: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute IK error for one or more target poses.
 
@@ -266,11 +269,16 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             eef_controller: The EEF pose controller to query.  Must have
                 ``has_eef=True`` (i.e. configured with ``target_link``).
             target_pos: Target positions, shape ``([B], [N], 3)``.
+                When *envs_idx* is given the batch dimension must be the
+                number of selected envs ``M`` instead of ``B``.
             target_quat: Target quaternions ``(w,x,y,z)``,
-                shape ``([B], [N], 4)``.
+                shape ``([B], [N], 4)``.  Same sub-batch convention.
+            envs_idx: Optional env selection (index tensor or boolean mask)
+                forwarded to :meth:`solve_ik_absolute`, restricting the IK
+                solve to a sub-batch of envs.  Batched worlds only.
 
         Returns:
-            Achieved IK error, shape ``([B], [N], 6)``.
+            Achieved IK error, shape ``([B], [N], 6)`` (``[M]`` with *envs_idx*).
 
         Raises:
             RuntimeError: If *eef_controller* does not expose EEF semantics.
@@ -284,7 +292,9 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         has_n = target_pos.ndim > base_ndim
 
         if not has_n:
-            _, error = eef_controller.solve_ik_absolute(target_pos, target_quat)
+            _, error = eef_controller.solve_ik_absolute(
+                target_pos, target_quat, envs_idx=envs_idx,
+            )
             return error
 
         n_candidates = target_pos.shape[-2]
@@ -296,7 +306,9 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             else:
                 pos_i = target_pos[i]    # (3,)
                 quat_i = target_quat[i]  # (4,)
-            _, error_i = eef_controller.solve_ik_absolute(pos_i, quat_i)
+            _, error_i = eef_controller.solve_ik_absolute(
+                pos_i, quat_i, envs_idx=envs_idx,
+            )
             errors.append(error_i)
 
         # Stack: unbatched (N, 6), batched (B, N, 6).
