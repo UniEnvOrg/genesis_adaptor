@@ -178,6 +178,14 @@ class FrankaFR3WithRobotiq2F85(RobotDescriptionNode):
         if controller_type == "eef_pose" and "target_link" not in controller_kwargs:
             controller_kwargs["target_link"] = EE_LINK_NAME
 
+        # The MJCF references meshes in sibling asset directories
+        # (``../franka_fr3/assets/`` and ``../robotiq_assets/``). ``get_asset_path``
+        # only downloads the single requested description file, so the mesh
+        # subtrees must be pre-fetched explicitly for Genesis to resolve the
+        # relative mesh paths during MJCF parsing.
+        get_asset_path("robots", "franka_fr3")
+        get_asset_path("robots", "robotiq_assets")
+
         super().__init__(
             world=world,
             description_file=str(get_asset_path(
