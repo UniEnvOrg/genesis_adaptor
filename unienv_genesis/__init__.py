@@ -9,6 +9,16 @@ from unienv_genesis.nodes.sensors import (
     PointProposer,
     UniformSegmentationPointProposer,
     KeypointTrackerNode,
+    JointStateSensorNode,
+    JointStateSensorNodeOptions,
+    EndEffectorStateSensorNode,
+    EndEffectorStateSensorNodeOptions,
+    IMUSensorNode,
+    IMUSensorNodeOptions,
+    ContactForceSensorNode,
+    ContactForceSensorNodeOptions,
+    ContactSensorNode,
+    ContactSensorNodeOptions,
 )
 
 __version__ = "0.0.1a1"
@@ -37,4 +47,14 @@ __all__ = [
     "PointProposer",
     "UniformSegmentationPointProposer",
     "KeypointTrackerNode",
+    "JointStateSensorNode",
+    "JointStateSensorNodeOptions",
+    "EndEffectorStateSensorNode",
+    "EndEffectorStateSensorNodeOptions",
+    "IMUSensorNode",
+    "IMUSensorNodeOptions",
+    "ContactForceSensorNode",
+    "ContactForceSensorNodeOptions",
+    "ContactSensorNode",
+    "ContactSensorNodeOptions",
 ]

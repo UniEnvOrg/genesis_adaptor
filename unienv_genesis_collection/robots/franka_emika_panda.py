@@ -9,6 +9,7 @@ import torch
 from unienv_genesis import GenesisWorld
 from unienv_genesis.nodes.entities.robot_node import RobotKeyframe, RobotDescriptionNode
 from unienv_genesis.nodes.entities.entity_controllers import CONTROL_MODE_T
+from unienv_genesis.options.attach_option import LinkAttachment
 from unienv_genesis_collection.asset_path import get_asset_path
 
 # Default home joint positions for Panda arm (7 DOF) + Franka Hand (2 DOF, fully open)
@@ -70,13 +71,14 @@ _DEFAULT_SUB_CONTROLLERS = {
     "arm": {
         "controller_type": "eef_pose",
         "joint_indexes": list(range(7)),   # joint1 … joint7
-        "target_link": EE_LINK_NAME,
         # Virtual EEF offset from the target_link (hand) origin to the
         # fingertip along the approach direction, centred in the open
         # direction.  This point is where grasp candidates place the EEF
         # (see base_object.list_box_gripper_grasping_candidates_local).
         #   finger base z = 0.0584 m + finger pad extent z = 0.053 m
-        "eef_offset_pos": [0.0, 0.0, 0.1114],
+        "target_link": LinkAttachment(
+            link_name=EE_LINK_NAME, offset_pos=[0.0, 0.0, 0.1114],
+        ),
         # DROID IK/controller velocity limit for the Franka arm (rad/s).
         "max_joint_pos_vel": DROID_FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS,
     },
@@ -160,7 +162,7 @@ class FrankaEmikaPanda(RobotDescriptionNode):
         if controller_type == "combined" and "sub_controllers" not in controller_kwargs:
             controller_kwargs["sub_controllers"] = _DEFAULT_SUB_CONTROLLERS
         if controller_type == "eef_pose" and "target_link" not in controller_kwargs:
-            controller_kwargs["target_link"] = EE_LINK_NAME
+            controller_kwargs["target_link"] = LinkAttachment(link_name=EE_LINK_NAME)
 
         super().__init__(
             world=world,

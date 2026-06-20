@@ -38,7 +38,7 @@ def require_eef_controller(controller: Any, *, policy_name: str = "This policy")
             f"(has_eef=True), but the provided "
             f"{type(controller).__name__} does not have a target_link "
             f"configured.  The controller — not the reference policy — owns "
-            f"the EEF metadata (target_link, base_frame, eef_offset_pos/quat, "
+            f"the EEF metadata (target_link, base_frame, LinkAttachment offsets, "
             f"rotation_representation).  Please construct the controller with "
             f"target_link to enable EEF semantics."
         )

@@ -15,6 +15,7 @@ from xbarray.transformations.rotation_conversions.pytorch import (
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_genesis.options.attach_option import LinkAttachment
 from unienv_genesis.utils.batch_dim_utils import (
     get_batch_aware_shape,
     is_batched,
@@ -154,10 +155,8 @@ class DiscreteEntityController(
         joint_names : Optional[Sequence[str]] = None,
         is_grasping_fn = None,
         # Optional end-effector metadata
-        target_link : Optional[str] = None,
-        base_frame : Optional[str] = None,
-        eef_offset_pos : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
-        eef_offset_quat : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
+        target_link : Union[str, LinkAttachment, None] = None,
+        base_frame : Union[str, LinkAttachment, None] = None,
         # Optional rate-limit / velocity clipping
         max_joint_pos_vel : Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
@@ -170,10 +169,51 @@ class DiscreteEntityController(
         # Get limits from entity - returns (low, high) tuple of shape (batch_size, n_dofs) or (n_dofs,)
         joint_position_low, joint_position_high = entity.get_dofs_limit(dofs_idx_local=joint_indexes)
         joint_force_low, joint_force_high = entity.get_dofs_force_range(dofs_idx_local=joint_indexes)
-        
-        # Store EEF metadata before building observation space
-        self._target_link_name : Optional[str] = target_link
-        self._base_frame_name : Optional[str] = base_frame
+
+        # Normalize target_link / base_frame into LinkAttachment objects (or None).
+        # A bare str is treated as a LinkAttachment with no offset.
+        if target_link is None:
+            self._target_link_attachment: Optional[LinkAttachment] = None
+        elif isinstance(target_link, LinkAttachment):
+            self._target_link_attachment = target_link
+        else:
+            self._target_link_attachment = LinkAttachment(link_name=target_link)
+
+        if base_frame is None:
+            self._base_frame_attachment: Optional[LinkAttachment] = None
+        elif isinstance(base_frame, LinkAttachment):
+            self._base_frame_attachment = base_frame
+        else:
+            self._base_frame_attachment = LinkAttachment(link_name=base_frame)
+
+        # Extract the link names (used by _resolve_ee_links to look up the
+        # RigidLink instances from the entity after build).
+        self._target_link_name : Optional[str] = (
+            self._target_link_attachment.link_name
+            if self._target_link_attachment is not None else None
+        )
+        self._base_frame_name : Optional[str] = (
+            self._base_frame_attachment.link_name
+            if self._base_frame_attachment is not None else None
+        )
+
+        # Extract optional offsets from the LinkAttachment objects.
+        eef_offset_pos = (
+            self._target_link_attachment.offset_pos
+            if self._target_link_attachment is not None else None
+        )
+        eef_offset_quat = (
+            self._target_link_attachment.offset_quat
+            if self._target_link_attachment is not None else None
+        )
+        base_frame_offset_pos = (
+            self._base_frame_attachment.offset_pos
+            if self._base_frame_attachment is not None else None
+        )
+        base_frame_offset_quat = (
+            self._base_frame_attachment.offset_quat
+            if self._base_frame_attachment is not None else None
+        )
 
         # Build observation space before calling super().__init__
         obs_space = DictSpace(
@@ -230,7 +270,7 @@ class DiscreteEntityController(
         )
 
         # Conditionally add EEF observation keys when an end-effector is configured
-        self._has_eef = target_link is not None
+        self._has_eef = self._target_link_attachment is not None
         if self._has_eef:
             obs_space['eef_position'] = BoxSpace(
                 PyTorchComputeBackend,
@@ -291,6 +331,25 @@ class DiscreteEntityController(
         else:
             self._eef_offset_pos = None
             self._eef_offset_quat = None
+
+        # Base-frame offset: translates the virtual base frame away from the
+        # physical base_frame link origin.  Stored in the base_frame link's
+        # local frame.  Only meaningful when base_frame is configured.
+        if self._base_frame_attachment is not None and base_frame_offset_pos is not None:
+            self._base_frame_offset_pos = torch.as_tensor(
+                base_frame_offset_pos, dtype=torch.float32, device=world.device,
+            )
+            if base_frame_offset_quat is not None:
+                self._base_frame_offset_quat = torch.as_tensor(
+                    base_frame_offset_quat, dtype=torch.float32, device=world.device,
+                )
+            else:
+                self._base_frame_offset_quat = torch.tensor(
+                    [1.0, 0.0, 0.0, 0.0], device=world.device,
+                )
+        else:
+            self._base_frame_offset_pos = None
+            self._base_frame_offset_quat = None
 
         # Resolve link references from names (needs entity to be built)
         if self._has_eef:
@@ -427,11 +486,24 @@ class DiscreteEntityController(
         """Return ``(base_position, base_quaternion)`` for the configured base frame.
 
         Returns ``None`` when no ``base_frame`` is configured.
+
+        When ``base_frame_offset_pos`` / ``base_frame_offset_quat`` are set,
+        the returned pose is that of a *virtual* base frame offset from the
+        physical ``base_frame`` link, mirroring the EEF virtual-offset
+        convention: ``base_pos = link_pos + quat_apply(link_quat, offset_pos)``
+        and ``base_quat = quat_multiply(link_quat, offset_quat)``.
         """
         if not self._has_eef or self.base_frame is None:
             return None
         base_position = self.base_frame.get_pos()
         base_quaternion = self.base_frame.get_quat()
+        if self._base_frame_offset_pos is not None:
+            base_position = base_position + quaternion_apply(
+                base_quaternion, self._base_frame_offset_pos,
+            )
+            base_quaternion = quaternion_multiply(
+                base_quaternion, self._base_frame_offset_quat,
+            )
         return base_position, base_quaternion
 
     def convert_base_to_absolute(
@@ -449,7 +521,7 @@ class DiscreteEntityController(
         else:
             target_position_absolute = None
         if target_rotation_base is not None:
-            target_rotation_absolute = quaternion_apply(base_quaternion, target_rotation_base)
+            target_rotation_absolute = quaternion_multiply(base_quaternion, target_rotation_base)
         else:
             target_rotation_absolute = None
         return target_position_absolute, target_rotation_absolute
@@ -472,7 +544,7 @@ class DiscreteEntityController(
         else:
             target_position_base = None
         if target_rotation_absolute is not None:
-            target_rotation_base = quaternion_apply(
+            target_rotation_base = quaternion_multiply(
                 quaternion_invert(base_quaternion),
                 target_rotation_absolute,
             )
@@ -512,6 +584,28 @@ class DiscreteEntityController(
     def eef_offset_quat(self) -> Optional[PyTorchArrayType]:
         """Virtual EEF offset quaternion in the target_link frame, or ``None``."""
         return self._eef_offset_quat
+
+    @property
+    def base_frame_offset_pos(self) -> Optional[PyTorchArrayType]:
+        """Virtual base-frame offset position in the base_frame link's local
+        frame, or ``None`` when no offset is configured."""
+        return self._base_frame_offset_pos
+
+    @property
+    def base_frame_offset_quat(self) -> Optional[PyTorchArrayType]:
+        """Virtual base-frame offset quaternion in the base_frame link's local
+        frame, or ``None`` when no offset is configured."""
+        return self._base_frame_offset_quat
+
+    @property
+    def target_link_attachment(self) -> Optional[LinkAttachment]:
+        """The configured target_link attachment (name + offset), or ``None``."""
+        return self._target_link_attachment
+
+    @property
+    def base_frame_attachment(self) -> Optional[LinkAttachment]:
+        """The configured base_frame attachment (name + offset), or ``None``."""
+        return self._base_frame_attachment
 
     @property
     def has_eef(self) -> bool:

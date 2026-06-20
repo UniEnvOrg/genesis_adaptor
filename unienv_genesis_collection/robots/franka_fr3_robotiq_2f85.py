@@ -11,7 +11,7 @@ from unienv_genesis import GenesisWorld
 from unienv_genesis.nodes.entities.robot_node import RobotKeyframe, RobotDescriptionNode
 from unienv_genesis.nodes.entities.entity_controllers import CONTROL_MODE_T
 from unienv_genesis.nodes.sensors.camera_node import CameraSensorNodeOptions
-from unienv_genesis.options.attach_option import AttachFromName
+from unienv_genesis.options.attach_option import AttachFromName, LinkAttachment
 from unienv_genesis_collection.sensors.cameras.zed import get_zed_mini_camera_options, ZedSupportedResolution
 from unienv_genesis_collection.asset_path import get_asset_path
 from genesis.engine.entities.rigid_entity import RigidEntity
@@ -82,10 +82,11 @@ _DEFAULT_SUB_CONTROLLERS = {
     "arm": {
         "controller_type": "eef_pose",
         "joint_names": ARM_JOINT_NAMES,
-        "target_link": EE_LINK_NAME,
         # Virtual EEF offset from the target_link (g_base) origin to the gripper fingertip along the approach direction, centred in the open direction.  This point is where grasp candidates place the EEF (see base_object.list_box_gripper_grasping_candidates_local).
         # ~0.159 m (Robotiq base to fingertip)
-        "eef_offset_pos": [0.0, 0.0, 0.159],
+        "target_link": LinkAttachment(
+            link_name=EE_LINK_NAME, offset_pos=[0.0, 0.0, 0.159],
+        ),
         "Kp": torch.tensor([4500, 4500, 3500, 3500, 2000, 2000, 2000], dtype=torch.float32),
         "Kd": torch.tensor([450, 450, 350, 350, 200, 200, 200], dtype=torch.float32),
         # DROID IK/controller velocity limit for the Franka arm (rad/s).
@@ -176,7 +177,7 @@ class FrankaFR3WithRobotiq2F85(RobotDescriptionNode):
         if controller_type == "combined" and "sub_controllers" not in controller_kwargs:
             controller_kwargs["sub_controllers"] = _DEFAULT_SUB_CONTROLLERS
         if controller_type == "eef_pose" and "target_link" not in controller_kwargs:
-            controller_kwargs["target_link"] = EE_LINK_NAME
+            controller_kwargs["target_link"] = LinkAttachment(link_name=EE_LINK_NAME)
 
         # The MJCF references meshes in sibling asset directories
         # (``../franka_fr3/assets/`` and ``../robotiq_assets/``). ``get_asset_path``

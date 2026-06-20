@@ -17,6 +17,7 @@ from xbarray.transformations.rotation_conversions.pytorch import (
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_genesis.options.attach_option import LinkAttachment
 from unienv_genesis.utils.batch_dim_utils import (
     index_batch_dimension,
     get_batch_aware_shape,
@@ -110,11 +111,11 @@ class EndEffectorPoseController(
 
     .. note:: **Virtual EEF point convention**
 
-       When ``eef_offset_pos`` is provided, all poses reported by
-       :meth:`get_eef_pose_absolute` / :meth:`get_eef_pose_base` and all
-       targets accepted by :meth:`solve_ik_absolute` /
-       :meth:`get_action_world` refer to a *virtual* EEF point, **not** the
-       physical ``target_link`` origin.
+       When ``target_link`` is a :class:`LinkAttachment` with ``offset_pos``
+       set, all poses reported by :meth:`get_eef_pose_absolute` /
+       :meth:`get_eef_pose_base` and all targets accepted by
+       :meth:`solve_ik_absolute` / :meth:`get_action_world` refer to a
+       *virtual* EEF point, **not** the physical ``target_link`` origin.
 
        The offset should place this virtual point at the **gripper fingertip**
        — i.e. the farthest extent along the approach direction, centred in
@@ -130,8 +131,8 @@ class EndEffectorPoseController(
         self,
         world : GenesisWorld,
         entity : RigidEntity,
-        target_link : str,
-        base_frame : Optional[str] = None,
+        target_link : Union[str, LinkAttachment],
+        base_frame : Union[str, LinkAttachment, None] = None,
         Kp : Optional[Union[float, PyTorchArrayType]] = None,
         Kd : Optional[Union[float, PyTorchArrayType]] = None,
         joint_indexes : Optional[Sequence[int]] = None,
@@ -140,15 +141,14 @@ class EndEffectorPoseController(
         rotation_representation : str = "euler", # "euler", "quat", "rot6d"
         normalize_rotation_action : bool = False,
         joint_names : Optional[Sequence[str]] = None,
-        eef_offset_pos : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
-        eef_offset_quat : Optional[Union[Sequence[float], PyTorchArrayType]] = None,
         is_grasping_fn = None,
         ik_kwargs: Optional[dict] = None,
         **kwargs,
     ) -> None:
-        # EEF metadata (target_link, base_frame, eef_offset_*) is forwarded to
-        # the DiscreteEntityController base via **kwargs so that the base class
-        # owns link resolution, offset transforms, and EEF observation keys.
+        # EEF metadata (target_link, base_frame as str or LinkAttachment with
+        # optional offsets) is forwarded to the DiscreteEntityController base
+        # via **kwargs so that the base class owns link resolution, offset
+        # transforms, and EEF observation keys.
         super().__init__(
             world, entity, Kp, Kd, joint_indexes,
             joint_names=joint_names,
@@ -157,8 +157,6 @@ class EndEffectorPoseController(
             max_joint_pos_vel=max_joint_pos_vel,
             target_link=target_link,
             base_frame=base_frame,
-            eef_offset_pos=eef_offset_pos,
-            eef_offset_quat=eef_offset_quat,
             **kwargs,
         )
         self.rotation_representation = rotation_representation

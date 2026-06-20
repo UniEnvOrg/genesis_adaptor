@@ -22,6 +22,7 @@ import torch
 from unienv_genesis import GenesisWorld
 from unienv_genesis.nodes.entities.robot_node import RobotKeyframe, RobotDescriptionNode
 from unienv_genesis.nodes.entities.entity_controllers import CONTROL_MODE_T
+from unienv_genesis.options.attach_option import LinkAttachment
 from unienv_genesis_collection.asset_path import get_asset_path
 
 # End-effector link names (last actuated arm link, the wrist before the hand)
@@ -68,14 +69,16 @@ _DEFAULT_SUB_CONTROLLERS = {
     "left_arm": {
         "controller_type": "eef_pose",
         "joint_names": LEFT_ARM_JOINT_NAMES,
-        "target_link": LEFT_EE_LINK_NAME,
-        "eef_offset_pos": EE_PALM_OFFSET,
+        "target_link": LinkAttachment(
+            link_name=LEFT_EE_LINK_NAME, offset_pos=EE_PALM_OFFSET,
+        ),
     },
     "right_arm": {
         "controller_type": "eef_pose",
         "joint_names": RIGHT_ARM_JOINT_NAMES,
-        "target_link": RIGHT_EE_LINK_NAME,
-        "eef_offset_pos": EE_PALM_OFFSET,
+        "target_link": LinkAttachment(
+            link_name=RIGHT_EE_LINK_NAME, offset_pos=EE_PALM_OFFSET,
+        ),
     },
     "left_hand": {
         "controller_type": "joint_position",
@@ -144,7 +147,7 @@ class TianjiMarvinWuji(RobotDescriptionNode):
         if controller_type == "combined" and "sub_controllers" not in controller_kwargs:
             controller_kwargs["sub_controllers"] = _DEFAULT_SUB_CONTROLLERS
         if controller_type == "eef_pose" and "target_link" not in controller_kwargs:
-            controller_kwargs["target_link"] = LEFT_EE_LINK_NAME
+            controller_kwargs["target_link"] = LinkAttachment(link_name=LEFT_EE_LINK_NAME)
 
         super().__init__(
             world=world,
