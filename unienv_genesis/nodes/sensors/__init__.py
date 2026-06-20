@@ -2,7 +2,7 @@
 
 from .base import SensorNode
 from .camera_node import CameraSensorNode, CameraSensorNodeOptions
-from .keypoint_tracker_node import (
+from .keypoints import (
     PointProposer,
     UniformSegmentationPointProposer,
     KeypointTrackerNode,

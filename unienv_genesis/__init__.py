@@ -15,15 +15,22 @@ __version__ = "0.0.1a1"
 
 __all__ = [
     "GenesisWorld",
-    "RigidEntityNode",
-    "RobotNode",
+    # Entity nodes
+    "EntityNode",
+    "RobotDescriptionNode",
     "RobotKeyframe",
+    # Controllers
     "EntityController",
     "DiscreteEntityController",
     "JointPositionAndVelocityController",
     "JointPositionController",
     "JointVelocityController",
     "EndEffectorPoseController",
+    "CombinedController",
+    "MimicJointPositionAndVelocityController",
+    "MimicJointPositionController",
+    "MimicJointVelocityController",
+    # Sensors
     "SensorNode",
     "CameraSensorNode",
     "CameraSensorNodeOptions",

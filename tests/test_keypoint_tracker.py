@@ -317,9 +317,9 @@ def test_geom_mode_visibility_semantics():
     assert torch.any(valid), "No keypoints were initialized in geom mode."
 
     # Verify that the tracker stores geom_idx
-    assert hasattr(tracker, "_geom_idx"), "Tracker should have _geom_idx storage."
+    assert hasattr(tracker, "_state") and hasattr(tracker._state, "geom_idx"), "Tracker should have _geom_idx storage."
     # For unbatched world, observation is (max_points,) but internal storage is (1, max_points)
-    geom_indices = tracker._geom_idx[0, valid]
+    geom_indices = tracker._state.geom_idx[0, valid]
     # In geom mode, geom_idx should be >= 0 for valid points
     assert torch.all(geom_indices >= 0), "Geom mode should have valid geom_idx."
 
