@@ -8,11 +8,36 @@ from genesis.engine.entities.base_entity import Entity
 from unienv_genesis import GenesisWorld
 from unienv_interface.world.node import WorldNode
 
+# Keyword arguments accepted by ``gs.morphs.Plane``. Any of these supplied to
+# the builder are forwarded to the morph; everything else is forwarded to
+# ``world.scene.add_entity`` as entity-level kwargs.
+_PLANE_MORPH_KWARGS = frozenset(
+    {
+        "pos",
+        "normal",
+        "euler",
+        "quat",
+        "plane_size",
+        "tile_size",
+        "visualization",
+        "collision",
+        "contype",
+        "conaffinity",
+    }
+)
+
 class PlaneBuilder(WorldNode):
     """Builder for creating a flat plane (e.g. floor) at a specific height.
 
     Uses ``gs.morphs.Plane`` positioned at the given height. The plane is
     infinite in extent and acts as a static collision surface.
+
+    Keyword arguments intended for ``gs.morphs.Plane`` (e.g. ``pos``,
+    ``normal``, ``euler``, ``quat``, ``plane_size``, ``tile_size``,
+    ``visualization``, ``collision``, ``contype``, ``conaffinity``) are
+    forwarded to the morph, while any remaining kwargs are forwarded to
+    ``world.scene.add_entity``. Unless the caller explicitly provides ``pos``,
+    the plane is placed at ``(0, 0, height)``.
 
     Args:
         world: GenesisWorld instance
@@ -60,11 +85,29 @@ class PlaneBuilder(WorldNode):
         self, 
         world : GenesisWorld
     ) -> Entity:
-        """Helper method to build the plane morph."""
+        """Helper method to build the plane morph.
+
+        Splits ``self.build_plane_kwargs`` into morph-level kwargs (forwarded to
+        ``gs.morphs.Plane``) and entity-level kwargs (forwarded to
+        ``world.scene.add_entity``).
+        """
+        plane_kwargs = {}
+        entity_kwargs = {}
+        for key, value in self.build_plane_kwargs.items():
+            if key in _PLANE_MORPH_KWARGS:
+                plane_kwargs[key] = value
+            else:
+                entity_kwargs[key] = value
+
+        # Default the plane position to (0, 0, height) unless the caller
+        # explicitly supplies ``pos``.
+        if "pos" not in plane_kwargs:
+            plane_kwargs["pos"] = (0.0, 0.0, self.height)
+
         return world.scene.add_entity(
-            gs.morphs.Plane(pos=(0.0, 0.0, self.height)),
+            gs.morphs.Plane(**plane_kwargs),
             name=self._name,
-            **self.build_plane_kwargs
+            **entity_kwargs
         )
 
     def get_observation(self):

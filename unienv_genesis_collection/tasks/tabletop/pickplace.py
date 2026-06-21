@@ -192,10 +192,11 @@ class ObjectRelocateTask(WorldNode):
             # envs_idx=mask.nonzero(as_tuple=True)[0] if mask is not None else None,
             envs_idx=mask if mask is not None else None,
         )
-        avoid_xy, avoid_radius = self.target_object.get_footprint(self.target_object_entity) # ([n_envs], 2), ([n_envs], )
-        self.clutter_manager.set_next_reset_avoid_spaces(
-            avoid_xy[..., None, :], avoid_radius[..., None]
-        ) # Only one zone to avoid
+        if self.clutter_manager is not None:
+            avoid_xy, avoid_radius = self.target_object.get_footprint(self.target_object_entity) # ([n_envs], 2), ([n_envs], )
+            self.clutter_manager.set_next_reset_avoid_spaces(
+                avoid_xy[..., None, :], avoid_radius[..., None]
+            ) # Only one zone to avoid
 
         if mask is None:
             self._reward = 0.0 if self.world.batch_size is None else torch.zeros(self.world.batch_size, dtype=self.world.dtype, device=self.world.device)

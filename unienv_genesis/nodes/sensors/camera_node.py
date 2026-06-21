@@ -120,6 +120,16 @@ class CameraSensorNodeOptions:
     """``npr.EDebugView`` value. Forwarded to ``NyxCameraOptions.debug_view``.
     Only used when ``backend="nyx"``.
     """
+    light_fields : Tuple[Any, ...] = ()
+    """Additional per-camera Nyx ``LightFieldAsset`` objects.
+
+    These are merged with the shared light fields configured on
+    ``GenesisWorld(light_fields=...)`` and passed to
+    ``NyxCameraOptions(light_fields=...)``. Only used when
+    ``backend="nyx"``; ignored by other backends. Typed as a tuple of
+    ``Any`` so the option remains usable even when the Nyx plugin (and
+    therefore ``gs_nyx.nyx_py_sdk.LightFieldAsset``) is not installed.
+    """
 
     @staticmethod
     def quat_from_lookat(
@@ -351,6 +361,10 @@ class CameraSensorNode(SensorNode[
         if self.world.env_map is not None:
             env_map = self.world.env_map.to_hyx_asset()
 
+        # Merge shared world light fields with per-camera option light fields.
+        # Both are Nyx LightFieldAsset objects forwarded to NyxCameraOptions.
+        light_fields = tuple(self.world.light_fields) + tuple(self.option.light_fields)
+
         # Build NyxCameraOptions kwargs
         nyx_kwargs = dict(
             res=self.option.res,
@@ -363,6 +377,7 @@ class CameraSensorNode(SensorNode[
             spp=self.option.spp,
             lights=lights,
             env_maps=(env_map,) if env_map is not None else (),
+            light_fields=light_fields,
         )
         
         # Only pass render_mode if explicitly set
@@ -805,6 +820,14 @@ class CameraSensorNode(SensorNode[
         # NYX always returns (B, H, W, 3); squeeze for unbatched worlds.
         if not self.world.is_batched:
             rgb_tensor = rgb_tensor.squeeze(0)
+
+        # Clone the RGB tensor so the observation owns its storage.  The NYX
+        # renderer reuses a shared image cache (``image_cache``) that is
+        # overwritten on every ``render()`` call; without cloning, successive
+        # ``_last_observation["rgb"]`` values would all alias the same buffer
+        # and resolve to the final frame's data when read later (e.g. by a
+        # video recording wrapper that accumulates frames across steps).
+        rgb_tensor = rgb_tensor.clone()
 
         obs: Dict[str, PyTorchArrayType] = {}
         obs["rgb"] = rgb_tensor

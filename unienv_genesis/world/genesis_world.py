@@ -1,6 +1,6 @@
 """Genesis World backend for UniEnv."""
 
-from typing import Optional, Any, Dict, Union, List
+from typing import Optional, Any, Dict, Union, List, Sequence
 import time
 import logging
 import genesis as gs
@@ -39,6 +39,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         scene_build_kwargs : Optional[Dict[str, Any]] = None,
         lights : Optional[Dict[str, GenesisWorldLightOption]] = None,
         env_map : Optional[GenesisWorldEnvMapOption] = None,
+        light_fields : Optional[Sequence[Any]] = None,
         n_settle_steps : int = 0,
     ):
         """Initialize Genesis World.
@@ -49,6 +50,12 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             scene_build_kwargs: Kwargs passed to scene.build() method.
             lights: Dictionary of light options keyed by name.
             env_map: Optional environment map option.
+            light_fields: Optional sequence of Nyx ``LightFieldAsset`` objects
+                that are shared across all Nyx cameras created within this
+                world. These are forwarded to every Nyx camera in addition to
+                any per-camera light fields configured on
+                ``CameraSensorNodeOptions``. Ignored by non-Nyx backends.
+                Stored immutably as a tuple on ``self.light_fields``.
             n_settle_steps: Number of physics steps to run at the end of
                 ``after_reload`` / ``after_reset`` to "settle" the simulation
                 before observations are read.  Genesis only populates its
@@ -82,6 +89,10 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         else:
             self.lights = dict(lights)
         self.env_map = env_map
+        # Shared Nyx LightFieldAsset objects applied to every Nyx camera.
+        # Stored as an immutable tuple so callers cannot mutate the shared set
+        # after construction.
+        self.light_fields = tuple(light_fields) if light_fields is not None else ()
         self.scene = self.create_scene()
     
     def create_scene(
