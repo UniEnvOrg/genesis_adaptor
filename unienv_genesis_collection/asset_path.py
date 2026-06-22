@@ -52,13 +52,19 @@ ASSETS_REVISION = "main"
 # Local directory where assets are materialized (next to this module).
 ASSETS_DIR = Path(__file__).parent.resolve() / "assets"
 
-# Shared keyword arguments for Hub API calls.
-_HUB_KWARGS = {
-    "repo_id": REPO_ID,
-    "repo_type": REPO_TYPE,
-    "revision": ASSETS_REVISION,
-    "local_dir": str(ASSETS_DIR),
-}
+def _hub_kwargs() -> dict:
+    """Return Hub API kwargs using the current :data:`ASSETS_DIR`.
+
+    ``ASSETS_DIR`` is occasionally overridden in tests or local sandbox setups.
+    Build these kwargs at call time rather than import time so downloads always
+    honor the current asset root.
+    """
+    return {
+        "repo_id": REPO_ID,
+        "repo_type": REPO_TYPE,
+        "revision": ASSETS_REVISION,
+        "local_dir": str(ASSETS_DIR),
+    }
 
 
 def _normalize_relative(*relative_paths: Union[str, os.PathLike]) -> str:
@@ -95,7 +101,7 @@ def download_asset(*relative_paths: Union[str, os.PathLike], force: bool = False
     rel = _normalize_relative(*relative_paths)
 
     local_path = huggingface_hub.hf_hub_download(
-        **_HUB_KWARGS,
+        **_hub_kwargs(),
         filename=rel,
         force_download=force,
     )
@@ -123,7 +129,7 @@ def download_assets(
         Absolute :class:`~pathlib.Path` to :data:`ASSETS_DIR`.
     """
     huggingface_hub.snapshot_download(
-        **_HUB_KWARGS,
+        **_hub_kwargs(),
         allow_patterns=allow_patterns,
         ignore_patterns=ignore_patterns,
         force_download=force,

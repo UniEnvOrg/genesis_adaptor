@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Download HDR environment maps from Poly Haven (polyhaven.com/hdris).
 
-Poly Haven publishes a large collection of CC0 HDRIs.  This script fetches the
-1k-resolution ``.hdr`` files (suitable for the Nyx renderer via
-:class:`GenesisWorldEnvMapOption`) and saves them into a local directory for
-use with :class:`EnvMapManager`.
+Poly Haven publishes a large collection of CC0 HDRIs. This script fetches the
+``.hdr`` files and saves them into a local directory for later curation into
+the env-map manifest consumed by :class:`EnvMapManager`.
 
 Usage::
 
@@ -17,9 +16,20 @@ Usage::
     # Filter by category and use 2k resolution.
     python scripts/prepare_env_maps.py --category studio --res 2k --count 5 --output-dir /data/hdri
 
-The default output directory is the collection's asset tree so that
-``EnvMapManager(hdr_paths=...)`` can reference the files via
-:func:`get_asset_path`.
+The default output directory is the collection's asset tree
+(``assets/scenes/env_maps``). After curation writes approved entries into
+``info.json``, the primary runtime API is::
+
+    from unienv_genesis_collection.scenes.env_map_manager import EnvMapManager
+
+    env_maps = [
+        EnvMapManager.from_asset(asset_id)
+        for asset_id in EnvMapManager.list_assets()
+    ]
+    manager = EnvMapManager(world, env_maps=env_maps)
+
+Manual ``GenesisWorldEnvMapOption(hdr_path=...)`` construction is still
+supported for ad-hoc or private HDR collections.
 
 API reference: https://api.polyhaven.com/
 """
@@ -80,23 +90,27 @@ on Patreon.
 
 ## Usage
 
-Use with `EnvMapManager` — auto-discovery will pick up all `.hdr` files in
-this directory automatically::
+Preferred runtime API after curation updates `info.json`::
 
     from unienv_genesis_collection.scenes.env_map_manager import EnvMapManager
 
-    manager = EnvMapManager(world)  # auto-discovers all .hdr files here
-
-Or reference individual maps explicitly::
-
-    from unienv_genesis_collection.asset_path import get_asset_path
-    from unienv_genesis_collection.scenes.env_map_manager import EnvMapManager
-
-    paths = [
-        get_asset_path("scenes", "env_maps", "studio_small_09_1k.hdr"),
-        ...
+    env_maps = [
+        EnvMapManager.from_asset(asset_id)
+        for asset_id in EnvMapManager.list_assets()
     ]
-    manager = EnvMapManager(world, hdr_paths=paths)
+    manager = EnvMapManager(world, env_maps=env_maps)
+
+Advanced/manual option for uncatalogued HDRs::
+
+    from pathlib import Path
+    from unienv_genesis.options.light_option import GenesisWorldEnvMapOption
+    from unienv_genesis_collection.scenes.env_map_manager import EnvMapManager
+
+    env_maps = [
+        GenesisWorldEnvMapOption(hdr_path=str(path))
+        for path in sorted(Path("assets/scenes/env_maps").glob("*.hdr"))
+    ]
+    manager = EnvMapManager(world, env_maps=env_maps)
 """
 
 
@@ -207,7 +221,9 @@ def download_env_maps(
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Download HDR env maps from Poly Haven.",
+        description=(
+            "Download HDR env maps from Poly Haven for later manifest curation."
+        ),
     )
     parser.add_argument(
         "--ids",
@@ -245,7 +261,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--output-dir",
         type=Path,
         default=_DEFAULT_OUTPUT,
-        help="Destination directory for the downloaded .hdr files.",
+        help=(
+            "Destination directory for the downloaded .hdr files. After curation, "
+            "approved entries in info.json should be loaded via "
+            "EnvMapManager.list_assets()/from_asset()."
+        ),
     )
     parser.add_argument(
         "--write-readme",
@@ -277,10 +297,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Wrote {readme}")
 
     print(f"\nDone. {len(paths)} env map(s) in {args.output_dir}")
-    print("Use with EnvMapManager:")
+    print("Preferred runtime API after curation updates info.json:")
+    print("  from unienv_genesis_collection.scenes.env_map_manager import EnvMapManager")
+    print(
+        "  env_maps = [EnvMapManager.from_asset(asset_id) "
+        "for asset_id in EnvMapManager.list_assets()]"
+    )
+    print("  manager = EnvMapManager(world, env_maps=env_maps)")
+    print("Advanced/manual option for uncatalogued local HDRs:")
     print(f"  from pathlib import Path")
-    print(f"  paths = [str(p) for p in sorted(Path({str(args.output_dir)!r}).glob('*.hdr'))]")
-    print(f"  manager = EnvMapManager(world, hdr_paths=paths)")
+    print(f"  from unienv_genesis.options.light_option import GenesisWorldEnvMapOption")
+    print(f"  from unienv_genesis_collection.scenes.env_map_manager import EnvMapManager")
+    print(f"  env_maps = [GenesisWorldEnvMapOption(hdr_path=str(p)) for p in sorted(Path({str(args.output_dir)!r}).glob('*.hdr'))]")
+    print(f"  manager = EnvMapManager(world, env_maps=env_maps)")
     return 0
 
 

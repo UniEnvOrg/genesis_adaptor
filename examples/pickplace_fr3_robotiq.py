@@ -69,7 +69,14 @@ def init_env():
     # Nyx cameras. EnvMapManager runs at reload priority 150, so its selection
     # is picked up when the Nyx cameras (priority 0) are (re-)created later in
     # the reload sequence.
-    env_map = EnvMapManager(world, name="env_map")
+    env_map = EnvMapManager(
+        world,
+        env_maps=[
+            EnvMapManager.from_asset(asset_id)
+            for asset_id in EnvMapManager.list_assets()
+        ],
+        name="env_map",
+    )
 
     # -- Table --
     table = TableBuilder(
