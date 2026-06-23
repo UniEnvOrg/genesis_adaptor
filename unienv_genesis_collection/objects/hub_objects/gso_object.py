@@ -53,6 +53,7 @@ from typing import (
 
 import torch
 
+from unienv_genesis_collection.objects.base_object import make_bbox
 from unienv_genesis_collection.objects.hub_objects.catalog import (
     ObjectInfo,
     load_catalog,
@@ -136,11 +137,11 @@ def list_gso_objects(
 class GSOObject(HubAssetMeshObject):
     """A Google Scanned Object loaded into Genesis via its MJCF model.
 
-    Inherits the trimesh-based bounding-box and grasp-candidate machinery
-    from :class:`MeshObject` (pointed at the object's ``model.obj``), but
-    overrides :meth:`load_into_scene` to load the MJCF so Genesis uses the
-    precomputed V-HACD collision pieces and the texture bound by the MJCF
-    material.
+    Inherits the trimesh-based grasp-candidate machinery from
+    :class:`MeshObject` (pointed at the object's ``model.obj``), but
+    overrides :meth:`get_local_bounding_box` and :meth:`load_into_scene` so
+    placement and simulation use the MJCF's precomputed V-HACD collision
+    pieces while rendering keeps the texture bound by the MJCF material.
 
     Movable objects load the prepared ``model_freejoint.xml``; ``fixed=True``
     objects load the pristine upstream ``model.xml``, whose jointless body is
@@ -197,6 +198,7 @@ class GSOObject(HubAssetMeshObject):
             "model.xml" if fixed else "model_freejoint.xml"
         )
         self._morph_scale = float(scale)
+        self._collision_trimesh_cache = None
 
     def _required_files(self) -> List[Path]:
         """Both MJCF variants, the visual mesh + texture, and every mesh
@@ -214,6 +216,45 @@ class GSOObject(HubAssetMeshObject):
             ]
         return required
 
+    def _load_collision_trimesh(self):
+        """Load and cache the union of the collision meshes.
+
+        GSO objects are simulated from the MJCF's V-HACD collision pieces, so
+        placement should use those bounds rather than the visual mesh bounds.
+        """
+        if self._collision_trimesh_cache is None:
+            import trimesh
+
+            self._ensure_assets()
+            root = xml_file_references(self.mjcf_file, attribute="file")
+            collision_files = [
+                self.asset_dir / ref
+                for ref in root
+                if Path(ref).name.startswith("model_collision_")
+            ]
+            if not collision_files:
+                self._collision_trimesh_cache = self._load_trimesh()
+                return self._collision_trimesh_cache
+
+            meshes = [
+                trimesh.load(collision_file, force="mesh")
+                for collision_file in collision_files
+            ]
+            if len(meshes) == 1:
+                mesh = meshes[0]
+            else:
+                mesh = trimesh.util.concatenate(meshes)
+            mesh.apply_scale(self.scale)
+            self._collision_trimesh_cache = mesh
+        return self._collision_trimesh_cache
+
+    def get_local_bounding_box(self, entity):
+        collision_mesh = self._load_collision_trimesh()
+        return make_bbox(
+            torch.from_numpy(collision_mesh.bounds[0].copy()),
+            torch.from_numpy(collision_mesh.bounds[1].copy()),
+        )
+
     def load_into_scene(
         self,
         world: "GenesisWorld",
@@ -230,6 +271,7 @@ class GSOObject(HubAssetMeshObject):
             scale=self._morph_scale,
             pos=pos,
             quat=quat,
+            align=False,
             batch_fixed_verts=batch_fixed_verts,
             requires_jac_and_IK=False,
         )

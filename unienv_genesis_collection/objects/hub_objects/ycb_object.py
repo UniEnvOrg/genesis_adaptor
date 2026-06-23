@@ -216,6 +216,7 @@ class YCBObject(HubAssetMeshObject):
             scale=self._morph_scale,
             pos=pos,
             quat=quat,
+            align=False,
             fixed=self.fixed,
             batch_fixed_verts=batch_fixed_verts,
         )

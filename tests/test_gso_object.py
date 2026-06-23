@@ -62,6 +62,17 @@ _OBJECT_FILES = (
     "model_collision_1.obj",
 )
 
+_OBJ_TEMPLATE = """\
+v {x0} {y0} {z0}
+v {x1} {y0} {z0}
+v {x0} {y1} {z0}
+v {x0} {y0} {z1}
+f 1 2 3
+f 1 2 4
+f 1 3 4
+f 2 3 4
+"""
+
 
 def _load_prepare_script():
     spec = importlib.util.spec_from_file_location(
@@ -250,6 +261,52 @@ def test_overrides(assets_dir):
     obj = GSOObject(_SAMPLE_ID, name="lamp", language_annotations=["tiny lamp"])
     assert obj.name == "lamp"
     assert obj.language_annotations == ("tiny lamp",)
+
+
+def test_local_bounding_box_uses_collision_mesh_bounds(fake_object, no_download):
+    (fake_object / "model.obj").write_text(
+        _OBJ_TEMPLATE.format(x0=0, y0=0, z0=0, x1=1, y1=1, z1=1)
+    )
+    (fake_object / "model_collision_0.obj").write_text(
+        _OBJ_TEMPLATE.format(x0=-2, y0=-1, z0=-3, x1=-1, y1=0, z1=-2)
+    )
+    (fake_object / "model_collision_1.obj").write_text(
+        _OBJ_TEMPLATE.format(x0=3, y0=4, z0=5, x1=6, y1=7, z1=8)
+    )
+
+    obj = GSOObject(_SAMPLE_ID)
+    bbox = obj.get_local_bounding_box(entity=None)
+    assert torch.allclose(
+        bbox.low,
+        torch.tensor([-2.0, -1.0, -3.0], dtype=bbox.low.dtype),
+    )
+    assert torch.allclose(
+        bbox.high,
+        torch.tensor([6.0, 7.0, 8.0], dtype=bbox.high.dtype),
+    )
+
+
+def test_local_bounding_box_ignores_unreferenced_collision_mesh(fake_object, no_download):
+    (fake_object / "model_collision_0.obj").write_text(
+        _OBJ_TEMPLATE.format(x0=0, y0=0, z0=0, x1=1, y1=1, z1=1)
+    )
+    (fake_object / "model_collision_1.obj").write_text(
+        _OBJ_TEMPLATE.format(x0=2, y0=2, z0=2, x1=3, y1=3, z1=3)
+    )
+    (fake_object / "model_collision_999.obj").write_text(
+        _OBJ_TEMPLATE.format(x0=100, y0=100, z0=100, x1=101, y1=101, z1=101)
+    )
+
+    obj = GSOObject(_SAMPLE_ID)
+    bbox = obj.get_local_bounding_box(entity=None)
+    assert torch.allclose(
+        bbox.low,
+        torch.tensor([0.0, 0.0, 0.0], dtype=bbox.low.dtype),
+    )
+    assert torch.allclose(
+        bbox.high,
+        torch.tensor([3.0, 3.0, 3.0], dtype=bbox.high.dtype),
+    )
 
 
 # ------------------------------------------------------------------
