@@ -12,6 +12,7 @@ Covers:
 import math
 import torch
 import genesis as gs
+import pytest
 from genesis.constants import backend as gs_backend
 
 if not gs._initialized:
@@ -21,16 +22,21 @@ from unienv_genesis import GenesisWorld
 from unienv_genesis_collection.scenes.plane_builder import PlaneBuilder
 from unienv_genesis_collection.scenes.cached_table_builder import CachedTableBuilder
 from unienv_genesis_collection.objects import BoxObject
+from unienv_genesis_collection.objects.base_object import GraspCandidates
 from unienv_genesis_collection.tasks.tabletop import (
     ReachTargetTask,
     ObjectRelocateTask,
 )
 from unienv_genesis_refpolicy.implementations.goto_lambda_policy import GoToLambdaRefPolicy
+from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
+from unienv_genesis_refpolicy.implementations.move_object_policy import MoveObjectPolicy
+from unienv_genesis_refpolicy.implementations.move_object_lambda_policy import MoveObjectLambdaPolicy
 from unienv_genesis_refpolicy.implementations.pickplace_policy import PickPlaceRefPolicy
 from unienv_genesis_refpolicy.implementations.combined_policy import CombinedRefPolicy
 from unienv_genesis_refpolicy.implementations.graph_policy import GraphRefPolicy
 from unienv_genesis_refpolicy.implementations.grasp_policy import BoxGripperGraspPolicy
 from unienv_genesis_refpolicy.implementations.repeat_action_policy import RepeatActionRefPolicy
+from unienv_genesis_refpolicy.grasp_providers.base import GraspCandidateProvider
 from unienv_interface.space import DictSpace, BoxSpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend
 from unienv_interface.world import WorldEnv
@@ -99,8 +105,12 @@ class _MockGripperController:
     approach_direction = [0.0, 0.0, 1.0]
     open_direction = [0.0, 1.0, 0.0]
 
+    def __init__(self, grasping=True):
+        self._grasping = grasping
+
     def is_grasping(self, target_entity):
-        return None
+        del target_entity
+        return self._grasping
 
     def get_action_dict(self, action, dt=None):
         return {"action": action}
@@ -114,6 +124,18 @@ class _MockGripperController:
                 shape=(1,), dtype=torch.float32,
             )},
         )
+
+
+class _MockPoseEntity:
+    def __init__(self, pos, quat, world):
+        self._pos = torch.tensor(pos, dtype=torch.float32, device=world.device)
+        self._quat = torch.tensor(quat, dtype=torch.float32, device=world.device)
+
+    def get_pos(self):
+        return self._pos
+
+    def get_quat(self):
+        return self._quat
 
 
 # ------------------------------------------------------------------
@@ -341,8 +363,206 @@ def test_pickplace_policy_construction():
             f"Node '{name}' should be CombinedRefPolicy, got {type(graph._node_policies[name])}"
     assert isinstance(graph._node_policies["release"], CombinedRefPolicy)
 
+    for name in ["lift", "move_to_goal", "lower", "release"]:
+        arm_policy = graph._node_policies[name]._policies["arm"]
+        assert isinstance(arm_policy, MoveObjectLambdaPolicy), \
+            f"Node '{name}' arm policy should be MoveObjectLambdaPolicy, got {type(arm_policy)}"
+    retreat_arm = graph._node_policies["retreat"]._policies["arm"]
+    assert isinstance(retreat_arm, GoToLambdaRefPolicy), \
+        f"Retreat arm policy should be GoToLambdaRefPolicy, got {type(retreat_arm)}"
+
     print("  PASS: pickplace policy graph structure correct")
     env.close()
+
+
+def test_move_object_policy_preserves_grasp_offset_position_only():
+    world = GenesisWorld()
+    mock_eef = _MockEEFController(
+        world,
+        pos=(0.30, 0.08, 0.46),
+        quat=(1.0, 0.0, 0.0, 0.0),
+    )
+    entity = _MockPoseEntity(
+        pos=(0.25, 0.10, 0.30),
+        quat=(1.0, 0.0, 0.0, 0.0),
+        world=world,
+    )
+    policy = MoveObjectPolicy(
+        world=world,
+        controller=mock_eef,
+        object_entity=entity,
+        target_pos=torch.tensor([0.40, -0.05, 0.50]),
+        target_quat=None,
+        stall_seconds=0,
+    )
+    policy.reset()
+
+    expected_offset = torch.tensor([0.05, -0.02, 0.16], device=world.device)
+    expected_pos = torch.tensor([0.45, -0.07, 0.66], device=world.device)
+    assert torch.allclose(policy.target_pos, expected_pos, atol=1e-5)
+    assert torch.allclose(policy.target_quat, torch.tensor([1.0, 0.0, 0.0, 0.0], device=world.device), atol=1e-5)
+    assert torch.allclose(policy.target_pos - torch.tensor([0.40, -0.05, 0.50], device=world.device), expected_offset, atol=1e-5)
+
+
+def test_move_object_policy_rotates_preserved_offset_and_quaternion():
+    from xbarray.transformations.rotation_conversions.pytorch import (
+        quaternion_apply,
+        quaternion_multiply,
+    )
+
+    world = GenesisWorld()
+    q_rel = torch.tensor([0.9238795, 0.0, 0.3826834, 0.0], dtype=torch.float32, device=world.device)
+    q_target = torch.tensor([0.7071068, 0.0, 0.0, 0.7071068], dtype=torch.float32, device=world.device)
+    obj_pos = torch.tensor([0.25, 0.10, 0.30], dtype=torch.float32, device=world.device)
+    rel_pos = torch.tensor([0.05, -0.02, 0.16], dtype=torch.float32, device=world.device)
+    eef_pos = obj_pos + rel_pos
+    mock_eef = _MockEEFController(world, pos=tuple(float(v) for v in eef_pos.cpu()), quat=tuple(float(v) for v in q_rel.cpu()))
+    entity = _MockPoseEntity(pos=tuple(float(v) for v in obj_pos.cpu()), quat=(1.0, 0.0, 0.0, 0.0), world=world)
+    target_pos = torch.tensor([0.40, -0.05, 0.50], dtype=torch.float32, device=world.device)
+    policy = MoveObjectPolicy(
+        world=world,
+        controller=mock_eef,
+        object_entity=entity,
+        target_pos=target_pos,
+        target_quat=q_target,
+        stall_seconds=0,
+    )
+    policy.reset()
+
+    expected_pos = target_pos + quaternion_apply(q_target, rel_pos)
+    expected_quat = quaternion_multiply(q_target, q_rel)
+    assert torch.allclose(policy.target_pos, expected_pos, atol=1e-5)
+    assert torch.allclose(policy.target_quat, expected_quat, atol=1e-5)
+
+
+def test_move_object_policy_fails_on_position_slip():
+    world = GenesisWorld()
+    mock_eef = _MockEEFController(world, pos=(0.30, 0.08, 0.46), quat=(1.0, 0.0, 0.0, 0.0))
+    entity = _MockPoseEntity(pos=(0.25, 0.10, 0.30), quat=(1.0, 0.0, 0.0, 0.0), world=world)
+    policy = MoveObjectPolicy(
+        world=world,
+        controller=mock_eef,
+        object_entity=entity,
+        target_pos=torch.tensor([0.40, -0.05, 0.50]),
+        slip_position_threshold=0.01,
+        stall_seconds=0,
+    )
+    policy.reset()
+    mock_eef._pos = torch.tensor([0.35, 0.08, 0.46], dtype=torch.float32, device=world.device)
+    policy.step()
+    assert policy.get_failure() is True
+
+
+def test_move_object_policy_fails_on_orientation_slip():
+    world = GenesisWorld()
+    mock_eef = _MockEEFController(world, pos=(0.30, 0.08, 0.46), quat=(1.0, 0.0, 0.0, 0.0))
+    entity = _MockPoseEntity(pos=(0.25, 0.10, 0.30), quat=(1.0, 0.0, 0.0, 0.0), world=world)
+    policy = MoveObjectPolicy(
+        world=world,
+        controller=mock_eef,
+        object_entity=entity,
+        target_pos=torch.tensor([0.40, -0.05, 0.50]),
+        slip_orientation_threshold=0.05,
+        stall_seconds=0,
+    )
+    policy.reset()
+    mock_eef._quat = torch.tensor([0.7071068, 0.0, 0.7071068, 0.0], dtype=torch.float32, device=world.device)
+    policy.step()
+    assert policy.get_failure() is True
+
+
+def test_move_object_policy_optional_contact_loss_failure():
+    world = GenesisWorld()
+    mock_eef = _MockEEFController(world, pos=(0.30, 0.08, 0.46), quat=(1.0, 0.0, 0.0, 0.0))
+    entity = _MockPoseEntity(pos=(0.25, 0.10, 0.30), quat=(1.0, 0.0, 0.0, 0.0), world=world)
+
+    gripper_a = _MockGripperController(grasping=True)
+    policy_a = MoveObjectPolicy(
+        world=world,
+        controller=mock_eef,
+        object_entity=entity,
+        target_pos=torch.tensor([0.40, -0.05, 0.50]),
+        gripper_controller=gripper_a,
+        fail_on_gripper_contact_loss=True,
+        stall_seconds=0,
+    )
+    policy_a.reset()
+    gripper_a._grasping = False
+    policy_a.step()
+    assert policy_a.get_failure() is True
+
+    gripper_b = _MockGripperController(grasping=True)
+    policy_b = MoveObjectPolicy(
+        world=world,
+        controller=mock_eef,
+        object_entity=entity,
+        target_pos=torch.tensor([0.40, -0.05, 0.50]),
+        gripper_controller=gripper_b,
+        fail_on_gripper_contact_loss=False,
+        stall_seconds=0,
+    )
+    policy_b.reset()
+    gripper_b._grasping = False
+    policy_b.step()
+    assert policy_b.get_failure() is False
+
+
+def test_move_object_policy_nonpositive_slip_thresholds_disable_checks():
+    world = GenesisWorld()
+    mock_eef = _MockEEFController(world, pos=(0.30, 0.08, 0.46), quat=(1.0, 0.0, 0.0, 0.0))
+    entity = _MockPoseEntity(pos=(0.25, 0.10, 0.30), quat=(1.0, 0.0, 0.0, 0.0), world=world)
+    policy = MoveObjectPolicy(
+        world=world,
+        controller=mock_eef,
+        object_entity=entity,
+        target_pos=torch.tensor([0.40, -0.05, 0.50]),
+        slip_position_threshold=0.0,
+        slip_orientation_threshold=-1.0,
+        stall_seconds=0,
+    )
+    policy.reset()
+    mock_eef._pos = torch.tensor([0.35, 0.08, 0.46], dtype=torch.float32, device=world.device)
+    mock_eef._quat = torch.tensor([0.7071068, 0.0, 0.7071068, 0.0], dtype=torch.float32, device=world.device)
+    policy.step()
+    assert policy.get_failure() is False
+
+
+def test_box_gripper_grasp_policy_uses_candidate_provider(monkeypatch):
+    world = GenesisWorld()
+    mock_arm = _MockEEFController(world, pos=(0.0, 0.0, 0.8))
+    mock_gripper = _MockGripperController()
+
+    class _FailingObject:
+        def list_box_gripper_grasping_candidates(self, *args, **kwargs):
+            raise AssertionError("geometry candidate path should not be used")
+
+    class _Provider(GraspCandidateProvider):
+        def propose(self, *, mask=None, seed=None):
+            del mask, seed
+            return GraspCandidates(
+                position=torch.tensor([[0.3, 0.1, 0.7]], dtype=torch.float32),
+                approach_direction=torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32),
+                opening_direction=torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32),
+            )
+
+    def _fake_reachable(_eef_ctrl, target_pos, target_quat, envs_idx=None):
+        del _eef_ctrl, target_quat, envs_idx
+        return torch.zeros(target_pos.shape[:-1] + (6,), dtype=torch.float32)
+
+    monkeypatch.setattr(GoToRefPolicy, "check_reachable_error", staticmethod(_fake_reachable))
+
+    policy = BoxGripperGraspPolicy(
+        world=world,
+        eef_controller=mock_arm,
+        gripper_controller=mock_gripper,
+        target_object=_FailingObject(),
+        target_entity=object(),
+        candidate_provider=_Provider(),
+    )
+    policy.reset()
+
+    assert not policy.get_failure()
+    assert torch.allclose(policy._target_grasp_pos, torch.tensor([0.3, 0.1, 0.7]))
 
 
 # ------------------------------------------------------------------

@@ -109,7 +109,7 @@ _DEFAULT_SUB_CONTROLLERS = {
         #   object (fingertip direction); eef_offset is measured along this.
         # open_direction: axis along which the fingers separate.
         "approach_direction": [0.0, 0.0, 1.0],
-        "open_direction": [0.0, 1.0, 0.0],
+        "open_direction": [1.0, 0.0, 0.0],
         "gripper_width": 0.085,
         "gripper_depth": 0.035,
         "gripper_open_action": -1.0,  # action value for fully open gripper

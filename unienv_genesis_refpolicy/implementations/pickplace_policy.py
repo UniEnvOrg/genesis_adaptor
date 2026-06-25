@@ -67,6 +67,9 @@ from unienv_genesis_collection.objects.base_object import ManipulatableObject
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
 from unienv_genesis_refpolicy.implementations.goto_lambda_policy import GoToLambdaRefPolicy
 from unienv_genesis_refpolicy.implementations.grasp_policy import BoxGripperGraspPolicy
+from unienv_genesis_refpolicy.implementations.move_object_lambda_policy import (
+    MoveObjectLambdaPolicy,
+)
 from unienv_genesis_refpolicy.implementations.repeat_action_policy import RepeatActionRefPolicy
 from unienv_genesis_refpolicy.implementations.combined_policy import CombinedRefPolicy
 from unienv_genesis_refpolicy.implementations.graph_policy import GraphRefPolicy
@@ -195,40 +198,56 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 success_keys=[eef_name],
             )
 
-        # 2. Lift — target is object position + lift_offset (gripper closed).
+        # 2. Lift — move the grasped object upward while preserving the current
+        # grasp transform (gripper closed).
         nodes["lift"] = _motion_node(
-            GoToLambdaRefPolicy(
+            MoveObjectLambdaPolicy(
                 world=world,
                 controller=eef_controller,
+                object_entity_fn=lambda: task.target_object_entity,
                 target_pos_fn=lambda: task.target_object_entity.get_pos().detach().float() + lift_offset,
+                gripper_controller=gripper_controller,
+                fail_on_gripper_contact_loss=True,
                 **goto_kwargs,
             ),
             gripper_close,
         )
 
-        # 3. Move to goal — target is goal_pos + lift_offset (gripper closed).
+        # 3. Move to goal — move the grasped object above the goal while
+        # preserving the grasp transform (gripper closed).
         nodes["move_to_goal"] = _motion_node(
-            GoToLambdaRefPolicy(
+            MoveObjectLambdaPolicy(
                 world=world,
                 controller=eef_controller,
+                object_entity_fn=lambda: task.target_object_entity,
                 target_pos_fn=lambda: task._goal_pos.detach().float() + lift_offset,
+                gripper_controller=gripper_controller,
+                fail_on_gripper_contact_loss=True,
                 **goto_kwargs,
             ),
             gripper_close,
         )
 
-        # 4. Lower — target is the goal position (gripper closed).
+        # 4. Lower — move the grasped object to the goal position while
+        # preserving the grasp transform (gripper closed).
         nodes["lower"] = _motion_node(
-            GoToLambdaRefPolicy(
+            MoveObjectLambdaPolicy(
                 world=world,
                 controller=eef_controller,
+                object_entity_fn=lambda: task.target_object_entity,
                 target_pos_fn=lambda: task._goal_pos.detach().float(),
+                gripper_controller=gripper_controller,
+                fail_on_gripper_contact_loss=True,
                 **goto_kwargs,
             ),
             gripper_close,
         )
 
-        # 5. Release (hold arm at goal position, open gripper for N steps)
+        # 5. Release (hold arm at its current EEF pose, open gripper for N steps).
+        # The arm just holds the pose it reached at the end of `lower`; it must
+        # NOT depend on object-contact tracking, since the gripper is opening
+        # and the object is being dropped. Orientation is preserved by relying
+        # on GoToLambdaRefPolicy's default current-orientation behavior.
         release_steps = max(1, int(release_seconds / float(world.world_timestep)))
         nodes["release"] = CombinedRefPolicy(
             world,
@@ -236,7 +255,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 eef_name: GoToLambdaRefPolicy(
                     world=world,
                     controller=eef_controller,
-                    target_pos_fn=lambda: task._goal_pos.detach().float(),
+                    target_pos_fn=lambda: eef_controller.get_eef_pose_absolute()[0].detach().float(),
                     **goto_kwargs,
                 ),
                 gripper_name: RepeatActionRefPolicy(
@@ -249,12 +268,13 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             success_keys=[gripper_name],
         )
 
-        # 6. Retreat — target is goal_pos + retreat_offset (gripper open).
+        # 6. Retreat — after release, retreat the EEF upward from its current
+        # pose (gripper open). This is EEF-centric, not object-centric.
         nodes["retreat"] = _motion_node(
             GoToLambdaRefPolicy(
                 world=world,
                 controller=eef_controller,
-                target_pos_fn=lambda: task._goal_pos.detach().float() + retreat_offset,
+                target_pos_fn=lambda: eef_controller.get_eef_pose_absolute()[0].detach().float() + retreat_offset,
                 **goto_kwargs,
             ),
             gripper_open,

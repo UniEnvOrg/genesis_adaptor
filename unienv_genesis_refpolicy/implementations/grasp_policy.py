@@ -1,6 +1,8 @@
 """BoxGripperGraspPolicy — grasp a ManipulatableObject with a parallel-jaw gripper."""
 
 from typing import Any, Callable, Dict, Optional, Union
+import json
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -23,6 +25,10 @@ from unienv_genesis.utils.batch_dim_utils import (
 )
 from unienv_genesis_collection.objects.base_object import ManipulatableObject, GraspCandidates
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy, require_eef_controller
+from unienv_genesis_refpolicy.grasp_providers.base import GraspCandidateProvider
+from unienv_genesis_refpolicy.grasp_providers.object_geometry import (
+    ObjectGeometryGraspCandidateProvider,
+)
 from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
 
 class GraspPhase:
@@ -111,6 +117,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         gripper_name: str = "gripper",
         ik_error_threshold: float = 0.05,
         filter_candidate_fn : Optional[Callable[[GraspCandidates], torch.Tensor]] = None,
+        candidate_provider: Optional[GraspCandidateProvider] = None,
     ) -> None:
         super().__init__(world)
 
@@ -150,6 +157,12 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self.gripper_depth = gripper_depth
         self.gripper_open_action = gripper_open_action
         self.gripper_close_action = gripper_close_action
+        self._candidate_provider = candidate_provider or ObjectGeometryGraspCandidateProvider(
+            target_object=target_object,
+            target_entity=target_entity,
+            gripper_width=gripper_width,
+            gripper_depth=gripper_depth,
+        )
 
         batch_size = world.batch_size
         device = world.device
@@ -189,6 +202,26 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._pre_grasp_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
         self._initial_eef_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
         self._initial_eef_quat = torch.zeros(quat_shape, dtype=torch.float32, device=device)
+        self._debug_last = {}
+
+    def save_debug(self, output_dir: str | Path) -> None:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        meta = {}
+        arrays = {}
+        for key, value in self._debug_last.items():
+            if isinstance(value, torch.Tensor):
+                arrays[key] = value.detach().to("cpu").numpy()
+            else:
+                meta[key] = value
+        if arrays:
+            import numpy as np
+
+            np.savez(output_dir / "grasp_policy_debug.npz", **arrays)
+        if meta:
+            (output_dir / "grasp_policy_debug.json").write_text(
+                json.dumps(meta, indent=2), encoding="utf-8"
+            )
 
     @torch.inference_mode()
     def reset(
@@ -205,16 +238,24 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         use_sub = batched and mask is not None
 
         # 1. Query grasp candidates (world coordinates).
-        candidates = self.target_object.list_box_gripper_grasping_candidates(
-            self.target_entity,
-            self.gripper_width,
-            gripper_depth=self.gripper_depth,
+        candidates = self._candidate_provider.propose(
+            mask=mask,
+            seed=seed,
         )
+        self._debug_last = {
+            "raw_candidate_count": int(
+                candidates.position.shape[1] if batched else candidates.position.shape[0]
+            ),
+            "raw_candidate_position": candidates.position.clone(),
+            "raw_candidate_approach": candidates.approach_direction.clone(),
+            "raw_candidate_opening": candidates.opening_direction.clone(),
+        }
 
         # 1b. Apply optional filter to remove unwanted candidates.
         keep: Optional[torch.Tensor] = None
         if self._filter_candidate_fn is not None:
             keep = self._filter_candidate_fn(candidates)
+            self._debug_last["filter_keep_mask"] = keep.clone() if isinstance(keep, torch.Tensor) else keep
             if not batched:
                 # keep: (N,) bool → index into candidate dim
                 idx = torch.where(keep)[0]
@@ -226,6 +267,12 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 keep = None
             # Batched filtering: mask out rejected candidates by setting
             # their error to inf later (per-env candidate sets differ).
+        self._debug_last["post_filter_candidate_count"] = int(
+            candidates.position.shape[1] if batched else candidates.position.shape[0]
+        )
+        self._debug_last["post_filter_candidate_position"] = candidates.position.clone()
+        self._debug_last["post_filter_candidate_approach"] = candidates.approach_direction.clone()
+        self._debug_last["post_filter_candidate_opening"] = candidates.opening_direction.clone()
 
         # Number of candidates: unbatched (N, 3) → shape[0], batched (B, N, 3) → shape[1].
         n_candidates = (
@@ -236,6 +283,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         if n_candidates == 0:
             # No valid grasps — mark as failed.
             self._zero_counters(mask)
+            self._debug_last["status"] = "no_candidates"
             if mask is not None:
                 self._failed[mask] = True
             else:
@@ -266,20 +314,24 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         pos_errors = torch.norm(ik_errors[..., :3], dim=-1)
         rot_errors = torch.norm(ik_errors[..., 3:], dim=-1)
         combined_errors = pos_errors + rot_errors
+        self._debug_last["combined_errors"] = combined_errors.clone()
         #    Apply candidate filter mask (batched path): set rejected
         #    candidates to inf so they are never selected.
         if keep is not None:
             combined_errors[~keep] = float('inf')
         #    Pick the candidate with the lowest combined error per env.
         best_idx = combined_errors.argmin(dim=-1)  # () or (M|B,)
+        self._debug_last["best_idx"] = best_idx.clone() if isinstance(best_idx, torch.Tensor) else int(best_idx)
 
         # IK quality gate: fail if the best candidate is unreachable.  The
         # flag is applied AFTER _zero_counters below so it isn't wiped.
         unreachable: Optional[torch.Tensor] = None
         if not batched:
             best_error = combined_errors[best_idx]
+            self._debug_last["best_error"] = float(best_error.item())
             if best_error.item() > self.ik_error_threshold:
                 self._zero_counters(mask)
+                self._debug_last["status"] = "ik_unreachable"
                 if mask is not None:
                     self._failed[mask] = True
                 else:
@@ -288,6 +340,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         else:
             best_error = combined_errors.gather(-1, best_idx.unsqueeze(-1)).squeeze(-1)
             unreachable = best_error > self.ik_error_threshold  # (M|B,)
+            self._debug_last["best_error"] = best_error.clone()
 
         if batched:
             gather_idx = best_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, 3)
@@ -299,12 +352,17 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             grasp_pos = cand_pos[idx]
             approach_dir = cand_approach[idx]
             opening_dir = cand_opening[idx]
+        self._debug_last["selected_grasp_pos"] = grasp_pos.clone()
+        self._debug_last["selected_approach_dir"] = approach_dir.clone()
+        self._debug_last["selected_opening_dir"] = opening_dir.clone()
 
         # 3. EEF quaternion from selected candidate's directions.
         grasp_quat = self._build_eef_quaternion(approach_dir, opening_dir)
+        self._debug_last["selected_grasp_quat"] = grasp_quat.clone()
 
         # 4. Pre-grasp position.
         pre_grasp_pos = grasp_pos - self.approach_distance * approach_dir
+        self._debug_last["selected_pre_grasp_pos"] = pre_grasp_pos.clone()
 
         # 5. Capture current EEF pose.
         eef_pos, eef_quat = self._eef_ctrl.get_eef_pose_absolute()
@@ -333,6 +391,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             self._initial_eef_quat.copy_(eef_quat)
 
         self._zero_counters(mask)
+        self._debug_last["status"] = "ok"
 
         # Apply the IK quality gate after counters were zeroed.
         if unreachable is not None:

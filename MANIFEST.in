@@ -1,6 +1,7 @@
 include README.md
 include LICENSE
 include CHANGELOG.md
+recursive-include unienv_genesis_refpolicy/third_party/contact_graspnet_pytorch *.yaml *.pdf
 
 # Collection assets are hosted on Hugging Face (UniEnvOrg/unienv_genesis_collection_assets)
 # and downloaded on demand at runtime; they are intentionally excluded from the package.

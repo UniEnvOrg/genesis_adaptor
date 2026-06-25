@@ -5,6 +5,11 @@ __nyx_cache__/
 # downloaded on demand via unienv_genesis_collection.asset_path. Not committed or packaged.
 unienv_genesis_collection/assets/
 
+# Contact-GraspNet model checkpoint — downloaded on demand by
+# ContactGraspNetGraspCandidateProvider when initializing the default
+# checkpoint directory. Not committed or packaged.
+unienv_genesis_refpolicy/third_party/contact_graspnet_pytorch/checkpoints/contact_graspnet/checkpoints/model.pt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
