@@ -191,6 +191,7 @@ class GSOObject(HubAssetMeshObject):
                 if language_annotations is not None
                 else info.language_annotations
             ),
+            visual_texture_file_name="texture.png",
         )
         self.object_id = object_id
         self.info = info
@@ -248,7 +249,7 @@ class GSOObject(HubAssetMeshObject):
             self._collision_trimesh_cache = mesh
         return self._collision_trimesh_cache
 
-    def get_local_bounding_box(self, entity):
+    def get_local_bounding_box(self):
         collision_mesh = self._load_collision_trimesh()
         return make_bbox(
             torch.from_numpy(collision_mesh.bounds[0].copy()),

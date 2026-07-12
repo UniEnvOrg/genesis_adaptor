@@ -1,9 +1,8 @@
 """Primitive-geometry ManipulatableObject subclasses.
 
 Each class wraps a Genesis primitive morph (Box, Sphere, Cylinder) and provides
-an analytic bounding box.  The ``entity`` parameter is accepted for interface
-consistency but not used by these implementations (dimensions are fixed at
-construction time).
+an analytic bounding box.  Dimensions are fixed at construction time, so the
+local bounding box does not depend on the loaded entity.
 """
 
 from __future__ import annotations
@@ -57,7 +56,7 @@ class BoxObject(ManipulatableObject):
         self.size = size
         self.color = color
 
-    def get_local_bounding_box(self, entity) -> "BoxSpace":
+    def get_local_bounding_box(self) -> "BoxSpace":
         half = torch.tensor(self.size) / 2.0
         return make_bbox(-half, half)
     def load_into_scene(
@@ -118,7 +117,7 @@ class SphereObject(ManipulatableObject):
         self.radius = radius
         self.color = color
 
-    def get_local_bounding_box(self, entity) -> "BoxSpace":
+    def get_local_bounding_box(self) -> "BoxSpace":
         r = self.radius
         return make_bbox(
             torch.tensor([-r, -r, -r]),
@@ -188,7 +187,7 @@ class CylinderObject(ManipulatableObject):
         self.height = height
         self.color = color
 
-    def get_local_bounding_box(self, entity) -> "BoxSpace":
+    def get_local_bounding_box(self) -> "BoxSpace":
         r = self.radius
         h = self.height / 2.0
         return make_bbox(

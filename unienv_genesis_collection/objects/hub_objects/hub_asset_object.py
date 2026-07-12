@@ -59,6 +59,13 @@ class HubAssetMeshObject(MeshObject):
         name: Technical identifier.
         fixed: Whether the object is immovable.
         language_annotations: Optional English-language descriptions.
+        visual_texture_file_name: Optional name of an image file inside
+            the object directory (e.g. ``"texture.png"`` for GSO,
+            ``"texture_map.png"`` for YCB) bound as the diffuse texture
+            when the descriptor is loaded as a bare visual mesh.  Resolved
+            against ``asset_dir`` and forwarded to
+            :class:`MeshObject` as ``visual_texture_path``.  ``None``
+            (the default) leaves the surface untextured.
     """
 
     def __init__(
@@ -69,17 +76,24 @@ class HubAssetMeshObject(MeshObject):
         name: str = "object",
         fixed: bool = False,
         language_annotations: Optional[Sequence[str]] = None,
+        visual_texture_file_name: Optional[str] = None,
     ):
         self.asset_relative_dir = asset_relative_dir
         # ASSETS_DIR is read via the module (and frozen here) so tests and
         # users can repoint it before constructing objects.
         self.asset_dir: Path = asset_path.ASSETS_DIR / asset_relative_dir
+        visual_texture_path = (
+            str(self.asset_dir / visual_texture_file_name)
+            if visual_texture_file_name is not None
+            else None
+        )
         super().__init__(
             mesh_file=self.asset_dir / mesh_file_name,
             scale=scale,
             name=name,
             fixed=fixed,
             language_annotations=language_annotations,
+            visual_texture_path=visual_texture_path,
         )
         self._assets_ready = False
 
@@ -116,6 +130,18 @@ class HubAssetMeshObject(MeshObject):
                     f"(missing: {missing_names}). Looked in {self.asset_dir}."
                 )
         self._assets_ready = True
+
+    def ensure_assets(self) -> None:
+        """Public façade over :meth:`_ensure_assets`.
+
+        Downstream consumers (e.g. managers that load this descriptor's raw
+        visual mesh directly via ``gs.morphs.Mesh(file=desc.mesh_file, ...)``
+        rather than via :meth:`load_into_scene`) need to ensure the Hub
+        directory is materialised before the file path is read by the
+        morph.  Calling this public helper keeps the manager decoupled from
+        the private (and historically named) ``_ensure_assets`` underscore API.
+        """
+        self._ensure_assets()
 
     # ------------------------------------------------------------------
     # MeshObject overrides

@@ -275,7 +275,7 @@ def test_local_bounding_box_uses_collision_mesh_bounds(fake_object, no_download)
     )
 
     obj = GSOObject(_SAMPLE_ID)
-    bbox = obj.get_local_bounding_box(entity=None)
+    bbox = obj.get_local_bounding_box()
     assert torch.allclose(
         bbox.low,
         torch.tensor([-2.0, -1.0, -3.0], dtype=bbox.low.dtype),
@@ -298,7 +298,7 @@ def test_local_bounding_box_ignores_unreferenced_collision_mesh(fake_object, no_
     )
 
     obj = GSOObject(_SAMPLE_ID)
-    bbox = obj.get_local_bounding_box(entity=None)
+    bbox = obj.get_local_bounding_box()
     assert torch.allclose(
         bbox.low,
         torch.tensor([0.0, 0.0, 0.0], dtype=bbox.low.dtype),
