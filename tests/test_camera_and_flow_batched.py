@@ -115,7 +115,7 @@ class MovingBoxNode(WorldNode):
 def _make_batched_camera_env():
     world = GenesisWorld(
         batch_size=N_ENVS,
-        scene_init_kwargs={"renderer": gs.renderers.BatchRenderer()},
+        scene_init_kwargs={"renderer": gs.renderers.BatchRenderer(use_rasterizer=True)},
     )
     box = MovingBoxNode(world)
     camera = CameraSensorNode(
@@ -208,7 +208,7 @@ def test_batched_camera_observation_space_matches():
 def _make_batched_flow_env(render_position: bool, render_depth: bool):
     world = GenesisWorld(
         batch_size=N_ENVS,
-        scene_init_kwargs={"renderer": gs.renderers.BatchRenderer()},
+        scene_init_kwargs={"renderer": gs.renderers.BatchRenderer(use_rasterizer=True)},
     )
     moving_box = MovingBoxNode(world, step_delta=(0.012, -0.004, 0.0))
     camera = CameraSensorNode(

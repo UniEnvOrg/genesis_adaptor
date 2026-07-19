@@ -5,23 +5,28 @@ multi-phase pick-and-place sequence using a :class:`GraphRefPolicy`:
 
     grasp → lift → move_to_goal → lower → release → retreat → (success)
 
-Each motion phase uses :class:`GoToLambdaRefPolicy` with callables that
-resolve the target at :meth:`reset` time, so targets depending on the
-current state or the task's per-episode goal are resolved when the node
-is entered — no factory callables needed.
+Each motion phase resolves its target from callables at :meth:`reset`
+time, so targets depending on the current state or the task's
+per-episode goal are resolved when the node is entered — no factory
+callables needed. The transport phases (``lift`` / ``move_to_goal`` /
+``lower``) use :class:`MoveObjectLambdaPolicy` to preserve the current
+object→EEF grasp transform, while ``release`` and ``retreat`` use
+:class:`GoToLambdaRefPolicy`.
 
 Phase details
 -------------
 
 1. **grasp** (:class:`BoxGripperGraspPolicy`) — approach, grasp the target
    object, and close the gripper.
-2. **lift** (:class:`GoToLambdaRefPolicy`) — lift the grasped object
-   straight up by ``lift_height`` metres from its current position.
-3. **move_to_goal** (:class:`GoToLambdaRefPolicy`) — move horizontally
-   to a point directly above the goal, at ``lift_height`` above the table
-   surface.
-4. **lower** (:class:`GoToLambdaRefPolicy`) — lower the object onto the
-   goal position on the table surface.
+2. **lift** (:class:`MoveObjectLambdaPolicy`) — lift the grasped
+   object straight up by ``lift_height`` metres from its current
+   position while preserving the current object→EEF grasp transform.
+3. **move_to_goal** (:class:`MoveObjectLambdaPolicy`) — move
+   horizontally to a point directly above the goal, at ``lift_height``
+   above the table surface, while preserving the grasp transform.
+4. **lower** (:class:`MoveObjectLambdaPolicy`) — lower the object onto
+   the goal position on the table surface while preserving the grasp
+   transform.
 5. **release** (:class:`RepeatActionRefPolicy`) — open the gripper for
    ``release_seconds`` to drop the object.
 6. **retreat** (:class:`GoToLambdaRefPolicy`) — retreat straight up by
@@ -54,7 +59,7 @@ Example::
             break
 """
 
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 
@@ -99,10 +104,35 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         release_seconds: Seconds to hold the gripper open during release.
         grasp_kwargs: Optional extra kwargs forwarded to
             :class:`BoxGripperGraspPolicy`.
-        goto_kwargs: Optional extra kwargs forwarded to each
-            :class:`GoToLambdaRefPolicy` motion phase
-            (``position_threshold``, ``orientation_threshold``,
-            ``stall_seconds``, ``max_seconds``, …).
+        goto_kwargs: Optional shared baseline kwargs forwarded to *every*
+            motion phase (:class:`GoToLambdaRefPolicy` and
+            :class:`MoveObjectLambdaPolicy`). Use this for options that
+            should apply uniformly, such as ``position_threshold``,
+            ``orientation_threshold``, ``stall_seconds``, ``max_seconds``.
+        transport_kwargs: Optional kwargs applied *only* to the transport
+            :class:`MoveObjectLambdaPolicy` phases (``lift``,
+            ``move_to_goal``, ``lower``). These override ``goto_kwargs``
+            when the same key is present in both. Use this for
+            MoveObject-only options such as ``slip_position_threshold`` /
+            ``slip_orientation_threshold`` (which ``GoToLambdaRefPolicy``
+            does not accept).
+        release_kwargs: Optional kwargs applied *only* to the ``release``
+            phase's arm :class:`GoToLambdaRefPolicy`, overriding
+            ``goto_kwargs``.
+        retreat_kwargs: Optional kwargs applied *only* to the ``retreat``
+            phase's arm :class:`GoToLambdaRefPolicy`, overriding
+            ``goto_kwargs``.
+        transport_slip_detection: Whether slip detection is enabled on the
+            transport (``lift`` / ``move_to_goal`` / ``lower``)
+            :class:`MoveObjectLambdaPolicy` phases at construction time.
+            Defaults to ``True`` (current behavior). When ``False``, the
+            transport phases start with slip detection disabled (thresholds
+            ``0.0`` and ``track_relative_pose=False``), exactly as if
+            :meth:`set_transport_slip_detection` had been called with
+            ``enabled=False`` right after construction. The
+            ``release`` / ``retreat`` phases are never affected, and the
+            construction-time slip defaults are still recorded so the
+            runtime setter can re-enable detection later.
     """
 
     def __init__(
@@ -120,6 +150,10 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         release_seconds: float = 1.0,
         grasp_kwargs: Optional[Dict[str, Any]] = None,
         goto_kwargs: Optional[Dict[str, Any]] = None,
+        transport_kwargs: Optional[Dict[str, Any]] = None,
+        release_kwargs: Optional[Dict[str, Any]] = None,
+        retreat_kwargs: Optional[Dict[str, Any]] = None,
+        transport_slip_detection: bool = True,
     ) -> None:
         super().__init__(world)
         self.controller = eef_controller
@@ -135,6 +169,16 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
 
         grasp_kwargs = dict(grasp_kwargs or {})
         goto_kwargs = dict(goto_kwargs or {})
+        # Phase-specific kwargs override the shared goto_kwargs baseline.
+        transport_merged = {**goto_kwargs, **(transport_kwargs or {})}
+        release_merged = {**goto_kwargs, **(release_kwargs or {})}
+        retreat_merged = {**goto_kwargs, **(retreat_kwargs or {})}
+
+        # Direct references to the transport MoveObjectLambdaPolicy instances
+        # and their construction-time slip defaults, used by
+        # :meth:`set_transport_slip_detection`.
+        self._transport_policies: List[MoveObjectLambdaPolicy] = []
+        self._transport_slip_defaults: List[Dict[str, Any]] = []
 
         # Resolve gripper open action for the release phase.
         gripper_open_action = grasp_kwargs.pop(
@@ -159,21 +203,27 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         # --- Build the graph ---
         nodes: Dict[str, Any] = {}
 
-        # 1. Grasp (factory — target_entity may be None until env.reset loads it)
-        def make_grasp():
-            entity = target_entity if target_entity is not None else task.target_object_entity
+        def _get_target_entity():
+            return target_entity if target_entity is not None else task.target_object_entity
+
+        def _require_target_entity():
+            entity = _get_target_entity()
             if entity is None:
                 raise RuntimeError(
                     "PickPlaceRefPolicy: target_entity is None. Call "
                     "env.reset(reload=True) before policy.reset() so the "
                     "task can load the target object into the scene."
                 )
+            return entity
+
+        # 1. Grasp (factory — target_entity may be None until env.reset loads it)
+        def make_grasp():
             return BoxGripperGraspPolicy(
                 world=world,
                 eef_controller=eef_controller,
                 gripper_controller=gripper_controller,
                 target_object=target_object,
-                target_entity=entity,
+                target_entity=_require_target_entity(),
                 eef_name=eef_name,
                 gripper_name=gripper_name,
                 **grasp_kwargs,
@@ -198,49 +248,43 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 success_keys=[eef_name],
             )
 
-        # 2. Lift — move the grasped object upward while preserving the current
-        # grasp transform (gripper closed).
-        nodes["lift"] = _motion_node(
-            MoveObjectLambdaPolicy(
+        # Helper: build a transport (MoveObject) phase node, register the
+        # underlying policy for later slip configuration, and capture its
+        # construction-time slip defaults.
+        def _transport_node(target_pos_fn):
+            move_object_policy = MoveObjectLambdaPolicy(
                 world=world,
                 controller=eef_controller,
-                object_entity_fn=lambda: task.target_object_entity,
-                target_pos_fn=lambda: task.target_object_entity.get_pos().detach().float() + lift_offset,
+                object_entity_fn=_get_target_entity,
+                target_pos_fn=target_pos_fn,
                 gripper_controller=gripper_controller,
                 fail_on_gripper_contact_loss=True,
-                **goto_kwargs,
-            ),
-            gripper_close,
+                **transport_merged,
+            )
+            self._transport_policies.append(move_object_policy)
+            self._transport_slip_defaults.append({
+                "slip_position_threshold": move_object_policy.slip_position_threshold,
+                "slip_orientation_threshold": move_object_policy.slip_orientation_threshold,
+                "track_relative_pose": move_object_policy.track_relative_pose,
+            })
+            return _motion_node(move_object_policy, gripper_close)
+
+        # 2. Lift — move the grasped object upward while preserving the current
+        # grasp transform (gripper closed).
+        nodes["lift"] = _transport_node(
+            lambda: _require_target_entity().get_pos().detach().float() + lift_offset,
         )
 
         # 3. Move to goal — move the grasped object above the goal while
         # preserving the grasp transform (gripper closed).
-        nodes["move_to_goal"] = _motion_node(
-            MoveObjectLambdaPolicy(
-                world=world,
-                controller=eef_controller,
-                object_entity_fn=lambda: task.target_object_entity,
-                target_pos_fn=lambda: task._goal_pos.detach().float() + lift_offset,
-                gripper_controller=gripper_controller,
-                fail_on_gripper_contact_loss=True,
-                **goto_kwargs,
-            ),
-            gripper_close,
+        nodes["move_to_goal"] = _transport_node(
+            lambda: task._goal_pos.detach().float() + lift_offset,
         )
 
         # 4. Lower — move the grasped object to the goal position while
         # preserving the grasp transform (gripper closed).
-        nodes["lower"] = _motion_node(
-            MoveObjectLambdaPolicy(
-                world=world,
-                controller=eef_controller,
-                object_entity_fn=lambda: task.target_object_entity,
-                target_pos_fn=lambda: task._goal_pos.detach().float(),
-                gripper_controller=gripper_controller,
-                fail_on_gripper_contact_loss=True,
-                **goto_kwargs,
-            ),
-            gripper_close,
+        nodes["lower"] = _transport_node(
+            lambda: task._goal_pos.detach().float(),
         )
 
         # 5. Release (hold arm at its current EEF pose, open gripper for N steps).
@@ -256,7 +300,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                     world=world,
                     controller=eef_controller,
                     target_pos_fn=lambda: eef_controller.get_eef_pose_absolute()[0].detach().float(),
-                    **goto_kwargs,
+                    **release_merged,
                 ),
                 gripper_name: RepeatActionRefPolicy(
                     world=world,
@@ -275,7 +319,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 world=world,
                 controller=eef_controller,
                 target_pos_fn=lambda: eef_controller.get_eef_pose_absolute()[0].detach().float() + retreat_offset,
-                **goto_kwargs,
+                **retreat_merged,
             ),
             gripper_open,
         )
@@ -300,7 +344,73 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             initial="grasp",
         )
 
+        # Apply the requested initial transport slip-detection state. This
+        # goes through the same code path as the runtime setter so both stay
+        # consistent; the recorded construction-time defaults are preserved
+        # either way, and release/retreat are never touched.
+        if not transport_slip_detection:
+            self.set_transport_slip_detection(False)
+
     # --- Lifecycle delegation ---
+
+    def set_transport_slip_detection(
+        self,
+        enabled: bool,
+        *,
+        position_threshold: Optional[float] = None,
+        orientation_threshold: Optional[float] = None,
+        track_relative_pose: Optional[bool] = None,
+    ) -> None:
+        """Configure slip detection on the transport (MoveObject) phases only.
+
+        This is the public, supported way to toggle slip detection on the
+        ``lift`` / ``move_to_goal`` / ``lower`` transport phases without
+        reaching into the underlying graph.  The ``release`` and ``retreat``
+        (GoToLambdaRefPolicy) phases are *not* affected — they do not perform
+        object slip tracking.
+
+        Args:
+            enabled: When ``False``, slip detection is disabled on the
+                transport phases by defaulting the thresholds to ``0.0`` and
+                ``track_relative_pose`` to ``False`` (unless explicitly
+                overridden below). When ``True`` with no explicit overrides,
+                the transport phases are restored to their construction-time
+                slip defaults (i.e. the values ultimately resolved from
+                ``goto_kwargs`` / ``transport_kwargs`` at ``__init__`` time).
+            position_threshold: Optional override for
+                ``slip_position_threshold``. ``None`` means use the disabling
+                default (``0.0``) when disabling, or the construction-time
+                default when enabling.
+            orientation_threshold: Optional override for
+                ``slip_orientation_threshold`` (same ``None`` semantics).
+            track_relative_pose: Optional override for
+                ``track_relative_pose`` (same ``None`` semantics; disabling
+                default is ``False``).
+        """
+        for policy, defaults in zip(self._transport_policies, self._transport_slip_defaults):
+            if enabled:
+                pos = (
+                    defaults["slip_position_threshold"]
+                    if position_threshold is None
+                    else float(position_threshold)
+                )
+                orn = (
+                    defaults["slip_orientation_threshold"]
+                    if orientation_threshold is None
+                    else float(orientation_threshold)
+                )
+                trk = (
+                    defaults["track_relative_pose"]
+                    if track_relative_pose is None
+                    else bool(track_relative_pose)
+                )
+            else:
+                pos = 0.0 if position_threshold is None else float(position_threshold)
+                orn = 0.0 if orientation_threshold is None else float(orientation_threshold)
+                trk = False if track_relative_pose is None else bool(track_relative_pose)
+            policy.slip_position_threshold = pos
+            policy.slip_orientation_threshold = orn
+            policy.track_relative_pose = trk
 
     def reset(self, *, mask=None, seed=None) -> None:
         self._graph.reset(mask=mask, seed=seed)

@@ -84,7 +84,7 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
                 "unbatched environments."
             )
 
-    def _target_segmap(self, raw_seg: torch.Tensor) -> np.ndarray:
+    def _target_segmap(self, raw_seg: torch.Tensor) -> torch.Tensor:
         if self._seg_index is None:
             self._camera_port.validate()
             self._seg_index = self._camera_port.build_segmentation_index()
@@ -102,15 +102,23 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
                 "and the target is visible to the camera."
             )
 
-        seg_np = raw_seg.detach().to("cpu").numpy()
-        out = np.zeros_like(seg_np, dtype=np.int32)
-        mask = np.isin(seg_np, np.asarray(target_seg_ids))
+        seg = raw_seg.detach()
+        out = torch.zeros_like(seg, dtype=torch.int32)
+        target_ids = torch.as_tensor(
+            list(target_seg_ids), dtype=seg.dtype, device=seg.device
+        )
+        mask = torch.isin(seg, target_ids)
         out[mask] = 1
         return out
 
     @staticmethod
-    def _to_numpy(x: torch.Tensor) -> np.ndarray:
-        return x.detach().to("cpu").numpy()
+    def _debug_array(x) -> np.ndarray:
+        """Coerce a torch/numpy/scalar to a NumPy array for npz serialization."""
+        if isinstance(x, torch.Tensor):
+            return x.detach().to("cpu").numpy()
+        if isinstance(x, np.ndarray):
+            return x
+        return np.asarray(x)
 
     def save_debug(self, output_dir: str | Path) -> None:
         if self.last_debug is None:
@@ -243,31 +251,26 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
 
     def _grasps_cam_to_world_candidates(
         self,
-        grasps_cam: np.ndarray,
+        grasps_cam: torch.Tensor,
         extrinsics_cv: torch.Tensor,
     ) -> GraspCandidates:
-        world_to_cam = np.eye(4, dtype=np.float32)
-        world_to_cam[:3, :] = self._to_numpy(extrinsics_cv)
-        cam_to_world = np.linalg.inv(world_to_cam)
-        grasps_world = np.einsum("ij,njk->nik", cam_to_world, grasps_cam)
+        world_to_cam = torch.eye(4, dtype=torch.float32, device=self.world.device)
+        world_to_cam[:3, :] = extrinsics_cv.to(dtype=torch.float32, device=self.world.device)
+        cam_to_world = torch.linalg.inv(world_to_cam)
+        grasps_cam = grasps_cam.to(dtype=torch.float32, device=self.world.device)
+        grasps_world = torch.einsum("ij,njk->nik", cam_to_world, grasps_cam)
 
         opening = grasps_world[:, :3, 0]
         approach = grasps_world[:, :3, 2]
-        opening /= np.linalg.norm(opening, axis=-1, keepdims=True)
-        approach /= np.linalg.norm(approach, axis=-1, keepdims=True)
+        opening = opening / (opening.norm(dim=-1, keepdim=True) + 1e-12)
+        approach = approach / (approach.norm(dim=-1, keepdim=True) + 1e-12)
         position = grasps_world[:, :3, 3] + self.contact_graspnet_gripper_depth * approach
 
         dtype = torch.float32 if self.world.dtype is None else self.world.dtype
         return GraspCandidates(
-            position=torch.from_numpy(np.ascontiguousarray(position)).to(
-                device=self.world.device, dtype=dtype,
-            ),
-            approach_direction=torch.from_numpy(np.ascontiguousarray(approach)).to(
-                device=self.world.device, dtype=dtype,
-            ),
-            opening_direction=torch.from_numpy(np.ascontiguousarray(opening)).to(
-                device=self.world.device, dtype=dtype,
-            ),
+            position=position.to(device=self.world.device, dtype=dtype),
+            approach_direction=approach.to(device=self.world.device, dtype=dtype),
+            opening_direction=opening.to(device=self.world.device, dtype=dtype),
         )
 
     def propose(
@@ -276,7 +279,7 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
         mask: Optional[torch.Tensor] = None,
         seed: Optional[int] = None,
     ) -> GraspCandidates:
-        del mask, seed
+        del mask
         self._require_unbatched()
         obs = self.camera_node.get_observation()
         required = ("depth", "intrinsics_cv", "extrinsics_cv", "seg")
@@ -288,28 +291,29 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
             )
 
         segmap = self._target_segmap(obs["seg"])
-        if not np.any(segmap == 1):
+        if not bool((segmap == 1).any()):
             self.last_debug = {
                 "meta": {"status": "empty_target_segmap"},
-                "arrays": {"segmap": segmap.astype(np.int32)},
+                "arrays": {"segmap": self._debug_array(segmap)},
             }
             return GraspCandidates.empty(device=self.world.device, dtype=self.world.dtype)
 
         estimator = self._ensure_model()
-        rgb = self._to_numpy(obs["rgb"]) if "rgb" in obs else None
+        rgb = obs["rgb"] if "rgb" in obs else None
         with torch.no_grad():
             pred_grasps_cam, scores, _contact_pts, openings = (
                 estimator.predict_scene_grasps_from_depth_K_and_2d_seg(
                     None,
-                    self._to_numpy(obs["depth"]),
+                    obs["depth"],
                     segmap,
-                    self._to_numpy(obs["intrinsics_cv"]),
+                    obs["intrinsics_cv"],
                     z_range=list(self.z_range),
                     local_regions=self.local_regions,
                     filter_grasps=self.filter_grasps,
                     segmap_id=1,
                     rgb=rgb,
                     forward_passes=self.forward_passes,
+                    seed=seed,
                 )
             )
 
@@ -321,25 +325,25 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
                     "available_keys": sorted(int(k) for k in pred_grasps_cam.keys()),
                 },
                 "arrays": {
-                    "segmap": segmap.astype(np.int32),
-                    "depth": self._to_numpy(obs["depth"]),
-                    "intrinsics_cv": self._to_numpy(obs["intrinsics_cv"]),
-                    "extrinsics_cv": self._to_numpy(obs["extrinsics_cv"]),
+                    "segmap": self._debug_array(segmap),
+                    "depth": self._debug_array(obs["depth"]),
+                    "intrinsics_cv": self._debug_array(obs["intrinsics_cv"]),
+                    "extrinsics_cv": self._debug_array(obs["extrinsics_cv"]),
                 },
             }
             return GraspCandidates.empty(device=self.world.device, dtype=self.world.dtype)
 
-        grasps_cam = np.asarray(pred_grasps_cam[key], dtype=np.float32)
-        scores = np.asarray(scores[key], dtype=np.float32).reshape(-1)
-        openings = np.asarray(openings[key], dtype=np.float32).reshape(-1)
-        raw_grasps_cam = grasps_cam.copy()
-        raw_scores = scores.copy()
-        raw_openings = openings.copy()
+        grasps_cam = pred_grasps_cam[key].to(torch.float32)
+        scores = scores[key].to(torch.float32).reshape(-1)
+        openings = openings[key].to(torch.float32).reshape(-1)
+        raw_grasps_cam = grasps_cam.clone()
+        raw_scores = scores.clone()
+        raw_openings = openings.clone()
 
-        if grasps_cam.size == 0:
+        if grasps_cam.numel() == 0:
             return GraspCandidates.empty(device=self.world.device, dtype=self.world.dtype)
 
-        order = np.argsort(scores)[::-1]
+        order = torch.argsort(scores, descending=True)
         grasps_cam = grasps_cam[order]
         scores = scores[order]
         openings = openings[order]
@@ -352,7 +356,7 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
             grasps_cam = grasps_cam[: self.max_candidates]
             scores = scores[: self.max_candidates]
             openings = openings[: self.max_candidates]
-        if grasps_cam.size == 0:
+        if grasps_cam.numel() == 0:
             self.last_debug = {
                 "meta": {
                     "status": "all_grasps_filtered",
@@ -360,13 +364,13 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
                     "width_limit": self.gripper_width_limit,
                 },
                 "arrays": {
-                    "raw_grasp_poses_cam": raw_grasps_cam,
-                    "raw_scores": raw_scores,
-                    "raw_openings": raw_openings,
-                    "segmap": segmap.astype(np.int32),
-                    "depth": self._to_numpy(obs["depth"]),
-                    "intrinsics_cv": self._to_numpy(obs["intrinsics_cv"]),
-                    "extrinsics_cv": self._to_numpy(obs["extrinsics_cv"]),
+                    "raw_grasp_poses_cam": self._debug_array(raw_grasps_cam),
+                    "raw_scores": self._debug_array(raw_scores),
+                    "raw_openings": self._debug_array(raw_openings),
+                    "segmap": self._debug_array(segmap),
+                    "depth": self._debug_array(obs["depth"]),
+                    "intrinsics_cv": self._debug_array(obs["intrinsics_cv"]),
+                    "extrinsics_cv": self._debug_array(obs["extrinsics_cv"]),
                 },
             }
             return GraspCandidates.empty(device=self.world.device, dtype=self.world.dtype)
@@ -383,19 +387,19 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
                 "selected_segmap_key": int(key),
             },
             "arrays": {
-                "raw_grasp_poses_cam": raw_grasps_cam,
-                "raw_scores": raw_scores,
-                "raw_openings": raw_openings,
-                "filtered_grasp_poses_cam": grasps_cam,
-                "filtered_scores": scores,
-                "filtered_openings": openings,
-                "candidate_positions_world": self._to_numpy(candidates.position),
-                "candidate_approach_world": self._to_numpy(candidates.approach_direction),
-                "candidate_opening_world": self._to_numpy(candidates.opening_direction),
-                "segmap": segmap.astype(np.int32),
-                "depth": self._to_numpy(obs["depth"]),
-                "intrinsics_cv": self._to_numpy(obs["intrinsics_cv"]),
-                "extrinsics_cv": self._to_numpy(obs["extrinsics_cv"]),
+                "raw_grasp_poses_cam": self._debug_array(raw_grasps_cam),
+                "raw_scores": self._debug_array(raw_scores),
+                "raw_openings": self._debug_array(raw_openings),
+                "filtered_grasp_poses_cam": self._debug_array(grasps_cam),
+                "filtered_scores": self._debug_array(scores),
+                "filtered_openings": self._debug_array(openings),
+                "candidate_positions_world": self._debug_array(candidates.position),
+                "candidate_approach_world": self._debug_array(candidates.approach_direction),
+                "candidate_opening_world": self._debug_array(candidates.opening_direction),
+                "segmap": self._debug_array(segmap),
+                "depth": self._debug_array(obs["depth"]),
+                "intrinsics_cv": self._debug_array(obs["intrinsics_cv"]),
+                "extrinsics_cv": self._debug_array(obs["extrinsics_cv"]),
             },
         }
         return candidates

@@ -311,37 +311,6 @@ def init_env(
     return WorldEnv(world, nodes, render_mode="auto")
 
 
-def _disable_move_object_slip(policy: PickPlaceRefPolicy, eef_name: str = "arm") -> None:
-    """Zero out slip thresholds on the move-object phases of a pick-place policy.
-
-    ``PickPlaceRefPolicy`` forwards ``goto_kwargs`` to *every* motion phase,
-    including the EEF-centric ``retreat`` (a :class:`GoToLambdaRefPolicy`),
-    which does not accept slip thresholds. To keep ``retreat`` untouched while
-    still disabling slip detection during transport, reach into the already
-    constructed graph and set ``slip_position_threshold`` /
-    ``slip_orientation_threshold`` to ``0.0`` on the underlying
-    :class:`MoveObjectLambdaPolicy` instances for the relevant phases only.
-
-    This also disables per-step recomputation of the object→EEF relative pose
-    (``track_relative_pose = False``) on the same move-object phases, so the
-    transport relies solely on the transform cached at reset instead of
-    querying the object/EEF pose every frame.
-    """
-    move_object_phases = ("lift", "move_to_goal", "lower", "release")
-    node_policies = policy._graph._node_policies
-    for phase in move_object_phases:
-        combined = node_policies.get(phase)
-        if combined is None:
-            # Lazily-created factory node; not expected for these phases.
-            continue
-        move_object_policy = combined._policies.get(eef_name)
-        if move_object_policy is None:
-            continue
-        move_object_policy.slip_position_threshold = 0.0
-        move_object_policy.slip_orientation_threshold = 0.0
-        move_object_policy.track_relative_pose = False
-
-
 def init_ref_policy(env: WorldEnv, *, top_down_only: bool) -> PickPlaceRefPolicy:
     world: GenesisWorld = env.get_wrapper_attr("world")
     franka: FrankaFR3WithRobotiq2F85 = env.get_nodes_by_type(FrankaFR3WithRobotiq2F85)[0]
@@ -366,10 +335,9 @@ def init_ref_policy(env: WorldEnv, *, top_down_only: bool) -> PickPlaceRefPolicy
     )
     # Disable slip detection during the move-object phases so the policy does
     # not abort transport on small object drift (dataset rendering should not
-    # terminate early due to slip). Applied post-construction so the
-    # ``retreat`` GoToLambda phase (which does not accept slip kwargs) is not
-    # affected.
-    _disable_move_object_slip(policy, eef_name="arm")
+    # terminate early due to slip). Only the transport phases are affected;
+    # the release/retreat GoToLambda phases are untouched.
+    policy.set_transport_slip_detection(False)
     return policy
 
 
@@ -407,10 +375,9 @@ def init_ref_policy_with_contact_graspnet(
     )
     # Disable slip detection during the move-object phases so the policy does
     # not abort transport on small object drift (dataset rendering should not
-    # terminate early due to slip). Applied post-construction so the
-    # ``retreat`` GoToLambda phase (which does not accept slip kwargs) is not
-    # affected.
-    _disable_move_object_slip(policy, eef_name="arm")
+    # terminate early due to slip). Only the transport phases are affected;
+    # the release/retreat GoToLambda phases are untouched.
+    policy.set_transport_slip_detection(False)
     return policy
 
 

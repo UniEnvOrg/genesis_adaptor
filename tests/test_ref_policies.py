@@ -5,8 +5,12 @@ Covers:
   - GoToLambdaRefPolicy: batched target tracking.
   - GoToLambdaRefPolicy: target_quat_fn=None uses EEF's current orientation.
   - GoToLambdaRefPolicy: seed reproducibility (same task state → same action).
-  - PickPlaceRefPolicy: graph structure (nodes, edges, initial node).
-  - PickPlaceRefPolicy: all motion nodes are GoToLambdaRefPolicy instances.
+  - PickPlaceRefPolicy: graph structure (nodes, edges, initial node, node types).
+  - PickPlaceRefPolicy: phase-specific kwargs split (transport/release/retreat) over goto_kwargs.
+  - PickPlaceRefPolicy: set_transport_slip_detection affects transport phases only.
+  - PickPlaceRefPolicy: transport_slip_detection constructor flag (default enabled,
+    disabled-at-init, and setter interaction).
+  - MoveObjectPolicy: grasp-offset preservation, quaternion rotation, slip checks.
 """
 
 import math
@@ -299,7 +303,7 @@ def test_pickplace_policy_construction():
     """PickPlaceRefPolicy: full construction with a loaded entity (scene build).
 
     Verifies the internal graph has the correct node names, edge structure,
-    and that all motion phases are GoToLambdaRefPolicy instances.
+    and arm-policy types for transport vs. release/retreat phases.
     """
     world = GenesisWorld()
     plane = PlaneBuilder(world, name="floor")
@@ -357,21 +361,296 @@ def test_pickplace_policy_construction():
     # Check node types.
     # grasp is a factory (resolved lazily on first reset, after env.reset loads the entity)
     assert graph._node_policies["grasp"] is None
-    # Motion phases are CombinedRefPolicy wrapping GoToLambdaRefPolicy + RepeatActionRefPolicy
-    for name in ["lift", "move_to_goal", "lower", "retreat"]:
+    # Motion phases are CombinedRefPolicy wrapping an arm policy + RepeatActionRefPolicy
+    for name in ["lift", "move_to_goal", "lower", "retreat", "release"]:
         assert isinstance(graph._node_policies[name], CombinedRefPolicy), \
             f"Node '{name}' should be CombinedRefPolicy, got {type(graph._node_policies[name])}"
-    assert isinstance(graph._node_policies["release"], CombinedRefPolicy)
 
-    for name in ["lift", "move_to_goal", "lower", "release"]:
+    # Transport phases (lift/move_to_goal/lower) wrap MoveObjectLambdaPolicy; the
+    # release and retreat phases wrap GoToLambdaRefPolicy (EEF-centric, no slip).
+    for name in ["lift", "move_to_goal", "lower"]:
         arm_policy = graph._node_policies[name]._policies["arm"]
         assert isinstance(arm_policy, MoveObjectLambdaPolicy), \
-            f"Node '{name}' arm policy should be MoveObjectLambdaPolicy, got {type(arm_policy)}"
-    retreat_arm = graph._node_policies["retreat"]._policies["arm"]
-    assert isinstance(retreat_arm, GoToLambdaRefPolicy), \
-        f"Retreat arm policy should be GoToLambdaRefPolicy, got {type(retreat_arm)}"
+            f"Transport node '{name}' arm policy should be MoveObjectLambdaPolicy, got {type(arm_policy)}"
+    for name in ["release", "retreat"]:
+        arm_policy = graph._node_policies[name]._policies["arm"]
+        assert isinstance(arm_policy, GoToLambdaRefPolicy), \
+            f"Node '{name}' arm policy should be GoToLambdaRefPolicy, got {type(arm_policy)}"
 
     print("  PASS: pickplace policy graph structure correct")
+    env.close()
+
+
+def test_pickplace_transport_slip_detection_api():
+    """set_transport_slip_detection affects transport phases only, not retreat/release."""
+    world = GenesisWorld()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=(0.0, 0.0, 0.65))
+    target = BoxObject(size=(0.04, 0.04, 0.04), name="cube", color=(1, 0, 0, 1))
+    task = ObjectRelocateTask(
+        world, table_builder=table, clutter_manager=None,
+        target_object=target,
+    )
+
+    env = WorldEnv(world, [plane, table, task], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    mock_arm = _MockEEFController(world, pos=(0.0, 0.0, 0.8))
+    mock_gripper = _MockGripperController()
+
+    policy = PickPlaceRefPolicy(
+        world=world,
+        eef_controller=mock_arm,
+        gripper_controller=mock_gripper,
+        task=task,
+        target_object=target,
+        target_entity=task.target_object_entity,
+    )
+
+    graph = policy._graph
+
+    def _transport_policies():
+        return [
+            graph._node_policies[name]._policies["arm"]
+            for name in ("lift", "move_to_goal", "lower")
+        ]
+
+    release_arm = graph._node_policies["release"]._policies["arm"]
+    retreat_arm = graph._node_policies["retreat"]._policies["arm"]
+
+    # Construction-time defaults: slip thresholds are the MoveObject defaults.
+    defaults = policy._transport_slip_defaults
+    assert len(defaults) == 3
+    for d in defaults:
+        assert d["slip_position_threshold"] == 0.01
+        assert d["slip_orientation_threshold"] == 0.05
+        assert d["track_relative_pose"] is True
+
+    # Disabling should zero thresholds and turn off relative-pose tracking.
+    policy.set_transport_slip_detection(False)
+    for p in _transport_policies():
+        assert p.slip_position_threshold == 0.0
+        assert p.slip_orientation_threshold == 0.0
+        assert p.track_relative_pose is False
+
+    # Enabling with no overrides restores the construction-time defaults.
+    policy.set_transport_slip_detection(True)
+    for p in _transport_policies():
+        assert p.slip_position_threshold == 0.01
+        assert p.slip_orientation_threshold == 0.05
+        assert p.track_relative_pose is True
+
+    # Disabling with an explicit override respects the override.
+    policy.set_transport_slip_detection(
+        False, position_threshold=0.02, track_relative_pose=True,
+    )
+    for p in _transport_policies():
+        assert p.slip_position_threshold == 0.02
+        assert p.slip_orientation_threshold == 0.0
+        assert p.track_relative_pose is True
+
+    # release/retreat GoToLambda policies have no slip attributes; confirm
+    # the transport-only API did not add any.
+    assert not hasattr(release_arm, "slip_position_threshold")
+    assert not hasattr(release_arm, "track_relative_pose")
+    assert not hasattr(retreat_arm, "slip_position_threshold")
+    assert not hasattr(retreat_arm, "track_relative_pose")
+
+    print("  PASS: set_transport_slip_detection affects transport phases only")
+    env.close()
+
+
+def test_pickplace_transport_slip_detection_init_default():
+    """Default constructor (no transport_slip_detection arg) keeps slip detection enabled."""
+    world = GenesisWorld()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=(0.0, 0.0, 0.65))
+    target = BoxObject(size=(0.04, 0.04, 0.04), name="cube", color=(1, 0, 0, 1))
+    task = ObjectRelocateTask(
+        world, table_builder=table, clutter_manager=None,
+        target_object=target,
+    )
+
+    env = WorldEnv(world, [plane, table, task], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    mock_arm = _MockEEFController(world, pos=(0.0, 0.0, 0.8))
+    mock_gripper = _MockGripperController()
+
+    # No transport_slip_detection argument -> defaults to enabled (backward compatible).
+    policy = PickPlaceRefPolicy(
+        world=world,
+        eef_controller=mock_arm,
+        gripper_controller=mock_gripper,
+        task=task,
+        target_object=target,
+        target_entity=task.target_object_entity,
+    )
+
+    graph = policy._graph
+    for name in ("lift", "move_to_goal", "lower"):
+        p = graph._node_policies[name]._policies["arm"]
+        assert p.slip_position_threshold == 0.01, f"{name} default slip_position_threshold"
+        assert p.slip_orientation_threshold == 0.05, f"{name} default slip_orientation_threshold"
+        assert p.track_relative_pose is True, f"{name} default track_relative_pose"
+
+    # Explicit transport_slip_detection=True behaves identically to the default.
+    policy_explicit = PickPlaceRefPolicy(
+        world=world,
+        eef_controller=mock_arm,
+        gripper_controller=mock_gripper,
+        task=task,
+        target_object=target,
+        target_entity=task.target_object_entity,
+        transport_slip_detection=True,
+    )
+    for name in ("lift", "move_to_goal", "lower"):
+        p = policy_explicit._graph._node_policies[name]._policies["arm"]
+        assert p.slip_position_threshold == 0.01
+        assert p.slip_orientation_threshold == 0.05
+        assert p.track_relative_pose is True
+
+    print("  PASS: transport slip detection enabled by default at init")
+    env.close()
+
+
+def test_pickplace_transport_slip_detection_disabled_at_init():
+    """transport_slip_detection=False disables slip at init; setter can re-enable."""
+    world = GenesisWorld()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=(0.0, 0.0, 0.65))
+    target = BoxObject(size=(0.04, 0.04, 0.04), name="cube", color=(1, 0, 0, 1))
+    task = ObjectRelocateTask(
+        world, table_builder=table, clutter_manager=None,
+        target_object=target,
+    )
+
+    env = WorldEnv(world, [plane, table, task], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    mock_arm = _MockEEFController(world, pos=(0.0, 0.0, 0.8))
+    mock_gripper = _MockGripperController()
+
+    policy = PickPlaceRefPolicy(
+        world=world,
+        eef_controller=mock_arm,
+        gripper_controller=mock_gripper,
+        task=task,
+        target_object=target,
+        target_entity=task.target_object_entity,
+        # Custom transport threshold: the recorded construction-time defaults
+        # must reflect this even when slip detection starts disabled.
+        transport_kwargs={"slip_position_threshold": 0.03},
+        transport_slip_detection=False,
+    )
+
+    graph = policy._graph
+
+    def _transport_policies():
+        return [
+            graph._node_policies[name]._policies["arm"]
+            for name in ("lift", "move_to_goal", "lower")
+        ]
+
+    release_arm = graph._node_policies["release"]._policies["arm"]
+    retreat_arm = graph._node_policies["retreat"]._policies["arm"]
+
+    # Slip detection starts disabled on the transport phases.
+    for p in _transport_policies():
+        assert p.slip_position_threshold == 0.0
+        assert p.slip_orientation_threshold == 0.0
+        assert p.track_relative_pose is False
+
+    # The recorded construction-time defaults are preserved (incl. the custom
+    # transport_kwargs threshold), so the runtime setter can restore them.
+    defaults = policy._transport_slip_defaults
+    assert len(defaults) == 3
+    for d in defaults:
+        assert d["slip_position_threshold"] == 0.03
+        assert d["slip_orientation_threshold"] == 0.05
+        assert d["track_relative_pose"] is True
+
+    # release/retreat GoToLambda policies remain untouched (no slip attributes).
+    assert not hasattr(release_arm, "slip_position_threshold")
+    assert not hasattr(release_arm, "track_relative_pose")
+    assert not hasattr(retreat_arm, "slip_position_threshold")
+    assert not hasattr(retreat_arm, "track_relative_pose")
+
+    # Constructor/API interaction: the runtime setter still works afterwards,
+    # restoring the construction-time defaults (including the custom 0.03).
+    policy.set_transport_slip_detection(True)
+    for p in _transport_policies():
+        assert p.slip_position_threshold == 0.03
+        assert p.slip_orientation_threshold == 0.05
+        assert p.track_relative_pose is True
+
+    # And disabling again via the setter reproduces the init-time disabled state.
+    policy.set_transport_slip_detection(False)
+    for p in _transport_policies():
+        assert p.slip_position_threshold == 0.0
+        assert p.slip_orientation_threshold == 0.0
+        assert p.track_relative_pose is False
+
+    print("  PASS: transport_slip_detection=False at init; setter restores defaults")
+    env.close()
+
+
+def test_pickplace_phase_specific_kwargs_split():
+    """Phase-specific kwargs override goto_kwargs on the right phases only."""
+    world = GenesisWorld()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=(0.0, 0.0, 0.65))
+    target = BoxObject(size=(0.04, 0.04, 0.04), name="cube", color=(1, 0, 0, 1))
+    task = ObjectRelocateTask(
+        world, table_builder=table, clutter_manager=None,
+        target_object=target,
+    )
+
+    env = WorldEnv(world, [plane, table, task], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    mock_arm = _MockEEFController(world, pos=(0.0, 0.0, 0.8))
+    mock_gripper = _MockGripperController()
+
+    # Shared baseline applied everywhere; phase-specific values override it.
+    policy = PickPlaceRefPolicy(
+        world=world,
+        eef_controller=mock_arm,
+        gripper_controller=mock_gripper,
+        task=task,
+        target_object=target,
+        target_entity=task.target_object_entity,
+        goto_kwargs={"position_threshold": 0.05, "max_seconds": 10.0},
+        transport_kwargs={"position_threshold": 0.02, "slip_position_threshold": 0.02},
+        release_kwargs={"position_threshold": 0.08},
+        retreat_kwargs={"position_threshold": 0.04},
+    )
+
+    graph = policy._graph
+    lift = graph._node_policies["lift"]._policies["arm"]
+    move_to_goal = graph._node_policies["move_to_goal"]._policies["arm"]
+    lower = graph._node_policies["lower"]._policies["arm"]
+    release = graph._node_policies["release"]._policies["arm"]
+    retreat = graph._node_policies["retreat"]._policies["arm"]
+
+    # Transport phases get transport_kwargs overriding goto_kwargs, plus the
+    # shared max_seconds baseline.
+    for name, p in (("lift", lift), ("move_to_goal", move_to_goal), ("lower", lower)):
+        assert p.position_threshold == 0.02, f"{name} position_threshold"
+        assert p.max_seconds == 10.0, f"{name} max_seconds baseline"
+        assert p.slip_position_threshold == 0.02, f"{name} slip threshold (transport-only)"
+
+    # Release uses release_kwargs merged over goto_kwargs; no slip attribute.
+    assert release.position_threshold == 0.08
+    assert release.max_seconds == 10.0
+    assert not hasattr(release, "slip_position_threshold")
+
+    # Retreat uses retreat_kwargs merged over goto_kwargs; no slip attribute.
+    assert retreat.position_threshold == 0.04
+    assert retreat.max_seconds == 10.0
+    assert not hasattr(retreat, "slip_position_threshold")
+
+    print("  PASS: phase-specific kwargs split and merge correct")
     env.close()
 
 
@@ -584,5 +863,17 @@ if __name__ == "__main__":
     print()
     print("=== test_pickplace_policy_construction ===")
     test_pickplace_policy_construction()
+    print()
+    print("=== test_pickplace_transport_slip_detection_api ===")
+    test_pickplace_transport_slip_detection_api()
+    print()
+    print("=== test_pickplace_transport_slip_detection_init_default ===")
+    test_pickplace_transport_slip_detection_init_default()
+    print()
+    print("=== test_pickplace_transport_slip_detection_disabled_at_init ===")
+    test_pickplace_transport_slip_detection_disabled_at_init()
+    print()
+    print("=== test_pickplace_phase_specific_kwargs_split ===")
+    test_pickplace_phase_specific_kwargs_split()
     print()
     print("All tests passed!")
