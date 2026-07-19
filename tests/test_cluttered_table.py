@@ -23,12 +23,14 @@ from unienv_genesis_collection.scenes.cached_table_builder import CachedTableBui
 from unienv_genesis_collection.scenes.cluttered_table_manager import (
     ClutteredTableManager,
     _PARK_POS,
+    _PARK_QUAT,
 )
 from unienv_genesis_collection.objects import (
     BoxObject,
     SphereObject,
     CylinderObject,
 )
+from unienv_genesis_collection.objects.base_object import make_bbox
 from unienv_interface.world import WorldEnv
 
 _TABLE_POS = (0.0, 0.0, 0.65)
@@ -394,6 +396,375 @@ def test_batched_per_env_avoid_spaces():
 
 
 # ------------------------------------------------------------------
+# Unique upstream parking — geometry cache, lattice, compensation,
+# inactive / masked behaviour, fixed parked quaternion.
+# ------------------------------------------------------------------
+
+class _ShiftedBoxObject(BoxObject):
+    """BoxObject variant whose local AABB is offset from the entity origin.
+
+    Used to exercise off-centre bbox-origin compensation: the manager's
+    parking entity-origin position must equal ``lattice_center − bbox_center``
+    so the resulting AABB centre lands exactly on the lattice cell.
+    """
+
+    def __init__(self, size, center_offset, **kwargs):
+        super().__init__(size=size, **kwargs)
+        self._co = tuple(float(c) for c in center_offset)
+
+    def get_local_bounding_box(self):
+        from unienv_genesis_collection.objects.base_object import make_bbox
+        import torch
+        half = torch.tensor(self.size) / 2.0
+        co = torch.tensor(self._co)
+        return make_bbox(co - half, co + half)
+
+
+def _expected_max_radius(pool):
+    return max(o.get_footprint_radius() for o in pool)
+
+
+def test_park_clearance_validation():
+    """park_clearance must be a non-negative finite float."""
+    world = GenesisWorld()
+    pool = _make_pool()
+    try:
+        ClutteredTableManager(world, object_pool=pool, park_clearance=-0.01)
+        assert False, "negative park_clearance should raise"
+    except ValueError as e:
+        assert "park_clearance" in str(e)
+        print(f"  PASS: negative clearance rejected — {e}")
+
+    try:
+        ClutteredTableManager(world, object_pool=pool, park_clearance=float("nan"))
+        assert False, "NaN park_clearance should raise"
+    except ValueError as e:
+        print(f"  PASS: NaN clearance rejected — {e}")
+
+    mgr = ClutteredTableManager(
+        world, object_pool=pool, n_objects_range=(1, len(pool)), park_clearance=0.1,
+    )
+    assert mgr.park_clearance == 0.1
+    print("  PASS: valid park_clearance accepted")
+
+
+def test_geometry_cache_radius_and_max():
+    """Per-descriptor footprint radius cache and max over pool."""
+    world = GenesisWorld()
+    pool = _make_pool()
+    mgr = ClutteredTableManager(
+        world, object_pool=pool, n_objects_range=(1, len(pool)), park_clearance=0.0,
+    )
+    mgr._ensure_geometry_cache()
+
+    expected_r = [o.get_footprint_radius() for o in pool]
+    got_r = mgr._footprint_r_t.tolist()
+    for exp, got in zip(expected_r, got_r):
+        assert abs(got - exp) < 1e-6, (exp, got)
+    assert abs(mgr._max_footprint_radius - _expected_max_radius(pool)) < 1e-6
+    print("  PASS: footprint radius cache matches descriptors and max is correct")
+
+
+def test_park_grid_spacing():
+    """All pairwise lattice centre distances are >= 2*max_radius (+ clearance)."""
+    world = GenesisWorld()
+    pool = _make_pool()
+    clearance = 0.05
+    mgr = ClutteredTableManager(
+        world, object_pool=pool, n_objects_range=(1, len(pool)), park_clearance=clearance,
+    )
+    mgr._ensure_geometry_cache()
+
+    n = len(pool)
+    centers = mgr._centers_t
+    park_origin = mgr._park_positions_t
+    # Reconstruct the parked AABB centres = entity_origin + center.
+    parked_centers = park_origin + centers
+    # XY spacing between distinct centres must be >= 2*max + clearance.
+    min_sep = float("inf")
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = float(torch.linalg.norm(parked_centers[i, :2] - parked_centers[j, :2]).item())
+            min_sep = min(min_sep, d)
+    expected_min = 2.0 * mgr._max_footprint_radius + clearance
+    assert min_sep >= expected_min - 1e-6, (min_sep, expected_min)
+    # Bounding equality at the row/col grid step:
+    # the smallest grid step equals exactly `spacing` (clearance aside).
+    # z invariant:
+    assert all(abs(float(parked_centers[i, 2].item()) - _PARK_Z) < 1e-6
+               for i in range(n))
+    print(f"  PASS: min park centre separation {min_sep:.4f} >= {expected_min:.4f}")
+
+
+def test_park_offcenter_compensation():
+    """Off-centre bbox origin: entity-origin park pos == lattice_center − bbox_center."""
+    from unienv_genesis_collection.objects.base_object import bbox_center
+    world = GenesisWorld()
+    # Single object whose AABB centre is not at the entity origin.
+    co = (0.1, -0.07, 0.02)
+    obj = _ShiftedBoxObject(size=(0.04, 0.06, 0.08), center_offset=co, name="shifted")
+    pool = [obj]
+    mgr = ClutteredTableManager(
+        world, object_pool=pool, n_objects_range=(0, 1), park_clearance=0.0,
+    )
+    mgr._ensure_geometry_cache()
+
+    # Single object → cell 0 ⇒ lattice centre (0, 0, park_z).
+    park_origin = mgr._park_positions_t[0]
+    assert abs(float(park_origin[0].item()) - (0.0 - co[0])) < 1e-4
+    assert abs(float(park_origin[1].item()) - (0.0 - co[1])) < 1e-4
+    # float32 around -1000 has ~2e-5 quantisation; tolerate a coarser bound.
+    assert abs(float(park_origin[2].item()) - (_PARK_Z - co[2])) < 1e-3
+    # And the AABB centre ends on (0,0,_PARK_Z).
+    center = bbox_center(pool[0].get_local_bounding_box())
+    parked_center = park_origin + center
+    assert abs(float(parked_center[2].item()) - _PARK_Z) < 1e-3
+    print("  PASS: off-centre bbox-origin compensation lands AABB centre on lattice")
+
+
+def test_geometry_cache_reuse():
+    """Geometry cache reuse: an unchanged pool triggers *no* geometry queries
+    (``get_local_bounding_box`` / ``get_footprint_radius``) on a second
+    ``_ensure_geometry_cache`` call or ``reload``; replacing or reordering the
+    pool invalidates the cache and rebuilds."""
+    world = GenesisWorld()
+    pool = _make_pool()
+
+    # Per-descriptor call counters for the two geometry queries the manager
+    # invokes directly via ``_ensure_geometry_cache``.  Wrapping the bound
+    # methods on each instance lets us observe every call, including the base
+    # ``get_footprint_radius``'s internal ``get_local_bounding_box`` call.
+    counts = {"bbox": [], "radius": []}
+
+    def _wrap(obj):
+        idx = len(counts["bbox"])
+        counts["bbox"].append(0)
+        counts["radius"].append(0)
+        orig_bbox = obj.get_local_bounding_box
+        orig_radius = obj.get_footprint_radius
+
+        def bbox_w(*a, **kw):
+            counts["bbox"][idx] += 1
+            return orig_bbox(*a, **kw)
+
+        def radius_w(*a, **kw):
+            counts["radius"][idx] += 1
+            return orig_radius(*a, **kw)
+
+        obj.get_local_bounding_box = bbox_w
+        obj.get_footprint_radius = radius_w
+
+    for obj in pool:
+        _wrap(obj)
+
+    mgr = ClutteredTableManager(
+        world, object_pool=pool, n_objects_range=(1, len(pool)),
+    )
+
+    # --- First build: every descriptor is queried at least once. -----------
+    mgr._ensure_geometry_cache()
+    first_bbox = list(counts["bbox"])
+    first_radius = list(counts["radius"])
+    assert sum(first_bbox) >= len(pool), first_bbox
+    assert sum(first_radius) >= len(pool), first_radius
+    dims_ref = mgr._dims_t
+    park_ref = mgr._park_positions_t
+
+    # --- Second ensure on the identical pool: cache reused, no new calls. -
+    mgr._ensure_geometry_cache()
+    assert counts["bbox"] == first_bbox, counts["bbox"]
+    assert counts["radius"] == first_radius, counts["radius"]
+    assert mgr._dims_t is dims_ref
+    assert mgr._park_positions_t is park_ref
+    print("  PASS: unchanged pool reuses cache; 0 geometry queries on 2nd ensure")
+
+    # --- Reordering the pool invalidates the signature → rebuild. ---------
+    mgr.object_pool = [pool[2], pool[0], pool[1]] + pool[3:]
+    mgr._ensure_geometry_cache()
+    assert sum(counts["bbox"]) > sum(first_bbox), counts["bbox"]
+    assert sum(counts["radius"]) > sum(first_radius), counts["radius"]
+    print("  PASS: reordered pool invalidates cache and rebuilds")
+
+    reorder_bbox = list(counts["bbox"])
+    reorder_radius = list(counts["radius"])
+
+    # --- Replacing a descriptor with a fresh instance (new id) → rebuild. -
+    replacement = BoxObject(
+        size=(0.04, 0.04, 0.04), name="cube_r", color=(1, 0, 0, 1),
+    )
+    _wrap(replacement)  # count its geometry queries too
+    mgr.object_pool[3] = replacement
+    mgr._ensure_geometry_cache()
+    assert sum(counts["bbox"]) > sum(reorder_bbox), counts["bbox"]
+    assert sum(counts["radius"]) > sum(reorder_radius), counts["radius"]
+    print("  PASS: replaced descriptor invalidates cache and rebuilds")
+
+    replaced_bbox = list(counts["bbox"])
+    replaced_radius = list(counts["radius"])
+
+    # --- Second reload of the (now stable) replaced pool: cache reused. ---
+    mgr._ensure_geometry_cache()
+    assert counts["bbox"] == replaced_bbox, counts["bbox"]
+    assert counts["radius"] == replaced_radius, counts["radius"]
+    print("  PASS: stable replaced pool reuses cache; 0 geometry queries")
+
+
+def test_unique_initial_load_poses():
+    """After reload, every pool object is loaded at a unique park XY position,
+    all parked far below the table."""
+    world = GenesisWorld()
+    pool = _make_pool()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=_TABLE_POS)
+    clutter = ClutteredTableManager(
+        world, name="clutter", object_pool=pool,
+        n_objects_range=(0, 0),  # no on-table placement for this check
+        table_size=_TABLE_SIZE, table_pos=_TABLE_POS,
+    )
+    env = WorldEnv(world, [plane, table, clutter], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    # All inactive (range (0,0)) ⇒ every object parked.
+    xs = []
+    ys = []
+    for entity in clutter._loaded_entities:
+        pos = entity.get_pos()
+        xs.append(float(pos[0].item())); ys.append(float(pos[1].item()))
+        assert abs(float(pos[2].item()) - _PARK_Z) < 1e-6
+    # Primitives are centred ⇒ entity origin == park lattice origin ⇒ unique XY.
+    assert len(set(zip(xs, ys))) == len(pool), (xs, ys)
+    # Parked quaternion is identity.
+    park_q = torch.tensor(_PARK_QUAT, dtype=clutter._loaded_entities[0].get_quat().dtype)
+    for entity in clutter._loaded_entities:
+        assert torch.allclose(entity.get_quat(), park_q)
+    print("  PASS: every pool object loaded at a unique, parked pose with fixed quat")
+    env.close()
+
+
+def test_inactive_unique_poses_after_reset_unbatched():
+    """After a reset that activates only a subset, inactive objects keep their
+    unique park positions and fixed orientation."""
+    world = GenesisWorld()
+    pool = _make_pool()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=_TABLE_POS)
+    clutter = ClutteredTableManager(
+        world, name="clutter", object_pool=pool, n_objects_range=(2, 2),
+        table_size=_TABLE_SIZE, table_pos=_TABLE_POS,
+    )
+    env = WorldEnv(world, [plane, table, clutter], render_mode=None)
+    env.reset(seed=1, reload=True)
+
+    park_xy = set()
+    for i, entity in enumerate(clutter._loaded_entities):
+        pos = entity.get_pos()
+        if not bool(clutter._active_mask_t[i]):
+            park_xy.add((round(float(pos[0].item()), 6), round(float(pos[1].item()), 6)))
+            assert abs(float(pos[2].item()) - _PARK_Z) < 1e-6
+            assert torch.allclose(entity.get_quat(),
+                                  torch.tensor(_PARK_QUAT, dtype=entity.get_quat().dtype))
+    # Every inactive object occupies a distinct parked XY slot.
+    assert len(park_xy) == (len(pool) - int(clutter._active_mask_t.sum().item()))
+    print("  PASS: inactive unbatched objects parked at unique poses with fixed quat")
+    env.close()
+
+
+def test_batched_inactive_unique_poses():
+    """In batched reset, within every environment the inactive objects have
+    mutually-distinct parked XY positions."""
+    N_ENVS = 6
+    world = GenesisWorld(batch_size=N_ENVS)
+    pool = _make_pool()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=_TABLE_POS)
+    clutter = ClutteredTableManager(
+        world, name="clutter", object_pool=pool, n_objects_range=(2, 3),
+        table_size=_TABLE_SIZE, table_pos=_TABLE_POS,
+    )
+    env = WorldEnv(world, [plane, table, clutter], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    for env_j in range(N_ENVS):
+        xy = set()
+        for i, entity in enumerate(clutter._loaded_entities):
+            if not bool(clutter._active_mask_t[i, env_j]):
+                p = entity.get_pos()[env_j]
+                xy.add((round(float(p[0].item()), 6), round(float(p[1].item()), 6)))
+                assert abs(float(p[2].item()) - _PARK_Z) < 1e-6
+        assert len(xy) > 1, f"env {env_j}: inactive parked XY not unique ({xy})"
+    print("  PASS: inactive batched objects have unique parked XY per env")
+    env.close()
+
+
+def test_masked_reset_inactive_unique_and_preserved():
+    """Masked reset: reset envs get unique parked inactive poses; preserved envs
+    keep their prior state exactly."""
+    N_ENVS = 8
+    world = GenesisWorld(batch_size=N_ENVS)
+    pool = _make_pool()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=_TABLE_POS)
+    clutter = ClutteredTableManager(
+        world, name="clutter", object_pool=pool, n_objects_range=(2, 4),
+        table_size=_TABLE_SIZE, table_pos=_TABLE_POS,
+    )
+    env = WorldEnv(world, [plane, table, clutter], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    before = [e.get_pos().clone() for e in clutter._loaded_entities]
+    before_q = [e.get_quat().clone() for e in clutter._loaded_entities]
+    mask_before = clutter._active_mask_t.clone()
+
+    reset_mask = torch.zeros(N_ENVS, dtype=torch.bool)
+    reset_mask[[0, 4, 5]] = True
+    env.reset(seed=42, mask=reset_mask)
+
+    preserved = [j for j in range(N_ENVS) if not bool(reset_mask[j])]
+    for i, entity in enumerate(clutter._loaded_entities):
+        pa = entity.get_pos(); qa = entity.get_quat()
+        for j in preserved:
+            assert torch.allclose(pa[j], before[i][j], atol=1e-6)
+            assert torch.allclose(qa[j], before_q[i][j], atol=1e-6)
+    # Preserved envs keep their active mask.
+    for j in preserved:
+        assert torch.equal(clutter._active_mask_t[:, j], mask_before[:, j])
+
+    # Reset envs: inactive objects still occupy unique parked XY positions.
+    for j in [0, 4, 5]:
+        xy = set()
+        for i, entity in enumerate(clutter._loaded_entities):
+            if not bool(clutter._active_mask_t[i, j]):
+                p = entity.get_pos()[j]
+                xy.add((round(float(p[0].item()), 6), round(float(p[1].item()), 6)))
+        assert len(xy) > 1, (j, xy)
+    print("  PASS: masked reset preserves others, reset envs have unique park XY")
+    env.close()
+
+
+def test_inactive_no_rng_consumed():
+    """An all-inactive reset (n_objects_range=(0,0)) with random_quaternion=True
+    must keep every parked object at the fixed _PARK_QUAT orientation — the
+    random-yaw RNG path is never invoked for inactive objects."""
+    world = GenesisWorld()
+    pool = _make_pool()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=_TABLE_POS)
+    clutter = ClutteredTableManager(
+        world, name="clutter", object_pool=pool, n_objects_range=(0, 0),
+        table_size=_TABLE_SIZE, table_pos=_TABLE_POS, random_quaternion=True,
+    )
+    env = WorldEnv(world, [plane, table, clutter], render_mode=None)
+    env.reset(seed=3, reload=True)
+
+    park_q = torch.tensor(_PARK_QUAT, dtype=clutter._loaded_entities[0].get_quat().dtype)
+    for entity in clutter._loaded_entities:
+        assert torch.allclose(entity.get_quat(), park_q), \
+            f"random_quaternion leaked into inactive park pose: {entity.get_quat()}"
+    print("  PASS: all-inactive reset kept fixed _PARK_QUAT (no random-yaw RNG)")
+    env.close()
+
+
+# ------------------------------------------------------------------
 # Entry point
 # ------------------------------------------------------------------
 
@@ -424,6 +795,37 @@ if __name__ == "__main__":
 
     print("=== test_batched_per_env_avoid_spaces ===")
     test_batched_per_env_avoid_spaces()
+    print()
+
+    print("=== test_park_clearance_validation ===")
+    test_park_clearance_validation()
+    print()
+    print("=== test_geometry_cache_radius_and_max ===")
+    test_geometry_cache_radius_and_max()
+    print()
+    print("=== test_park_grid_spacing ===")
+    test_park_grid_spacing()
+    print()
+    print("=== test_park_offcenter_compensation ===")
+    test_park_offcenter_compensation()
+    print()
+    print("=== test_geometry_cache_reuse ===")
+    test_geometry_cache_reuse()
+    print()
+    print("=== test_unique_initial_load_poses ===")
+    test_unique_initial_load_poses()
+    print()
+    print("=== test_inactive_unique_poses_after_reset_unbatched ===")
+    test_inactive_unique_poses_after_reset_unbatched()
+    print()
+    print("=== test_batched_inactive_unique_poses ===")
+    test_batched_inactive_unique_poses()
+    print()
+    print("=== test_masked_reset_inactive_unique_and_preserved ===")
+    test_masked_reset_inactive_unique_and_preserved()
+    print()
+    print("=== test_inactive_no_rng_consumed ===")
+    test_inactive_no_rng_consumed()
     print()
 
     print("All tests passed!")

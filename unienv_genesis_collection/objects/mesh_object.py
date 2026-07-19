@@ -45,6 +45,15 @@ class MeshObject(ManipulatableObject):
         language_annotations: Optional sequence of English-language
             descriptions.  Unlike the primitive subclasses, meshes have no
             default semantic annotation — ``None`` yields an empty tuple.
+        visual_texture_path: Optional path to an image file (e.g. a PNG)
+            to be bound as the diffuse texture of the loaded mesh.  When
+            set, callers that load this descriptor as a bare visual mesh
+            (e.g. :class:`FloatingVisualPropsManager`) build a
+            textured :class:`genesis.surfaces.Plastic` surface from it so
+            the polygon's intrinsic texture survives the loss of its
+            native URDF/MJCF material binding.  ``None`` (the default)
+            keeps the Genesis default surface — a plain mesh with no
+            explicit texture.
     """
 
     def __init__(
@@ -56,6 +65,7 @@ class MeshObject(ManipulatableObject):
         name: str = "object",
         fixed: bool = False,
         language_annotations: Optional[Sequence[str]] = None,
+        visual_texture_path: Optional[Union[str, os.PathLike]] = None,
     ):
         super().__init__(
             name=name,
@@ -66,6 +76,9 @@ class MeshObject(ManipulatableObject):
         self.scale = scale if isinstance(scale, tuple) else (scale, scale, scale)
         self.decimate = decimate
         self.color = color
+        self.visual_texture_path: Optional[str] = (
+            str(visual_texture_path) if visual_texture_path is not None else None
+        )
         self._trimesh_cache: Optional["trimesh.Trimesh"] = None
 
     # ------------------------------------------------------------------
@@ -86,7 +99,7 @@ class MeshObject(ManipulatableObject):
     # Bounding box
     # ------------------------------------------------------------------
 
-    def get_local_bounding_box(self, entity) -> "BoxSpace":
+    def get_local_bounding_box(self) -> "BoxSpace":
         mesh = self._load_trimesh()
         return make_bbox(
             torch.from_numpy(mesh.bounds[0]),
@@ -195,7 +208,16 @@ class MeshObject(ManipulatableObject):
             decimate=self.decimate,
             batch_fixed_verts=batch_fixed_verts,
         )
-        surface = gs.surfaces.Plastic(color=self.color) if self.color else None
+        if self.visual_texture_path is not None:
+            surface = gs.surfaces.Plastic(
+                diffuse_texture=gs.textures.ImageTexture(
+                    image_path=self.visual_texture_path,
+                ),
+            )
+        elif self.color is not None:
+            surface = gs.surfaces.Plastic(color=self.color)
+        else:
+            surface = None
         return world.scene.add_entity(
             morph,
             surface=surface,

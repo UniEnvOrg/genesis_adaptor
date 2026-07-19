@@ -6,7 +6,10 @@ querying the interior bounding box and checking whether another object fits
 inside.
 
 Containers may be articulated (e.g. a drawer that must be opened) or have
-lids, so runtime state matters — all geometry queries take the loaded entity.
+lids, so runtime state matters. Local geometry queries (such as the local
+bounding box) are entity-independent and may be used without a loaded
+entity; runtime, world-frame, and interior queries depend on the loaded
+entity.
 
 Subclasses must implement:
 
@@ -87,5 +90,5 @@ class ManipulatableContainer(ManipulatableObject[EntityT]):
             corresponding interior dimension.
         """
         interior = self.get_interior_bounding_box(entity)
-        other_bbox = other.get_local_bounding_box(other_entity)
+        other_bbox = other.get_local_bounding_box()
         return bool(torch.all(bbox_size(other_bbox) <= bbox_size(interior)))

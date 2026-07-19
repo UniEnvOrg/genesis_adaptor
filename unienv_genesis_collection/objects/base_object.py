@@ -312,11 +312,8 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         ...
 
     @abstractmethod
-    def get_local_bounding_box(self, entity: EntityT) -> BoxSpace:
+    def get_local_bounding_box(self) -> BoxSpace:
         """Return the axis-aligned bounding box in the object's local frame.
-
-        Args:
-            entity: The loaded Genesis entity.
 
         Returns:
             ``BoxSpace`` (PyTorch backend, shape ``(3,)``) whose
@@ -350,7 +347,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         """
         from xbarray.transformations.rotation_conversions.pytorch import quaternion_apply
 
-        local_bbox = self.get_local_bounding_box(entity)
+        local_bbox = self.get_local_bounding_box()
         pos = entity.get_pos().detach()
         quat = entity.get_quat().detach()
 
@@ -382,16 +379,13 @@ class ManipulatableObject(ABC, Generic[EntityT]):
 
         return make_bbox(world_lo, world_hi)
 
-    def get_footprint_radius(self, entity: EntityT) -> float:
+    def get_footprint_radius(self) -> float:
         """Return the 2D footprint radius on the XY plane (metres).
 
         Used by placement algorithms for quick circular overlap checks.
         Default: half of the local bounding-box XY diagonal.
-
-        Args:
-            entity: The loaded Genesis entity.
         """
-        bbox = self.get_local_bounding_box(entity)
+        bbox = self.get_local_bounding_box()
         size_xy = bbox_size(bbox)[:2]
         return float(torch.linalg.norm(size_xy) / 2.0)
     
@@ -411,7 +405,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
                 match the batch dimension when the entity is batched.
         """
         center = bbox_center(self.get_bounding_box(entity))[..., :2]
-        radius = self.get_footprint_radius(entity)
+        radius = self.get_footprint_radius()
         radius = torch.tensor(radius, device=center.device, dtype=center.dtype)
         if center.ndim == 1:
             return center, radius
@@ -567,7 +561,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         if key in self._local_grasp_cache:
             return self._local_grasp_cache[key].clone()
 
-        bbox = self.get_local_bounding_box(entity)
+        bbox = self.get_local_bounding_box()
         center = bbox_center(bbox)
         dims = bbox_size(bbox)
         _dt = center.dtype

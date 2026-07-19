@@ -175,6 +175,7 @@ class YCBObject(HubAssetMeshObject):
                 if language_annotations is not None
                 else info.language_annotations
             ),
+            visual_texture_file_name="texture_map.png",
         )
         self.object_id = object_id
         self.info = info
@@ -219,6 +220,9 @@ class YCBObject(HubAssetMeshObject):
             align=False,
             fixed=self.fixed,
             batch_fixed_verts=batch_fixed_verts,
+            # Nyx currently cannot export URDF entities after Genesis merges
+            # fixed links, so keep the original link structure for YCB assets.
+            merge_fixed_links=False,
         )
         # No surface override: Default() preserves the texture from the asset.
         return world.scene.add_entity(

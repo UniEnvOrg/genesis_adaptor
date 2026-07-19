@@ -3,10 +3,38 @@
 Follows the :class:`CachedTableBuilder` pattern:
 
 * During ``reload()`` (priority 25): loads every object from the pool into the
-  scene at the parking position ``(0, 0, -1000)``.
+  scene at a **unique** parking position far below the table (z = park_z,
+  default -1000) and well-separated in XY so multi-mesh collision hulls never
+  overlap before the Genesis scene is built / settled.
 * During ``reset()`` (priority 25): selects a random subset, computes
   collision-free placements via rejection sampling, and positions them on the
-  table surface.  Unused objects remain parked.
+  table surface.  Unused objects remain parked at their unique per-object
+  parking spots (fixed ``_PARK_QUAT`` orientation).
+
+Unique parking (vs the historical single shared ``(0, 0, -1000)`` point) is
+motivated by the GSO / YCB catalogs' multi-mesh (V-HACD / CoACD) collision
+hulls: piling the whole inactive pool on one point inflates the broad-phase
+candidate-pair count past Genesis's default budget and halts the settle step.
+The parking grid is laid out as a square-ish 2-D lattice with uniform spacing
+``2 * max_footprint_radius + park_clearance``, which guarantees the centre-to-
+centre separation between any two parked objects meets or exceeds the sum of
+their (per-object) footprint radii (the spacing equals ``2 * max_radius`` when
+``park_clearance`` is ``0``, so two max-radius objects end up exactly touching;
+a positive ``park_clearance`` makes the separation strict).  Off-centre object origins are compensated
+for: the grid targets are bbox **centres**, and each object's loaded
+``entity-origin`` position is ``target_bbox_centre − local_bbox_centre`` so the
+resulting AABB centres land exactly on the lattice.
+
+The geometry cache (per-descriptor bounding boxes, dims, centres, footprint
+radii, max radius, and the deterministic park ``entity-origin`` positions) is
+computed once on the **first** reload — before any ``load_into_scene`` call —
+from each descriptor's no-arg ``get_local_bounding_box()`` and
+``get_footprint_radius()``.  Subsequent reloads reuse the cache *iff* the
+pool's lightweight identity signature (a tuple of descriptor object ids, in
+order — see ``_pool_signature``) is unchanged, in which case neither geometry
+query is re-invoked.  Replacing a descriptor, reordering the pool, or
+adding/removing an entry changes the signature and rebuilds the cache; in-
+place geometry mutation of an existing descriptor instance is not detected.
 
 Priority 25 is within the ``[0, 50)`` objects / props range, so it runs
 **after** the table (priority 100) and robot (priority 50) have been set up.
@@ -20,9 +48,11 @@ Per-environment ``avoid_spaces`` can be passed through ``reset()`` as a tuple
 ``(n_envs, n_avoid)`` respectively.  These are concatenated with the static
 avoid spaces from ``__init__``.
 
-Orientation is delegated to each :class:`ManipulatableObject` via its
-:meth:`~ManipulatableObject.set_pos_3d` method, so objects can define their own
-"standing" vs "random" orientation policy.
+Inactive (parked) objects always receive the identity ``_PARK_QUAT`` and no
+RNG is consumed for their orientation.  Active (on-table) objects delegate
+orientation to each :class:`ManipulatableObject` via its
+:meth:`~ManipulatableObject.set_pos_3d` / ``_standing_quaternion`` behaviour,
+so objects can define their own "standing" vs "random" orientation policy.
 
 Example::
 
@@ -67,13 +97,24 @@ __all__ = ["ClutteredTableManager"]
 
 LOGGER = logging.getLogger(__name__)
 
+# Parking altitude sentinel (far below the table).  The shared parking
+# *origin* point is no longer used; inactive objects are now spread across a
+# 2-D grid whose target bbox-centre altitude is ``_PARK_POS[2]``.
 _PARK_POS = (0.0, 0.0, -1000.0)
 _PARK_QUAT = (1.0, 0.0, 0.0, 0.0)
+
+# Default extra centre-to-centre gap (m) added on top of the
+# ``2 * max_footprint_radius`` minimum-pair-distance park-grid spacing.
+_DEFAULT_PARK_CLEARANCE = 0.0
 
 
 class ClutteredTableManager(WorldNode):
     """Randomly places distractor :class:`ManipulatableObject` instances on a
     table surface without overlap.
+
+    Inactive (unused) objects are parked at unique, well-separated positions
+    derived from the pool's per-object bounding boxes (see the module
+    docstring for the parking-grid rationale).
 
     Args:
         world: :class:`GenesisWorld` instance.
@@ -90,10 +131,19 @@ class ClutteredTableManager(WorldNode):
         max_placement_attempts: Rejection-sampling budget per object.
         random_quaternion: Whether to request random orientations from each
             object's :meth:`~ManipulatableObject.set_pos_3d`.
+        park_clearance: Extra centre-to-centre gap (m) added on top of the
+            ``2 * max_footprint_radius`` minimum pairwise park-grid
+            spacing.  Must be non-negative.  ``0.0`` makes the spacing
+            exactly ``2 * max_footprint_radius`` — i.e. every parked pair
+            is just touching by their circumscribed footprints, which is
+            already enough for sweep-and-prune broad-phase filtering.
+            Increasing it adds a safety margin against numerical
+            tolerance.  The park altitude is fixed at ``_PARK_POS[2]``
+            (``-1000``).
 
     Raises:
         ValueError: If the upper bound of *n_objects_range* exceeds the
-            pool size.
+            pool size, or if *park_clearance* is negative.
     """
 
     has_reward = False
@@ -117,6 +167,7 @@ class ClutteredTableManager(WorldNode):
         placement_margin: float = 0.05,
         max_placement_attempts: int = 100,
         random_quaternion: bool = True,
+        park_clearance: float = _DEFAULT_PARK_CLEARANCE,
     ):
         self.world = world
         self._name = name
@@ -131,6 +182,13 @@ class ClutteredTableManager(WorldNode):
         self.placement_margin = placement_margin
         self.max_placement_attempts = max_placement_attempts
         self.random_quaternion = random_quaternion
+        self.park_clearance = float(park_clearance)
+
+        if not math.isfinite(self.park_clearance) or self.park_clearance < 0.0:
+            raise ValueError(
+                f"park_clearance must be a non-negative finite float, "
+                f"got {self.park_clearance}"
+            )
 
         if self.object_pool and n_objects_range[1] > len(self.object_pool):
             raise ValueError(
@@ -145,14 +203,19 @@ class ClutteredTableManager(WorldNode):
 
         # Pre-tensorise static avoid spaces (XY only), inverse-rotated into
         # the table's local frame so placement sampling stays axis-aligned.
+        # All tensors live on the world's device so that GPU backends never
+        # have to cross-hostcopies during reset().
         if self.avoid_spaces:
             world_xy = torch.tensor(
                 [[c[0], c[1]] for c, _r in self.avoid_spaces],
                 dtype=world.dtype,
+                device=world.device,
             )  # (n_static, 2)
             # Inverse-rotate world → local table frame.
             offset = world_xy - torch.tensor(
-                [table_pos[0], table_pos[1]], dtype=world.dtype,
+                [table_pos[0], table_pos[1]],
+                dtype=world.dtype,
+                device=world.device,
             )
             c_y, s_y = self._cos_yaw, self._sin_yaw
             self._static_avoid_xy = torch.stack([
@@ -162,20 +225,42 @@ class ClutteredTableManager(WorldNode):
             self._static_avoid_r = torch.tensor(
                 [r for _c, r in self.avoid_spaces],
                 dtype=world.dtype,
+                device=world.device,
             )  # (n_static,)
         else:
-            self._static_avoid_xy = torch.empty(0, 2, dtype=world.dtype)
-            self._static_avoid_r = torch.empty(0, dtype=world.dtype)
+            self._static_avoid_xy = torch.empty(
+                0, 2, dtype=world.dtype, device=world.device,
+            )
+            self._static_avoid_r = torch.empty(
+                0, dtype=world.dtype, device=world.device,
+            )
 
         # Populated during reload().
         self._loaded_entities: List = []
         self._loaded_objects: List[ManipulatableObject] = []
         self._bboxes: List[BoxSpace] = []
 
-        # Pre-computed bbox tensors (set after reload).
+        # Pre-computed bbox tensors (cached on the first reload and reused on
+        # subsequent reloads of the same manager instance).  The cache is
+        # invalidated (and rebuilt) when the object pool's lightweight identity
+        # signature — a tuple of descriptor object ids in pool order — changes
+        # between reloads (see ``_pool_signature``).  Computing the signature
+        # invokes no geometry queries, so an unchanged pool is detected cheaply
+        # and the cached tensors are reused verbatim.  Replacing, reordering,
+        # adding, or removing a descriptor rebuilds; in-place geometry mutation
+        # of an existing descriptor instance is *not* detected.
         self._dims_t: Optional[torch.Tensor] = None         # (n_pool, 3)
-        self._centers_t: Optional[torch.Tensor] = None       # (n_pool, 3)
-        self._footprint_r_t: Optional[torch.Tensor] = None   # (n_pool,)
+        self._centers_t: Optional[torch.Tensor] = None     # (n_pool, 3)
+        self._footprint_r_t: Optional[torch.Tensor] = None  # (n_pool,)
+        self._max_footprint_radius: float = 0.0            # max over pool
+        # Deterministic per-object *entity-origin* parking positions (n_pool, 3),
+        # computed once from the bounding-box cache so each inactive object
+        # occupies a unique lattice cell whose bbox centre lands at park_z.
+        self._park_positions_t: Optional[torch.Tensor] = None
+        # Lightweight identity signature (tuple of descriptor object ids, in pool
+        # order) of the descriptor set the current cache was built from; ``None``
+        # until the first successful build.  Reading it never queries geometry.
+        self._pool_signature_cached: Optional[tuple] = None
 
         # Per-environment active-object mask (set after first reset).
         # Unbatched: (n_pool,) bool.  Batched: (n_pool, n_envs) bool.
@@ -211,6 +296,125 @@ class ClutteredTableManager(WorldNode):
             radii
         )
 
+    def _pool_signature(self) -> tuple:
+        """Compute a lightweight stable identity signature for the current
+        object pool.
+
+        The signature captures pool membership **and** order through the
+        Python-level *object identity* of each descriptor: it is simply
+        ``tuple(id(obj) for obj in self.object_pool)``.  Replacing a
+        descriptor, reordering the pool, or adding/removing an entry all yield
+        a different signature and therefore force a geometry-cache rebuild on
+        the next :meth:`_ensure_geometry_cache` call.  Two distinct but
+        geometrically-identical descriptor instances are *not* considered
+        equal — the second reload of a replaced pool rebuilds the cache.
+
+        Crucially, computing this signature does **not** invoke any geometry
+        query (``get_local_bounding_box`` / ``get_footprint_radius``); it only
+        reads ``id()``.  This means the signature can be checked on every
+        reload at near-zero cost, and — for an unchanged pool — the cached
+        geometry tensors are reused without re-querying the descriptors.
+
+        In-place mutation of a descriptor's geometry (e.g. resizing a box in
+        place without replacing the instance) is intentionally *not* detected:
+        the cache is only rebuilt when the descriptor set or its ordering
+        changes.
+
+        Returns:
+            A hashable, comparable tuple of ``id()`` ints (one per
+            descriptor, in pool order).  Returns ``()`` for an empty pool.
+        """
+        return tuple(id(obj_desc) for obj_desc in self.object_pool)
+
+    def _ensure_geometry_cache(self) -> None:
+        """Populate the bounding-box / footprint / parking cache once.
+
+        On the first ``reload()`` (before any ``load_into_scene`` call) walk
+        the pool, cache each descriptor's no-arg
+        :meth:`~ManipulatableObject.get_local_bounding_box` and
+        :meth:`~ManipulatableObject.get_footprint_radius`, derive the stacked
+        ``dims`` / ``centers`` / ``footprint_r`` tensors, the scalar
+        ``max_footprint_radius``, and the deterministic per-object
+        ``entity-origin`` parking positions for a 2-D lattice with uniform
+        spacing ``2 * max_footprint_radius + park_clearance``.
+
+        On subsequent reloads the cache is reused *iff* the pool's lightweight
+        identity signature (a tuple of descriptor object ids, in pool order —
+        see :meth:`_pool_signature`) is unchanged.  Computing the signature
+        invokes no geometry queries, so the reuse check is essentially free and
+        an unchanged pool never re-queries ``get_local_bounding_box`` /
+        ``get_footprint_radius``.  If a descriptor was replaced, the pool
+        reordered, or an entry added/removed, the cache is invalidated and
+        rebuilt so the park lattice and footprint radii stay consistent with the
+        descriptors that are actually about to be loaded.  In-place geometry
+        mutation of an existing descriptor instance is not detected.
+        """
+        current_sig = self._pool_signature()
+        if (
+            self._park_positions_t is not None
+            and self._pool_signature_cached == current_sig
+        ):
+            # Geometry cache still valid for the current pool; reuse.
+            return
+
+        n_pool = len(self.object_pool)
+        device = self.world.device
+        dtype = self.world.dtype
+
+        self._bboxes = [
+            obj_desc.get_local_bounding_box()
+            for obj_desc in self.object_pool
+        ]
+        radii = [
+            obj_desc.get_footprint_radius()
+            for obj_desc in self.object_pool
+        ]
+
+        if n_pool == 0:
+            self._dims_t = torch.zeros(0, 3, dtype=dtype, device=device)
+            self._centers_t = torch.zeros(0, 3, dtype=dtype, device=device)
+            self._footprint_r_t = torch.zeros(0, dtype=dtype, device=device)
+            self._max_footprint_radius = 0.0
+            self._park_positions_t = torch.zeros(0, 3, dtype=dtype, device=device)
+            self._pool_signature_cached = current_sig
+            return
+
+        self._dims_t = torch.stack(
+            [bbox_size(b) for b in self._bboxes]
+        ).to(dtype=dtype, device=device)  # (n_pool, 3)
+        self._centers_t = torch.stack(
+            [bbox_center(b) for b in self._bboxes]
+        ).to(dtype=dtype, device=device)  # (n_pool, 3)
+        self._footprint_r_t = torch.tensor(
+            radii, dtype=dtype, device=device,
+        )  # (n_pool,)
+        self._max_footprint_radius = float(self._footprint_r_t.max().item())
+
+        # Square-ish 2-D lattice: cell (i) at column ``(i % n_cols)`` and row
+        # ``(i // n_cols)`` multiplied by a uniform spacing that meets or
+        # exceeds the sum of any pair's footprint radii (bounded by the max);
+        # the separation is strict when ``park_clearance`` is positive.
+        spacing = 2.0 * self._max_footprint_radius + self.park_clearance
+        n_cols = max(1, int(math.ceil(math.sqrt(n_pool))))
+        idx = torch.arange(n_pool, dtype=dtype, device=device)
+        cols = (idx % n_cols) * spacing
+        rows = torch.div(idx, n_cols, rounding_mode="floor") * spacing
+
+        # Parking *bbox-centre* targets in the world XY plane; z is fixed at
+        # the park altitude (park_z, default -1000) so the parked AABB
+        # centres share a single altitude far below the table.
+        park_centers = torch.stack(
+            [cols, rows, torch.full_like(cols, float(_PARK_POS[2]))],
+            dim=-1,
+        )  # (n_pool, 3)
+
+        # Compensate each object's local bbox centre so its AABB centre lands
+        # exactly on the lattice target — accounts for off-centre object
+        # origins commonly found in GSO/YCB meshes.
+        self._park_positions_t = (park_centers - self._centers_t)  # (n_pool, 3)
+
+        self._pool_signature_cached = current_sig
+
     def reload(self, *, priority=0, seed=None, mask=None, **kwargs):
         if priority != 25:
             return
@@ -219,34 +423,30 @@ class ClutteredTableManager(WorldNode):
 
         batch_fixed_verts = self.world.batch_size is not None
 
+        # Build the geometry cache (unique park positions included) before any
+        # entity enters the scene so every object is loaded directly at its
+        # unique, well-separated parking pose — no shared pile before settle.
+        self._ensure_geometry_cache()
+
         self._loaded_entities = []
         self._loaded_objects = []
-        self._bboxes = []
         self._active_mask_t = None
 
         for i, obj_desc in enumerate(self.object_pool):
+            park_pos = self._park_positions_t[i]
             entity = obj_desc.load_into_scene(
                 world=self.world,
-                pos=_PARK_POS,
+                pos=(
+                    float(park_pos[0].item()),
+                    float(park_pos[1].item()),
+                    float(park_pos[2].item()),
+                ),
                 quat=_PARK_QUAT,
                 name_override=f"{self._name}_{obj_desc.name}_{i}",
                 batch_fixed_verts=batch_fixed_verts,
             )
             self._loaded_entities.append(entity)
             self._loaded_objects.append(obj_desc)
-            self._bboxes.append(obj_desc.get_local_bounding_box(entity))
-
-        # Pre-compute bbox tensors for vectorised placement.
-        if self._bboxes:
-            self._dims_t = torch.stack(
-                [bbox_size(b) for b in self._bboxes]
-            ).to(dtype=self.world.dtype)  # (n_pool, 3)
-            self._centers_t = torch.stack(
-                [bbox_center(b) for b in self._bboxes]
-            ).to(dtype=self.world.dtype)  # (n_pool, 3)
-            self._footprint_r_t = (
-                torch.linalg.norm(self._dims_t[:, :2], dim=1) / 2.0
-            )  # (n_pool,) — inherits dtype from _dims_t
 
     def after_reload(self, *, priority=0, mask=None, **kwargs):
         if priority != 25:
@@ -292,26 +492,38 @@ class ClutteredTableManager(WorldNode):
                 1, avoid_xy, avoid_r,
             )
             self._active_mask_t = active.squeeze(1)  # (n_pool,)
-            self._apply_placements(positions.squeeze(1), envs_idx=None)
+            self._apply_placements(
+                positions.squeeze(1), active.squeeze(1), envs_idx=None,
+            )
         else:
             # Batched — respect the mask.
             if mask is not None:
                 mask_t = (
                     mask if isinstance(mask, torch.Tensor)
-                    else torch.as_tensor(mask, dtype=torch.bool)
+                    else torch.as_tensor(
+                        mask, dtype=torch.bool, device=self.world.device,
+                    )
                 )
+                # Ensure the mask lives on the world's device so that the
+                # derived index tensor (and subsequent indexing) stays
+                # device-local on GPU backends.
+                if mask_t.device != self.world.device:
+                    mask_t = mask_t.to(self.world.device)
                 reset_idx = torch.where(mask_t)[0]
             else:
-                reset_idx = torch.arange(n_envs)
+                reset_idx = torch.arange(
+                    n_envs, device=self.world.device,
+                )
 
             n_reset = reset_idx.numel()
             if n_reset == 0:
                 return
 
-            # Initialise active mask on first call.
+            # Initialise active mask on first call on the world's device so
+            # later indexing/assignment stays device-local on GPU backends.
             if self._active_mask_t is None:
                 self._active_mask_t = torch.zeros(
-                    n_pool, n_envs, dtype=torch.bool,
+                    n_pool, n_envs, dtype=torch.bool, device=self.world.device,
                 )
 
             positions, active = self._compute_placement_vectorized(
@@ -322,7 +534,7 @@ class ClutteredTableManager(WorldNode):
             self._active_mask_t[:, reset_idx] = active
 
             envs_idx = reset_idx if mask is not None else None
-            self._apply_placements(positions, envs_idx=envs_idx)
+            self._apply_placements(positions, active, envs_idx=envs_idx)
 
     def get_observation(self):
         return None
@@ -350,8 +562,12 @@ class ClutteredTableManager(WorldNode):
         elif mask is not None:
             mask_t = (
                 mask if isinstance(mask, torch.Tensor)
-                else torch.as_tensor(mask, dtype=torch.bool)
+                else torch.as_tensor(
+                    mask, dtype=torch.bool, device=self.world.device,
+                )
             )
+            if mask_t.device != self.world.device:
+                mask_t = mask_t.to(self.world.device)
             reset_idx = torch.where(mask_t)[0]
             n_reset = reset_idx.numel()
         else:
@@ -374,6 +590,10 @@ class ClutteredTableManager(WorldNode):
         # Per-env avoid spaces from kwargs (expected in world frame).
         if extra is not None:
             ext_xy, ext_r = extra  # (n_envs_full, n_extra, 2|3), (n_envs_full, n_extra)
+            # Move dynamic avoid spaces onto the world's device so that the
+            # local index slicing and downstream math stay device-local.
+            ext_xy = ext_xy.to(self.world.device)
+            ext_r = ext_r.to(self.world.device)
             # Slice XY only if 3D centres were provided.
             if ext_xy.dim() == 3 and ext_xy.shape[-1] > 2:
                 ext_xy = ext_xy[..., :2]
@@ -398,8 +618,8 @@ class ClutteredTableManager(WorldNode):
         if parts_xy:
             return torch.cat(parts_xy, dim=1), torch.cat(parts_r, dim=1)
         return (
-            torch.empty(n_reset, 0, 2, dtype=self.world.dtype),
-            torch.empty(n_reset, 0, dtype=self.world.dtype),
+            torch.empty(n_reset, 0, 2, dtype=self.world.dtype, device=self.world.device),
+            torch.empty(n_reset, 0, dtype=self.world.dtype, device=self.world.device),
         )
 
     # ------------------------------------------------------------------
@@ -426,16 +646,21 @@ class ClutteredTableManager(WorldNode):
             avoid_r:  ``(n_envs, n_avoid)`` exclusion-zone radii.
 
         Returns:
-            positions:   ``(n_pool, n_envs, 3)`` — world positions (parked for
-                         inactive objects).
+            positions:   ``(n_pool, n_envs, 3)`` — world positions (the unique
+                         per-object parking entity-origin position for
+                         inactive objects; on-table entity-origin position for
+                         active ones).
             active_mask: ``(n_pool, n_envs)``    — *True* where the object is
                          placed on the table in that environment.
         """
         n_pool = len(self.object_pool)
 
-        # Start every object at the parking position.
-        positions = torch.zeros(n_pool, n_envs, 3, dtype=self.world.dtype, device=self.world.device)
-        positions[:, :, 2] = _PARK_POS[2]
+        # Start every object at its unique, well-separated parking position
+        # (broadcast across the reset scope).  Inactive objects never land on
+        # the shared ``(0,0,-1000)`` pile — they keep this per-object slot.
+        positions = self._park_positions_t.unsqueeze(1).expand(
+            n_pool, n_envs, 3,
+        ).contiguous()
         active_mask = torch.zeros(n_pool, n_envs, dtype=torch.bool, device=self.world.device)
 
         if n_pool == 0:
@@ -447,6 +672,7 @@ class ClutteredTableManager(WorldNode):
             self.n_objects_range[1] + 1,
             (n_envs,),
             generator=self.rng,
+            device=self.world.device,
         )
         max_n = int(n_objs.max().item())
 
@@ -570,29 +796,122 @@ class ClutteredTableManager(WorldNode):
     def _apply_placements(
         self,
         positions: torch.Tensor,
+        active_mask: torch.Tensor,
         envs_idx: Optional[torch.Tensor],
     ) -> None:
-        """Set entity positions and orientations via each object's
-        :meth:`~ManipulatableObject.set_pos_3d`.
+        """Set entity positions and orientations in an active-mask-aware way.
+
+        Active objects use each descriptor's ``set_pos_3d`` orientation
+        behaviour (random yaw by default; subclasses may customise via
+        ``_standing_quaternion``); inactive objects are pinned to their unique
+        cached parking position with the fixed ``_PARK_QUAT`` orientation and
+        consume **no** RNG, regardless of ``random_quaternion``.
 
         Args:
-            positions: ``(n_pool, n_envs, 3)`` or ``(n_pool, 3)``
-                (unbatched).
-            envs_idx:  ``None`` for full writes (all envs or unbatched).
+            positions: ``(n_pool, n_envs, 3)`` (batched / masked) or
+                ``(n_pool, 3)`` (unbatched).
+            active_mask: ``(n_pool, n_envs)`` or ``(n_pool,)`` bool tensor
+                matching ``positions`` — *True* where the object goes on the
+                table, *False* where it stays parked.
+            envs_idx: ``None`` for full writes (all envs or unbatched).
                 ``(n_reset,)`` LongTensor for partial (masked) updates —
-                passed through to
-                :meth:`~ManipulatableObject.set_pos_3d` as *envs_idx*.
+                ``positions`` are then ``(n_pool, n_reset, 3)`` and only the
+                listed environments are overwritten; the rest keep their
+                current pose.
         """
+        if positions.ndim == 2:
+            # Unbatched — single environment.
+            for i, (obj, entity) in enumerate(
+                zip(self._loaded_objects, self._loaded_entities),
+            ):
+                pos_i = positions[i]
+                if bool(active_mask[i]):
+                    # Active: honour the descriptor's orientation policy via
+                    # the public set_pos_3d (which delegates to
+                    # ``_standing_quaternion`` internally).  No private call.
+                    obj.set_pos_3d(
+                        entity,
+                        pos_i,
+                        random_quaternion=self.random_quaternion,
+                        rng=self.rng,
+                        envs_idx=None,
+                    )
+                else:
+                    # Parked: pinned directly to the cached per-object park
+                    # position with the fixed ``_PARK_QUAT``.  No RNG.
+                    park_pos = self._park_positions_t[i].to(
+                        dtype=pos_i.dtype, device=pos_i.device,
+                    )
+                    entity.set_pos(park_pos)
+                    entity.set_quat(
+                        torch.tensor(
+                            _PARK_QUAT, dtype=pos_i.dtype, device=pos_i.device,
+                        )
+                    )
+            return
+
+        # Batched (full reset or masked reset sub-scope).
+        # ``positions`` is ``(n_pool, n_reset, 3)`` where ``n_reset`` indexes
+        # the reset scope; ``envs_idx`` (when not ``None``) maps the reset
+        # scope to the **global** environment axis.
+        n_reset = positions.shape[1]
+        device = positions.device
+        dtype = positions.dtype
+        park_quat = torch.tensor(_PARK_QUAT, dtype=dtype, device=device)
+
         for i, (obj, entity) in enumerate(
             zip(self._loaded_objects, self._loaded_entities),
         ):
-            obj.set_pos_3d(
-                entity,
-                positions[i],
-                random_quaternion=self.random_quaternion,
-                rng=self.rng,
-                envs_idx=envs_idx,
-            )
+            pos_i = positions[i]        # (n_reset, 3)
+            act_i = active_mask[i]      # (n_reset,) bool
+            active_idx = torch.where(act_i)[0]      # local reset-scope idxs
+            inactive_idx = torch.where(~act_i)[0]   # local reset-scope idxs
+
+            # Map the local reset-scope indices to global env indices.  When
+            # ``envs_idx`` is ``None`` the reset scope *is* the full env axis,
+            # so the local and global indices coincide.
+            if envs_idx is None:
+                global_active_idx = active_idx
+                global_inactive_idx = inactive_idx
+            else:
+                global_active_idx = envs_idx[active_idx]
+                global_inactive_idx = envs_idx[inactive_idx]
+
+            # --- Active subset: route through the descriptor's public
+            # set_pos_3d so each object's "standing" / "random" orientation
+            # policy is honoured.  RNG is drawn only for the active envs
+            # (inside set_pos_3d → _standing_quaternion), so masked resets
+            # with few active objects stay cheap and reproducible.
+            if active_idx.numel() > 0:
+                active_positions = pos_i[active_idx]  # (n_active, 3)
+                obj.set_pos_3d(
+                    entity,
+                    active_positions,
+                    random_quaternion=self.random_quaternion,
+                    rng=self.rng,
+                    envs_idx=global_active_idx,
+                )
+
+            # --- Inactive subset: pinned directly to the cached per-object
+            # park position with the fixed ``_PARK_QUAT``.  No RNG is drawn
+            # for inactive objects, regardless of ``random_quaternion``.
+            if inactive_idx.numel() > 0:
+                n_inactive = inactive_idx.numel()
+                park_pos = self._park_positions_t[i].to(
+                    dtype=dtype, device=device,
+                )  # (3,)
+                inactive_positions = park_pos.unsqueeze(0).expand(
+                    n_inactive, 3,
+                )
+                inactive_quats = park_quat.unsqueeze(0).expand(
+                    n_inactive, 4,
+                )
+                cur_pos = entity.get_pos().clone()
+                cur_quat = entity.get_quat().clone()
+                cur_pos[global_inactive_idx] = inactive_positions
+                cur_quat[global_inactive_idx] = inactive_quats
+                entity.set_pos(cur_pos)
+                entity.set_quat(cur_quat)
 
     # ------------------------------------------------------------------
     # Introspection

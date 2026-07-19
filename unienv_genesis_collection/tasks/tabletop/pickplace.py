@@ -124,10 +124,10 @@ class ObjectRelocateTask(WorldNode):
         )
 
         # Cache object dimensions for placement logic.
-        self._target_object_bbox_local = self.target_object.get_local_bounding_box(self.target_object_entity).to(
+        self._target_object_bbox_local = self.target_object.get_local_bounding_box().to(
             device=self.world.device
         ) # BoxSpace with low and high of shape (3, )
-        self._target_object_radius = self.target_object.get_footprint_radius(self.target_object_entity) # scalar
+        self._target_object_radius = self.target_object.get_footprint_radius() # scalar
         self._target_object_extent_local = bbox_size(self._target_object_bbox_local) # (3,)
 
     def after_reload(self, *, priority=0, mask=None):
