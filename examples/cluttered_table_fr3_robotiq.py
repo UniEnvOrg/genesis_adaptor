@@ -198,7 +198,7 @@ def init_ref_policy(env : WorldEnv):
                     world, arm_eef, lift_pos, eef_quat.detach().clone(),
                 ),
                 "gripper": RepeatActionRefPolicy(
-                    world, GRIPPER_CLOSE, steps=0, controller=gripper,
+                    world, GRIPPER_CLOSE, controller=gripper,
                 ),
             },
             success_keys=["arm"],
@@ -225,7 +225,7 @@ def main():
         for step in range(TOTAL_STEPS):
             action = policy.get_action()
             obs, reward, terminated, truncated, info = env.step(action)
-            policy.step()
+            policy.step(dt=info['control_step_elapsed_time'])
 
             if policy.get_success():
                 print(f"Grasp + lift succeeded at step {step}!")

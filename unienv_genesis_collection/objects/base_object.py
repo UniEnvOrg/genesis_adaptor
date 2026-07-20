@@ -439,11 +439,21 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             random_quaternion: If ``True`` generate random orientations;
                 if ``False`` use the identity quaternion ``(1, 0, 0, 0)``.
             rng: Optional :class:`torch.Generator` for reproducibility.
-            envs_idx: Optional ``(n,)`` :class:`~torch.LongTensor` of
-                environment indices for partial (masked) updates.  When
-                provided, *positions* has shape ``(n, 3)`` and only the
-                listed environments are overwritten; the rest keep their
-                current state.
+            envs_idx: Optional environment selector for partial (masked)
+                updates — a ``(batch_size,)`` :class:`torch.bool` mask
+                (Genesis accepts boolean masks directly).  When provided,
+                *positions* has shape ``(n, 3)`` with *n* the number of
+                selected environments, and only those environments are
+                overwritten; the rest keep their current state.  The mask
+                is forwarded to Genesis unchanged.
+
+                Partial updates are **genuinely selective**: the new poses
+                are forwarded to Genesis together with *envs_idx*, so only
+                the selected environments are written.  Unselected
+                environments are never re-written — their position,
+                orientation, and velocities are left completely untouched.
+                (Genesis zeroes the velocities of *selected* envs after a
+                teleport, matching full-reset behaviour.)
         """
         device = positions.device
         dtype = positions.dtype if positions.dtype.is_floating_point else torch.float32
@@ -462,12 +472,22 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             entity.set_pos(positions)
             entity.set_quat(quat)
         else:
-            cur_pos = entity.get_pos().clone()
-            cur_quat = entity.get_quat().clone()
-            cur_pos[envs_idx] = positions
-            cur_quat[envs_idx] = quat
-            entity.set_pos(cur_pos)
-            entity.set_quat(cur_quat)
+            # Selective write: forward only the selected rows together with
+            # the caller's boolean mask.  A read-modify-write full-batch
+            # set_pos / set_quat would (a) re-write unselected envs and
+            # (b) zero their velocities (RigidEntity.set_pos / set_quat
+            # default ``zero_velocity=True``); passing envs_idx avoids both.
+            assert isinstance(envs_idx, torch.Tensor) and envs_idx.dtype == torch.bool, (
+                f"envs_idx must be a torch.bool mask tensor, got "
+                f"{type(envs_idx)} with dtype {getattr(envs_idx, 'dtype', None)}"
+            )
+            n_selected = int(envs_idx.sum().item())
+            assert n == n_selected, (
+                f"positions has {n} rows but envs_idx selects "
+                f"{n_selected} envs"
+            )
+            entity.set_pos(positions, envs_idx=envs_idx)
+            entity.set_quat(quat, envs_idx=envs_idx)
 
     def _standing_quaternion(
         self,

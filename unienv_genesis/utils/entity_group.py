@@ -109,6 +109,9 @@ class EntityGroup:
         self._dtype = dtype
         self._pos: torch.Tensor = _as_tensor(pos, dtype=dtype)
         self._quat: torch.Tensor = _as_tensor(quat, dtype=dtype)
+        # Enforce a single canonical anchor device/dtype from the start
+        # (the position component defines it when inputs disagree).
+        self._set_anchor()
         # list of (entity, local_pos (3,), local_quat (4,))
         self._members: list[tuple] = []
 
@@ -176,6 +179,34 @@ class EntityGroup:
     # Pose manipulation
     # ------------------------------------------------------------------
 
+    def _set_anchor(
+        self,
+        pos: Union[Sequence[float], torch.Tensor, None] = None,
+        quat: Union[Sequence[float], torch.Tensor, None] = None,
+    ) -> None:
+        """Update anchor components under one canonical device/dtype.
+
+        The anchor (``_pos`` + ``_quat``) must always live on a single
+        device/dtype pair.  A floating **tensor** input makes its
+        device/dtype canonical and the *other* anchor component is migrated
+        alongside (``pos`` takes precedence if both are tensors); non-tensor
+        inputs adopt the current canonical device/dtype.  This guarantees
+        that e.g. ``set_pos(cuda_tensor)`` followed by ``set_quat(...)`` on
+        a CPU-initialised group can never leave the anchor internally
+        mixed-device.  ``Tensor.to`` is a no-op when already aligned.
+        """
+        pos_t = _as_tensor(pos, dtype=self._dtype) if pos is not None else None
+        quat_t = _as_tensor(quat, dtype=self._dtype) if quat is not None else None
+
+        device, dtype = self._pos.device, self._pos.dtype
+        for raw, t in ((pos, pos_t), (quat, quat_t)):
+            if t is not None and isinstance(raw, torch.Tensor):
+                device, dtype = t.device, t.dtype
+                break
+
+        self._pos = (pos_t if pos_t is not None else self._pos).to(device=device, dtype=dtype)
+        self._quat = (quat_t if quat_t is not None else self._quat).to(device=device, dtype=dtype)
+
     def _world_pose(
         self,
         local_pos: torch.Tensor,
@@ -186,7 +217,14 @@ class EntityGroup:
         Handles both unbatched anchors ``(3,)``/``(4,)`` and batched anchors
         ``(n_envs, 3)``/``(n_envs, 4)``.  The member's local tensors are always
         ``(3,)``/``(4,)`` and are expanded along the batch dimension as needed.
+
+        Member local tensors are stored device-neutrally (they are typically
+        created from plain Python sequences at build time); they are aligned to
+        the anchor's device/dtype here so CUDA-anchored groups stay
+        device-consistent.  ``Tensor.to`` is a no-op when already aligned.
         """
+        local_pos = local_pos.to(device=self._pos.device, dtype=self._pos.dtype)
+        local_quat = local_quat.to(device=self._quat.device, dtype=self._quat.dtype)
         if self._quat.dim() > 1:
             # Batched anchor — broadcast local tensors to (n_envs, *).
             n_envs = self._quat.shape[0]
@@ -233,8 +271,7 @@ class EntityGroup:
             quat: New anchor orientation ``(w, x, y, z)`` or ``(n_envs, 4)``.
             envs_idx: Optional environment indices for batched resets.
         """
-        self._pos = _as_tensor(pos, dtype=self._dtype)
-        self._quat = _as_tensor(quat, dtype=self._dtype)
+        self._set_anchor(pos=pos, quat=quat)
         self._apply_all(envs_idx=envs_idx)
 
     def set_pos(
@@ -248,7 +285,7 @@ class EntityGroup:
             pos: New anchor world position ``(x, y, z)``.
             envs_idx: Optional environment indices for batched resets.
         """
-        self._pos = _as_tensor(pos, dtype=self._dtype)
+        self._set_anchor(pos=pos)
         self._apply_all(envs_idx=envs_idx)
 
     def set_quat(
@@ -262,7 +299,7 @@ class EntityGroup:
             quat: New anchor orientation ``(w, x, y, z)``.
             envs_idx: Optional environment indices for batched resets.
         """
-        self._quat = _as_tensor(quat, dtype=self._dtype)
+        self._set_anchor(quat=quat)
         self._apply_all(envs_idx=envs_idx)
 
     # ------------------------------------------------------------------

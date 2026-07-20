@@ -40,7 +40,6 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         lights : Optional[Dict[str, GenesisWorldLightOption]] = None,
         env_map : Optional[GenesisWorldEnvMapOption] = None,
         light_fields : Optional[Sequence[Any]] = None,
-        n_settle_steps : int = 0,
     ):
         """Initialize Genesis World.
         
@@ -56,23 +55,8 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
                 any per-camera light fields configured on
                 ``CameraSensorNodeOptions``. Ignored by non-Nyx backends.
                 Stored immutably as a tuple on ``self.light_fields``.
-            n_settle_steps: Number of physics steps to run at the end of
-                ``after_reload`` / ``after_reset`` to "settle" the simulation
-                before observations are read.  Genesis only populates its
-                sensor cache (IMU accelerations, contact forces, …) during
-                ``scene.step()``; right after a fresh build or reset the cache
-                is empty and contacts have not yet been detected by the
-                collider.  Setting this to a small number (e.g. 2–5) ensures
-                that every sensor node returns a meaningful observation on the
-                very first ``env.reset()`` call.  The trade-off is that the
-                simulation advances by ``n_settle_steps`` world timesteps from
-                the configured initial state.  Defaults to 0 (no advance); in
-                that case a no-op sensor-cache refresh is still performed so
-                that sensors reading retained solver quantities (e.g. IMU
-                gravity) are populated on subsequent (non-build) resets.
         """
         self._batch_size = batch_size
-        self._n_settle_steps = int(n_settle_steps)
         # Copy caller-supplied dicts so we never mutate the caller's objects.
         self.scene_init_kwargs = dict(scene_init_kwargs) if scene_init_kwargs is not None else {}
         self.scene_build_kwargs = dict(scene_build_kwargs) if scene_build_kwargs is not None else {}
@@ -263,10 +247,17 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             return
         if seed is not None:
             gs.set_random_seed(seed)
-        # Populate sensor caches so sensor nodes return meaningful observations
-        # on the very first `env.reset()`/`env.step()` read.  See
-        # `_settle_and_refresh_sensors` for details.
-        self._settle_and_refresh_sensors()
+        # Refresh sensor caches (without advancing the physics) so sensor
+        # nodes return meaningful observations on the very first
+        # `env.reset()`/`env.step()` read.  See `_refresh_sensor_caches` for
+        # details.
+        #
+        # Masked resets skip this: the refresh re-reads sensor state for the
+        # *entire* batch — Genesis has no per-env cache refresh — which would
+        # needlessly overwrite the still-valid cached observations of the
+        # environments that were not reset.
+        if mask is None:
+            self._refresh_sensor_caches()
 
     def reload(
         self,
@@ -310,13 +301,14 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
             self.scene.add_camera()
 
         self.build_scene(self.scene, n_envs=self.batch_size)
-        # Populate sensor caches so sensor nodes return meaningful observations
-        # on the very first `env.reset()`/`env.step()` read.  See
-        # `_settle_and_refresh_sensors` for details.
-        self._settle_and_refresh_sensors()
+        # Refresh sensor caches (without advancing the physics) so sensor
+        # nodes return meaningful observations on the very first
+        # `env.reset()`/`env.step()` read.  See `_refresh_sensor_caches` for
+        # details.
+        self._refresh_sensor_caches()
 
-    def _settle_and_refresh_sensors(self) -> None:
-        """Ensure Genesis sensor caches are populated after build/reset.
+    def _refresh_sensor_caches(self) -> None:
+        """Refresh Genesis sensor caches without advancing the simulation.
 
         Genesis only fills its sensor cache (IMU accelerations, contact
         forces, …) during ``scene.step()`` — ``sim.step()`` runs the physics
@@ -325,33 +317,30 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         ``scene.reset()`` the cache is empty and the collider has not yet
         detected any contacts, so ``sensor.read()`` returns zeros.
 
-        This method does two things, in order:
+        This performs a *no-advance* refresh by calling
+        ``sensor_manager.step()`` directly: it re-reads the current solver
+        state without stepping the physics, which populates sensors that read
+        retained solver quantities (e.g. the IMU accelerometer, which reflects
+        gravity on subsequent resets).  Contact-based sensors still read zero
+        until the first real ``env.step()`` because the collider's contact
+        list is cleared on reset.  This method never calls ``scene.step()`` —
+        the world deliberately does not advance the simulation outside of
+        ``env.step()``.
 
-        1. Runs ``n_settle_steps`` ``scene.step()`` calls (default 0) to let
-           the physics settle and the collider detect contacts.  Each
-           ``scene.step()`` populates the sensor cache as a side effect.
-        2. When no settle steps are configured (``n_settle_steps == 0``),
-           performs a *no-advance* cache refresh by calling
-           ``sensor_manager.step()`` directly.  This re-reads the current
-           solver state without advancing the simulation, which populates
-           sensors that read retained solver quantities (e.g. the IMU
-           accelerometer, which reflects gravity on subsequent resets).
-           Contact-based sensors will still read zero until the first real
-           ``env.step()`` because the collider's contact list is cleared on
-           reset — set ``n_settle_steps >= 2`` if you need meaningful contact
-           data immediately after reset.
+        It is only invoked on full (unmasked) resets and reloads: the refresh
+        re-reads sensor state for the *entire* batch (Genesis has no per-env
+        cache refresh), so running it on a masked reset would needlessly
+        overwrite the still-valid cached observations of the environments
+        that were not reset.
 
         ``BaseCameraSensor._update_shared_cache`` is a no-op (cameras render
         lazily on ``read()``), so this never triggers spurious rendering.
         """
         if self.scene is None or not getattr(self.scene, "is_built", False):
             return
-        for _ in range(self._n_settle_steps):
-            self.scene.step()
-        if self._n_settle_steps == 0:
-            sm = getattr(getattr(self.scene, "_sim", None), "_sensor_manager", None)
-            if sm is not None:
-                sm.step()
+        sm = getattr(getattr(self.scene, "_sim", None), "_sensor_manager", None)
+        if sm is not None:
+            sm.step()
         
     def close(self) -> None:
         """Close the Genesis simulation and cleanup."""

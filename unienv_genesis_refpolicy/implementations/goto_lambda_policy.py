@@ -130,17 +130,15 @@ class GoToLambdaRefPolicy(GoToRefPolicy):
             target_quat, self.world.batch_size, 4, device=self.world.device,
         )
 
-        # Recompute the action for the new targets.
-        action = self.controller.get_action_world(target_pos, target_quat)
-
+        # Store the fresh targets.  The frame-dependent action is recomputed
+        # from them exactly once in the parent reset below (which also covers
+        # base-frame changes), so we deliberately do not convert here.
         if mask is not None:
             self.target_pos[mask] = target_pos[mask]
             self.target_quat[mask] = target_quat[mask]
-            self._action[mask] = action[mask]
         else:
             self.target_pos.copy_(target_pos)
             self.target_quat.copy_(target_quat)
-            self._action.copy_(action)
 
-        # Reset tracking state via the parent.
+        # Reset tracking state and recompute the action via the parent.
         super().reset(mask=mask, seed=seed)

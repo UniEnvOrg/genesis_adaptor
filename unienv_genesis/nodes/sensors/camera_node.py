@@ -272,6 +272,19 @@ class CameraSensorNode(SensorNode[
 
     def _init_sensor(self) -> None:
         """Initialize the camera sensor according to the specified backend."""
+        # Resolve the attachment once for all backends.  An entity-only
+        # attachment (``link=None``) is normalized to the entity's base link
+        # so that the link handed to the renderer and the link used to derive
+        # reported extrinsics are always the same link.
+        self._attach_entity = None
+        self._attach_link = None
+        if self.option.attach is not None:
+            entity, link = self.option.attach.get_attachment(self.world)
+            if entity is not None and link is None:
+                link = entity.base_link
+            self._attach_entity = entity
+            self._attach_link = link
+
         if self.option.backend == "nyx":
             self.sensor = self._init_sensor_nyx()
             # If depth/seg/normal/position is requested, also create a genesis camera
@@ -283,9 +296,6 @@ class CameraSensorNode(SensorNode[
     def _init_sensor_genesis(self) -> CameraSensor:
         """Initialize via Genesis ``scene.add_camera()``."""
 
-        if self.option.attach is not None:
-            self._attach_entity, self._attach_link = self.option.attach.get_attachment(self.world)
-        
         camera = self.world.scene.add_camera(
             model=self.option.model,
             res=self.option.res,
@@ -304,7 +314,9 @@ class CameraSensorNode(SensorNode[
             debug=self.option.debug
         )
         if self._attach_entity is not None:
-            attach_link = self._attach_link if self._attach_link is not None else self._attach_entity.base_link
+            # ``_attach_link`` was normalized to the entity's base link in
+            # ``_init_sensor`` when the provider gave an entity-only attach.
+            attach_link = self._attach_link
             relative_T = np.eye(4, dtype=np.float32)
             relative_T[:3, :3] = quaternion_to_matrix(
                 NumpyComputeBackend,
@@ -327,15 +339,16 @@ class CameraSensorNode(SensorNode[
     def _init_sensor_nyx(self) -> CameraSensor:
         """Initialize via NYX ``scene.add_sensor(NyxCameraOptions(...))``."""
 
-        # Resolve attachment to entity_idx / link_idx_local / offset_T
+        # Resolve attachment to entity_idx / link_idx_local / offset_T.
+        # ``_attach_link`` was normalized to the entity's base link in
+        # ``_init_sensor`` for entity-only attachments, so the link passed
+        # to NYX here is the same link used by ``_get_extrinsics``.
         entity_idx = None
         link_idx_local = None
         offset_T = None
-        if self.option.attach is not None:
-            self._attach_entity, self._attach_link = self.option.attach.get_attachment(self.world)
+        if self._attach_entity is not None:
             entity_idx = self._attach_entity.idx
-            if self._attach_link is not None:
-                link_idx_local = self._attach_link.idx_local
+            link_idx_local = self._attach_link.idx_local
             # Build the 4x4 offset transform from quat + pos
             offset_T = np.eye(4, dtype=np.float64)
             offset_T[:3, :3] = quaternion_to_matrix(
@@ -621,8 +634,10 @@ class CameraSensorNode(SensorNode[
         For the Genesis backend the transform is read from ``sensor.get_transform()``.
         For the NYX backend, if the camera is attached to a link, the world extrinsics
         are computed from the link's current world transform composed with the stored
-        ``_offset_T``.  If a secondary genesis sensor exists (NYX backend with
-        depth/seg/normal), prefer its extrinsics for consistency.
+        ``_offset_T``.  Entity-only attachments were normalized to the entity's base
+        link in ``_init_sensor``, so this is the same link NYX renders from.  If a
+        secondary genesis sensor exists (NYX backend with depth/seg/normal), prefer
+        its extrinsics for consistency.
         """
         T_OPENGL_TO_OPENCV = torch.tensor(
             [[1.0, 0.0, 0.0, 0.0],

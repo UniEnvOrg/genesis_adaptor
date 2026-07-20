@@ -1,4 +1,4 @@
-"""RepeatActionRefPolicy — output a fixed action for N steps."""
+"""RepeatActionRefPolicy — output a fixed action every step."""
 
 from typing import Any, Dict, Optional, Union
 
@@ -14,7 +14,10 @@ from unienv_genesis.utils.batch_dim_utils import (
     broadcast_to_batch,
     try_scalar
 )
-from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
+from unienv_genesis_refpolicy.base.policy import (
+    BaseRefPolicy,
+    DURATION_COMPARISON_EPS,
+)
 
 
 class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
@@ -28,10 +31,15 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
             :meth:`get_action` call (e.g. ``torch.tensor([-1.0])`` for
             gripper open).  Automatically broadcast to
             ``(batch_size, ...)`` for batched worlds.
-        steps: Number of steps after which :meth:`get_success` returns
-            ``True``.  ``0`` means **infinite** — the policy never
+        duration_seconds: Optional wall-clock duration in seconds after
+            which :meth:`get_success` returns ``True``.  Elapsed time is
+            accumulated per :meth:`step` from the explicit ``dt`` argument
+            (the control/policy timestep), so it stays correct for explicit
+            or variable control-step durations.
+            ``None`` (default) holds indefinitely — the policy never
             reports success on its own (useful as a "background" policy
-            inside :class:`CombinedRefPolicy`).
+            inside :class:`CombinedRefPolicy`).  A supplied value must be
+            strictly positive.
         controller: Optional controller the action is destined for.  When
             given, :meth:`convert_action_dict` / :meth:`get_action_dict_space`
             delegate to it, producing the controller-native action-dict
@@ -41,15 +49,26 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
             grasp policy), so all nodes share one action-dict schema.
     """
 
+    #: Tolerance (seconds) guarding the duration comparison against
+    #: floating-point accumulation error when summing ``dt`` repeatedly.
+    _DURATION_EPS = DURATION_COMPARISON_EPS
+
     def __init__(
         self,
         world: GenesisWorld,
         action: torch.Tensor,
-        steps: int = 0,
         controller: Optional[EntityController] = None,
+        duration_seconds: Optional[float] = None,
     ) -> None:
         super().__init__(world)
-        self.steps = steps
+        if duration_seconds is not None and duration_seconds <= 0:
+            raise ValueError(
+                "RepeatActionRefPolicy: 'duration_seconds' must be strictly "
+                f"positive or None, got {duration_seconds}."
+            )
+        self.duration_seconds = (
+            None if duration_seconds is None else float(duration_seconds)
+        )
         self.controller = controller
 
         batch_size = world.batch_size
@@ -61,9 +80,15 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
             batch_size, action.shape[-1], device=device,
         )
 
-        # Per-env step counter — () unbatched, (B,) batched.
+        # Per-env elapsed-time counter — () unbatched, (B,) batched.
+        # Tracked in float64: float32 accumulation error at common control
+        # rates (e.g. 60 Hz / 100 Hz) can leave the counter a hair below
+        # the duration threshold at the boundary step, delaying the
+        # transition by one full step.
         scalar_shape = get_batch_aware_shape(batch_size, ())
-        self._step_count = torch.zeros(scalar_shape, dtype=torch.long, device=device)
+        self._elapsed_seconds = torch.zeros(
+            scalar_shape, dtype=torch.float64, device=device,
+        )
 
     @torch.inference_mode()
     def reset(
@@ -73,20 +98,22 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
         seed: Optional[int] = None,
     ) -> None:
         if mask is not None:
-            self._step_count[mask] = 0
+            self._elapsed_seconds[mask] = 0.0
         else:
-            self._step_count.zero_()
+            self._elapsed_seconds.zero_()
 
     @torch.inference_mode()
     def step(
         self,
         *,
         mask: Optional[torch.Tensor] = None,
+        dt: float,
     ) -> None:
+        step_dt = float(dt)
         if mask is not None:
-            self._step_count[mask] += 1
+            self._elapsed_seconds[mask] += step_dt
         else:
-            self._step_count += 1
+            self._elapsed_seconds += step_dt
 
     @torch.inference_mode()
     def get_action(self) -> torch.Tensor:
@@ -135,9 +162,13 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
 
     @torch.inference_mode()
     def get_success(self) -> Union[torch.Tensor, bool]:
-        if self.steps <= 0:
+        if self.duration_seconds is None:
             return self._unwrap_false()
-        return try_scalar(self._step_count >= self.steps)
+        # The small epsilon guards against float accumulation error when
+        # summing dt (e.g. 15 * (1/15) = 0.9999999999999999 < 1.0).
+        return try_scalar(
+            self._elapsed_seconds >= self.duration_seconds - self._DURATION_EPS
+        )
 
     @torch.inference_mode()
     def get_failure(self) -> Union[torch.Tensor, bool]:
@@ -149,5 +180,5 @@ class RepeatActionRefPolicy(BaseRefPolicy[torch.Tensor]):
 
     def _unwrap_false(self) -> Union[torch.Tensor, bool]:
         if is_batched(self.world.batch_size):
-            return torch.zeros_like(self._step_count, dtype=torch.bool)
+            return torch.zeros_like(self._elapsed_seconds, dtype=torch.bool)
         return False

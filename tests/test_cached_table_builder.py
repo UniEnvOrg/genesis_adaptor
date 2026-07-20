@@ -7,6 +7,7 @@ Covers:
   - Seed reproducibility (same seed → same variant)
   - Persistent RNG state when no seed is given
   - Batched worlds: per-environment independent selection and correct positions
+  - Batched masked reset: only masked envs get new variants/poses
 """
 
 import torch
@@ -71,8 +72,8 @@ def test_cached_table_builder():
     assert not hasattr(table, "texture_path")
     assert not hasattr(table, "leg_color")
     assert table._chosen_indices is not None
-    assert len(table._chosen_indices) == 1
-    chosen_initial = table._chosen_indices[0]
+    assert table._chosen_indices.shape == (1,)
+    chosen_initial = int(table._chosen_indices[0])
     expected_size_t = torch.tensor(
         table._variant_params[chosen_initial]["size"],
         dtype=world.dtype,
@@ -104,11 +105,11 @@ def test_cached_table_builder():
     # ------------------------------------------------------------------
     target_pos_t = torch.tensor(_TARGET_POS, dtype=world.dtype)
     park_pos_t = torch.tensor(_PARK_POS, dtype=world.dtype)
-    chosen = table._chosen_indices[0]
+    chosen = int(table._chosen_indices[0])
     active_pos = table._variants[chosen].pos
     assert torch.allclose(active_pos, target_pos_t), \
         f"Active variant {chosen} pos {active_pos} != target {target_pos_t}"
-    assert table._chosen_indices[0] == chosen
+    assert int(table._chosen_indices[0]) == chosen
 
     for i, group in enumerate(table._variants):
         if i == chosen:
@@ -123,12 +124,12 @@ def test_cached_table_builder():
     # Seed reproducibility: same reset seed → same variant
     # ------------------------------------------------------------------
     env.reset(seed=42)
-    first = table._chosen_indices[0]
+    first = int(table._chosen_indices[0])
     env.reset(seed=42)
-    second = table._chosen_indices[0]
+    second = int(table._chosen_indices[0])
     assert first == second, \
         f"Same reset seed 42 gave different variants: {first} vs {second}"
-    assert table._chosen_indices[0] == second
+    assert int(table._chosen_indices[0]) == second
 
     print("  PASS: same reset seed yields same variant")
 
@@ -138,7 +139,7 @@ def test_cached_table_builder():
     choices = set()
     for s in range(30):
         env.reset(seed=s)
-        choices.add(table._chosen_indices[0])
+        choices.add(int(table._chosen_indices[0]))
     assert len(choices) > 1, "30 distinct seeds all chose the same variant — RNG is broken"
 
     print(f"  PASS: {len(choices)} distinct variants chosen across 30 seeds")
@@ -150,7 +151,7 @@ def test_cached_table_builder():
     unseeded_choices = []
     for _ in range(15):
         env.reset()  # no seed — RNG state continues
-        unseeded_choices.append(table._chosen_indices[0])
+        unseeded_choices.append(int(table._chosen_indices[0]))
     assert len(set(unseeded_choices)) > 1, \
         "RNG state did not advance across unseeded resets"
 
@@ -183,17 +184,21 @@ def test_cached_table_builder_batched():
     assert table.default_height == DEFAULT_TABLE_HEIGHT
     assert table.size.shape == (N_ENVS, 3)
     assert table.height.shape == (N_ENVS,)
+    assert table._chosen_indices.shape == (N_ENVS,)
+    assert table._chosen_indices.dtype == torch.long
+    assert table._chosen_indices.device == world.device
+    chosen_list = table._chosen_indices.tolist()
     expected_sizes_t = torch.tensor(
-        [table._variant_params[i]["size"] for i in table._chosen_indices],
+        [table._variant_params[i]["size"] for i in chosen_list],
         dtype=world.dtype,
     )
     expected_heights_t = torch.tensor(
-        [table._variant_params[i]["height"] for i in table._chosen_indices],
+        [table._variant_params[i]["height"] for i in chosen_list],
         dtype=world.dtype,
     )
     assert torch.allclose(table.size, expected_sizes_t)
     assert torch.allclose(table.height, expected_heights_t)
-    assert 0 <= table._chosen_indices[0] < _N_VARIANTS
+    assert 0 <= chosen_list[0] < _N_VARIANTS
 
     # One chosen index per environment
     assert len(table._chosen_indices) == N_ENVS, \
@@ -210,26 +215,26 @@ def test_cached_table_builder_batched():
         assert group_pos.shape == (N_ENVS, 3), \
             f"Variant {i} pos shape {group_pos.shape} != ({N_ENVS}, 3)"
         for env_j in range(N_ENVS):
-            expected = target_pos_t if table._chosen_indices[env_j] == i else park_pos_t
+            expected = target_pos_t if chosen_list[env_j] == i else park_pos_t
             assert torch.allclose(group_pos[env_j], expected), \
                 f"Variant {i}, env {env_j}: pos {group_pos[env_j]} != expected {expected} " \
-                f"(chosen={table._chosen_indices[env_j]})"
+                f"(chosen={chosen_list[env_j]})"
 
     print("  PASS: each variant's position tensor correct for all environments")
 
     # Different environments should (with very high probability) pick different variants
-    assert len(set(table._chosen_indices)) > 1, \
+    assert len(set(chosen_list)) > 1, \
         "All environments chose the same variant — per-env selection not working"
 
-    print(f"  PASS: {len(set(table._chosen_indices))} distinct variants across {N_ENVS} environments")
+    print(f"  PASS: {len(set(chosen_list))} distinct variants across {N_ENVS} environments")
 
     # ------------------------------------------------------------------
     # Seed reproducibility in batched mode
     # ------------------------------------------------------------------
     env.reset(seed=99)
-    first_indices = list(table._chosen_indices)
+    first_indices = table._chosen_indices.tolist()
     env.reset(seed=99)
-    second_indices = list(table._chosen_indices)
+    second_indices = table._chosen_indices.tolist()
     assert first_indices == second_indices, \
         f"Same seed gave different per-env selections:\n  {first_indices}\n  {second_indices}"
 
@@ -239,9 +244,109 @@ def test_cached_table_builder_batched():
     print("test_cached_table_builder_batched PASSED\n")
 
 
+def test_cached_table_builder_masked_reset():
+    """Batched masked reset: only masked envs get new variants/poses."""
+    N_ENVS = 12
+    world = GenesisWorld(batch_size=N_ENVS)
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(
+        world,
+        name="table",
+        n_variants=_N_VARIANTS,
+        pos=_TABLE_POS,
+        yaw=_TABLE_YAW,
+    )
+    env = WorldEnv(world, [plane, table], render_mode=None)
+
+    env.reset(seed=5, reload=True)
+
+    chosen_before = table._chosen_indices.tolist()
+    poses_before = [group.pos.clone() for group in table._variants]
+
+    # Masked reset: only envs 0, 3, 7 may change.
+    reset_mask = torch.zeros(N_ENVS, dtype=torch.bool, device=world.device)
+    reset_mask[[0, 3, 7]] = True
+    env.reset(mask=reset_mask)
+
+    preserved = [1, 2, 4, 5, 6, 8, 9, 10, 11]
+    chosen_after = table._chosen_indices.tolist()
+
+    # Unmasked envs keep their variant choices.
+    for env_j in preserved:
+        assert chosen_after[env_j] == chosen_before[env_j], (
+            f"Env {env_j}: variant changed from {chosen_before[env_j]} to "
+            f"{chosen_after[env_j]} after masked reset"
+        )
+
+    # Masked envs hold valid choices.
+    for env_j in (0, 3, 7):
+        assert 0 <= chosen_after[env_j] < _N_VARIANTS
+
+    # Unmasked envs keep every variant's pose row; masked rows match the
+    # (possibly new) selection.
+    target_pos_t = torch.tensor(_TARGET_POS, dtype=world.dtype)
+    park_pos_t = torch.tensor(_PARK_POS, dtype=world.dtype)
+    for i, group in enumerate(table._variants):
+        group_pos = group.pos  # (N_ENVS, 3)
+        for env_j in preserved:
+            assert torch.allclose(group_pos[env_j], poses_before[i][env_j]), (
+                f"Variant {i}, env {env_j}: pose changed after masked reset"
+            )
+        for env_j in (0, 3, 7):
+            expected = (
+                target_pos_t if chosen_after[env_j] == i else park_pos_t
+            )
+            assert torch.allclose(group_pos[env_j], expected), (
+                f"Variant {i}, env {env_j}: pos {group_pos[env_j]} != expected "
+                f"{expected} (chosen={chosen_after[env_j]})"
+            )
+
+    print("  PASS: masked reset preserves unmasked variants/poses")
+
+    # size / height stay consistent with the updated selections.
+    expected_sizes_t = torch.tensor(
+        [table._variant_params[i]["size"] for i in chosen_after],
+        dtype=world.dtype,
+    )
+    assert torch.allclose(table.size, expected_sizes_t)
+
+    # An empty mask is a no-op.
+    chosen_snapshot = table._chosen_indices.clone()
+    empty_mask = torch.zeros(N_ENVS, dtype=torch.bool, device=world.device)
+    env.reset(mask=empty_mask)
+    assert torch.equal(table._chosen_indices, chosen_snapshot)
+
+    print("  PASS: empty mask is a no-op")
+
+    # Integer-index masks are rejected by the strict mask contract.
+    try:
+        env.reset(mask=torch.tensor([0, 2], dtype=torch.long, device=world.device))
+        raise RuntimeError("expected AssertionError for integer reset mask")
+    except AssertionError:
+        pass
+
+    print("  PASS: integer-index masks are rejected")
+
+    # A masked reset before the choices are initialised fails clearly.
+    table._chosen_indices = None
+    try:
+        table.reset(priority=100, mask=reset_mask)
+        raise RuntimeError("expected AssertionError for masked reset before init")
+    except AssertionError:
+        pass
+    table._chosen_indices = chosen_snapshot
+
+    print("  PASS: masked reset before initialization fails clearly")
+
+    env.close()
+    print("test_cached_table_builder_masked_reset PASSED\n")
+
+
 if __name__ == "__main__":
     print("=== test_cached_table_builder ===")
     test_cached_table_builder()
     print("=== test_cached_table_builder_batched ===")
     test_cached_table_builder_batched()
+    print("=== test_cached_table_builder_masked_reset ===")
+    test_cached_table_builder_masked_reset()
     print("All tests passed!")

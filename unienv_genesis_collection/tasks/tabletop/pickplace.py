@@ -6,7 +6,8 @@ from unienv_interface.backends.pytorch import *
 from unienv_interface.space import BoxSpace, DictSpace
 from unienv_interface.world.node import WorldNode
 from unienv_genesis.world import GenesisWorld
-from unienv_genesis_collection.objects.base_object import ManipulatableObject, bbox_size
+from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
+from unienv_genesis_collection.objects.base_object import ManipulatableObject, bbox_size, bbox_center
 from unienv_genesis_collection.scenes.table_builder import TableBuilder
 from unienv_genesis_collection.scenes.cluttered_table_manager import ClutteredTableManager
 
@@ -21,13 +22,14 @@ class ObjectRelocateTask(WorldNode):
     Task: Move a target object from a random positions on the table to a goal location.
 
     Provides:
-    - **observation**: ``{"target_position": (3,), "goal_position": (3,)}``
+    - **observation**: ``{"target_position": ([B], 3), "goal_position": ([B], 3)}``
+      (batch-aware shapes)
     - **reward**: ``-distance(target, goal)`` (dense)
     - **termination**: ``True`` when ``distance < success_threshold``
 
-    The task node's reset lifecycle (`reload_priorities` and `reset_priorities`) runs at one priority higher than ``ClutteredTableManager``, which runs before the cluttered objects are placed.
-    
-    After placing the target object it calls :meth:`ClutteredTableManager.set_next_reset_avoid_spaces` so clutter objects don't overlap with the target target.
+    The task node's reset lifecycle (`reload_priorities` and `reset_priorities`) defaults to one priority above ``ClutteredTableManager``'s **highest** priority, so the task runs before every clutter callback under descending priority dispatch.
+
+    After placing the target object it calls :meth:`ClutteredTableManager.set_next_reset_avoid_spaces` with **both** the initial object footprint and the goal footprint, so clutter objects overlap neither the target object nor its goal location.
     """
 
     has_reward = True
@@ -55,14 +57,18 @@ class ObjectRelocateTask(WorldNode):
         self.target_object = target_object
 
         # Register priorities relative to clutter manager if available, otherwise use defaults.
+        # Explicit values (including 0) always win.  Fallbacks are derived
+        # deterministically from the clutter manager's MAXIMUM priority + 1:
+        # lifecycle phases dispatch in DESCENDING priority order, so the task
+        # must sit above every clutter callback to run before all of them.
         if self.clutter_manager is not None:
-            self.reload_priorities = {reload_priority or (next(iter(clutter_manager.reload_priorities)) + 1)}
-            self.after_reload_priorities = {after_reload_priority or (next(iter(clutter_manager.after_reload_priorities)) + 1)}
-            self.reset_priorities = {reset_priority or (next(iter(clutter_manager.reset_priorities)) + 1)}
+            self.reload_priorities = {reload_priority if reload_priority is not None else (max(clutter_manager.reload_priorities) + 1)}
+            self.after_reload_priorities = {after_reload_priority if after_reload_priority is not None else (max(clutter_manager.after_reload_priorities) + 1)}
+            self.reset_priorities = {reset_priority if reset_priority is not None else (max(clutter_manager.reset_priorities) + 1)}
         else:
-            self.reload_priorities = {reload_priority or self.DEFAULT_RESET_PRIORITY}
-            self.after_reload_priorities = {after_reload_priority or self.DEFAULT_RESET_PRIORITY}
-            self.reset_priorities = {reset_priority or self.DEFAULT_RESET_PRIORITY}
+            self.reload_priorities = {reload_priority if reload_priority is not None else self.DEFAULT_RESET_PRIORITY}
+            self.after_reload_priorities = {after_reload_priority if after_reload_priority is not None else self.DEFAULT_RESET_PRIORITY}
+            self.reset_priorities = {reset_priority if reset_priority is not None else self.DEFAULT_RESET_PRIORITY}
         self.post_environment_step_priorities = {post_environment_step_priority}
 
         # Task parameters.
@@ -81,7 +87,8 @@ class ObjectRelocateTask(WorldNode):
         self._reward : Union[float, torch.Tensor] = 0.0 # scalar or (B,)
         self._terminated : Union[bool, torch.Tensor] = False # scalar or (B,)
 
-        # Observation space — known at construction time.
+        # Observation space — known at construction time
+        # (batch-aware shapes, world device).
         self.observation_space = DictSpace(
             PyTorchComputeBackend,
             {
@@ -89,17 +96,20 @@ class ObjectRelocateTask(WorldNode):
                     PyTorchComputeBackend,
                     low=-float("inf"),
                     high=float("inf"),
-                    shape=(3,),
+                    shape=get_batch_aware_shape(self.world.batch_size, 3),
                     dtype=self.world.dtype,
+                    device=self.world.device,
                 ),
                 "goal_position": BoxSpace(
                     PyTorchComputeBackend,
                     low=-float("inf"),
                     high=float("inf"),
-                    shape=(3,),
+                    shape=get_batch_aware_shape(self.world.batch_size, 3),
                     dtype=self.world.dtype,
+                    device=self.world.device,
                 ),
             },
+            device=self.world.device,
         )
 
     @property
@@ -129,12 +139,20 @@ class ObjectRelocateTask(WorldNode):
         ) # BoxSpace with low and high of shape (3, )
         self._target_object_radius = self.target_object.get_footprint_radius() # scalar
         self._target_object_extent_local = bbox_size(self._target_object_bbox_local) # (3,)
+        # Local XY offset of the bbox centre from the entity origin.  The
+        # task places the object with identity orientation, so this offset is
+        # applied unrotated when computing footprint centres (e.g. the goal
+        # avoidance zone) from origin positions.  Non-zero for off-centre
+        # meshes (common in GSO/YCB catalogs).
+        self._target_object_center_local_xy = bbox_center(
+            self._target_object_bbox_local
+        )[:2].to(device=self.world.device, dtype=self.world.dtype) # (2,)
 
     def after_reload(self, *, priority=0, mask=None):
         if priority not in self.after_reload_priorities:
             return
         # Initialise placement for the first time.
-        self.reset(priority=next(iter(self.reset_priorities)), seed=None, mask=None)
+        self.reset(priority=min(self.reset_priorities), seed=None, mask=None)
 
     def sample_target_placement(self, n_samples: int) -> torch.Tensor:
         """
@@ -173,36 +191,81 @@ class ObjectRelocateTask(WorldNode):
     def reset(self, *, priority=0, seed=None, mask=None, **kwargs):
         if priority not in self.reset_priorities:
             return
-        
+
         assert self.target_object_entity is not None, "Target object must be loaded before reset"
 
         if seed is not None:
             self._reseed(seed)
-        
+
         # Valid placement half-extents (table half minus margin minus object half-extent on each axis).
         placement_chunk = self.sample_target_placement(n_samples=2)
         initial_placement_xyz = placement_chunk[..., 0, :]  # ([n_envs], 3)
-        self._goal_pos = placement_chunk[..., 1, :]  # ([n_envs], 3)
+        goal_xyz = placement_chunk[..., 1, :]  # ([n_envs], 3)
 
-        self.target_object.set_pos_3d(
-            self.target_object_entity,
-            initial_placement_xyz[mask] if mask is not None else initial_placement_xyz,
-            random_quaternion=False,
-            rng=self.rng,
-            # envs_idx=mask.nonzero(as_tuple=True)[0] if mask is not None else None,
-            envs_idx=mask if mask is not None else None,
-        )
+        if mask is None:
+            self._goal_pos = goal_xyz
+            self.target_object.set_pos_3d(
+                self.target_object_entity,
+                initial_placement_xyz,
+                random_quaternion=False,
+                rng=self.rng,
+                envs_idx=None,
+            )
+        else:
+            # Reset masks are strictly ``(batch_size,)`` torch.bool tensors
+            # on the world's device — validated here at the reset boundary.
+            n_envs = self.world.batch_size
+            assert n_envs is not None, "Masking only supported in batched environments"
+            assert isinstance(mask, torch.Tensor) and mask.dtype == torch.bool, (
+                f"Reset mask must be a torch.bool tensor, got "
+                f"{type(mask)} with dtype {getattr(mask, 'dtype', None)}"
+            )
+            assert mask.shape == (n_envs,), (
+                f"Reset mask must have shape ({n_envs},), got {tuple(mask.shape)}"
+            )
+            assert mask.device == self.world.device, (
+                f"Reset mask must live on the world device "
+                f"{self.world.device}, got {mask.device}"
+            )
+            # The boolean mask is used consistently: for task-state indexing,
+            # for selecting the placement rows, and as the Genesis envs_idx
+            # (Genesis accepts boolean masks directly).
+            if mask.any():
+                # Only masked envs get new goals / poses; unmasked envs keep
+                # their current goal and object pose.
+                self._goal_pos[mask] = goal_xyz[mask]
+                self.target_object.set_pos_3d(
+                    self.target_object_entity,
+                    initial_placement_xyz[mask],
+                    random_quaternion=False,
+                    rng=self.rng,
+                    envs_idx=mask,
+                )
+
         if self.clutter_manager is not None:
+            # Reserve BOTH the initial object footprint and the goal footprint
+            # so clutter objects overlap neither.  The zones cover the full
+            # batch; for masked resets the clutter manager slices out the
+            # masked rows, so unmasked envs' avoid semantics are untouched
+            # (their object pose and goal were not modified above).
+            #
+            # Footprint *centres* are bbox centres, not entity origins: the
+            # goal zone adds the object's local bbox-centre XY offset to the
+            # goal origin position (the task places the object with identity
+            # orientation, so the offset applies unrotated at the goal).
             avoid_xy, avoid_radius = self.target_object.get_footprint(self.target_object_entity) # ([n_envs], 2), ([n_envs], )
+            goal_xy = self._goal_pos[..., :2] + self._target_object_center_local_xy # ([n_envs], 2)
+            avoid_centres = torch.stack([avoid_xy, goal_xy], dim=-2) # ([n_envs], 2, 2)
+            avoid_radii = avoid_radius.unsqueeze(-1).expand(avoid_centres.shape[:-1]) # ([n_envs], 2)
             self.clutter_manager.set_next_reset_avoid_spaces(
-                avoid_xy[..., None, :], avoid_radius[..., None]
-            ) # Only one zone to avoid
+                avoid_centres, avoid_radii,
+            )
 
         if mask is None:
             self._reward = 0.0 if self.world.batch_size is None else torch.zeros(self.world.batch_size, dtype=self.world.dtype, device=self.world.device)
             self._terminated = False if self.world.batch_size is None else torch.zeros(self.world.batch_size, dtype=torch.bool, device=self.world.device)
         else:
-            assert self.world.batch_size is not None, "Masking only supported in batched environments"
+            # Preserve reward / termination outside the mask.
             self._reward.masked_fill_(mask, 0.0)
             self._terminated.masked_fill_(mask, False)
 

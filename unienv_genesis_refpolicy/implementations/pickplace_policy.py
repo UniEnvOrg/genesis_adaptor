@@ -53,8 +53,8 @@ Example::
     policy.reset(seed=0)
     for _ in range(max_steps):
         action = policy.get_action()
-        env.step(action)
-        policy.step()
+        _, _, _, _, info = env.step(action)
+        policy.step(dt=info['control_step_elapsed_time'])
         if policy.get_success() or policy.get_failure():
             break
 """
@@ -102,6 +102,8 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             position after grasping.
         retreat_height: Height (m) to retreat upward after releasing.
         release_seconds: Seconds to hold the gripper open during release.
+            Tracked in seconds from the ``dt`` passed to :meth:`step`, so it
+            stays correct for explicit or variable control-step durations.
         grasp_kwargs: Optional extra kwargs forwarded to
             :class:`BoxGripperGraspPolicy`.
         goto_kwargs: Optional shared baseline kwargs forwarded to *every*
@@ -241,7 +243,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                     gripper_name: RepeatActionRefPolicy(
                         world=world,
                         action=gripper_action,
-                        steps=0,  # never signals success on its own
+                        # never signals success on its own
                         controller=gripper_controller,
                     ),
                 },
@@ -287,12 +289,15 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             lambda: task._goal_pos.detach().float(),
         )
 
-        # 5. Release (hold arm at its current EEF pose, open gripper for N steps).
+        # 5. Release (hold arm at its current EEF pose, open gripper for a
+        #    duration).
         # The arm just holds the pose it reached at the end of `lower`; it must
         # NOT depend on object-contact tracking, since the gripper is opening
         # and the object is being dropped. Orientation is preserved by relying
         # on GoToLambdaRefPolicy's default current-orientation behavior.
-        release_steps = max(1, int(release_seconds / float(world.world_timestep)))
+        # The release duration is tracked in **seconds** from the dt passed to
+        # step(), so it stays correct for explicit or variable control-step
+        # durations.
         nodes["release"] = CombinedRefPolicy(
             world,
             {
@@ -305,7 +310,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 gripper_name: RepeatActionRefPolicy(
                     world=world,
                     action=gripper_open,
-                    steps=release_steps,
+                    duration_seconds=release_seconds,
                     controller=gripper_controller,
                 ),
             },
@@ -418,8 +423,8 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
     def reload(self, *, mask=None, seed=None) -> None:
         self._graph.reload(mask=mask, seed=seed)
 
-    def step(self, *, mask=None) -> None:
-        self._graph.step(mask=mask)
+    def step(self, *, mask=None, dt: float) -> None:
+        self._graph.step(mask=mask, dt=dt)
 
     def get_action(self) -> Dict[str, torch.Tensor]:
         return self._graph.get_action()

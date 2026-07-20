@@ -23,7 +23,10 @@ from unienv_genesis.nodes.entities.entity_controllers.end_effector_pose import (
     EndEffectorPoseController,
 )
 from unienv_genesis.utils.batch_dim_utils import broadcast_to_batch
-from unienv_genesis_refpolicy.base.policy import require_eef_controller
+from unienv_genesis_refpolicy.base.policy import (
+    require_eef_controller,
+    DURATION_COMPARISON_EPS,
+)
 from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
 from unienv_genesis.utils.batch_dim_utils import try_scalar
 
@@ -203,15 +206,16 @@ class MoveObjectPolicy(GoToRefPolicy):
             target_object_quat=target_object_quat,
         )
 
-        action = self.controller.get_action_world(target_pos, target_quat)
+        # Store the fresh EEF targets.  The frame-dependent action is
+        # recomputed from them exactly once in the parent reset below (which
+        # also covers base-frame changes), so we deliberately do not convert
+        # here.
         if mask is not None:
             self.target_pos[mask] = target_pos[mask]
             self.target_quat[mask] = target_quat[mask]
-            self._action[mask] = action[mask]
         else:
             self.target_pos.copy_(target_pos)
             self.target_quat.copy_(target_quat)
-            self._action.copy_(action)
 
         rel_pos, rel_quat = self._current_relative_pose()
         if mask is not None:
@@ -245,8 +249,9 @@ class MoveObjectPolicy(GoToRefPolicy):
         self,
         *,
         mask: Optional[torch.Tensor] = None,
+        dt: float,
     ) -> None:
-        super().step(mask=mask)
+        super().step(mask=mask, dt=dt)
 
         if self.track_relative_pose:
             rel_pos, rel_quat = self._current_relative_pose()
@@ -295,7 +300,10 @@ class MoveObjectPolicy(GoToRefPolicy):
         if self.max_seconds <= 0:
             return try_scalar(torch.zeros_like(self._reached))
         timed_out = (
-            (self._elapsed_seconds >= self.max_seconds)
+            # Shared epsilon keeps exact duration boundaries from slipping a
+            # step, consistent with GoToRefPolicy.get_timeout (this override
+            # only adds the slip/contact-loss exclusions).
+            (self._elapsed_seconds >= self.max_seconds - DURATION_COMPARISON_EPS)
             & ~self._reached
             & ~self._stalled
             & ~self._slipped

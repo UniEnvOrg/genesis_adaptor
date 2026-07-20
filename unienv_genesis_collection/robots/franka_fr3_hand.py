@@ -12,6 +12,7 @@ from unienv_genesis.nodes.entities.robot_node import RobotKeyframe, RobotDescrip
 from unienv_genesis.nodes.entities.entity_controllers import CONTROL_MODE_T
 from unienv_genesis.options.attach_option import LinkAttachment
 from unienv_genesis_collection.asset_path import get_asset_path
+from unienv_genesis_collection.robots.grasp_utils import make_is_grasping
 
 # Default home joint positions for FR3 arm (7 DOF) + Franka Hand (2 DOF, fully open)
 ARM_HOME_JOINT_POSITIONS = torch.tensor([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
@@ -31,40 +32,16 @@ FINGER_PAD_LINK_NAMES = ["left_finger", "right_finger"]
 DROID_FRANKA_ARM_IK_VEL_LIMIT = 0.2
 
 # Franka hardware per-joint velocity limits (rad/s) from franka_hardware.yaml.
-# Kept here for reference / documentation only; NOT used by the active
-# controller, which uses the DROID IK/controller limit above (0.2 rad/s).
-DROID_FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS = torch.tensor([2.075, 2.075, 2.075, 2.075, 2.51, 2.51, 2.51])
+# Intentionally retained as hardware/reference documentation for future
+# controller/planner work, even though the active controller uses the DROID
+# 0.2 rad/s limit above; NOT wired into any active controller.
+FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS = torch.tensor([2.075, 2.075, 2.075, 2.075, 2.51, 2.51, 2.51])
 
-
-def _make_is_grasping(pad_link_names):
-    """Create a grasp-detection callable checking contacts on specific pad links."""
-    _cached_pad_indices = {}  # id(entity) -> tensor of global link indices
-
-    def is_grasping(robot_entity, target_entity):
-        key = id(robot_entity)
-        if key not in _cached_pad_indices:
-            indices = []
-            for link in robot_entity.links:
-                if link.name in pad_link_names:
-                    indices.append(link.idx)
-            _cached_pad_indices[key] = torch.tensor(indices, dtype=torch.long)
-        pad_indices = _cached_pad_indices[key]
-
-        contacts = robot_entity.get_contacts(with_entity=target_entity)
-
-        link_a = contacts["link_a"]
-        link_b = contacts["link_b"]
-        is_pad = (
-            (link_a.unsqueeze(-1) == pad_indices).any(dim=-1)
-            | (link_b.unsqueeze(-1) == pad_indices).any(dim=-1)
-        )
-
-        if contacts["force_a"].dim() == 2:
-            return is_pad.any()
-        else:
-            return (contacts["valid_mask"] & is_pad).any(dim=-1)
-
-    return is_grasping
+# Previous DROID_-prefixed name, intentionally retained alongside the
+# reference constant above as searchable hardware documentation. Prefer
+# ``FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS``; both names refer to the same
+# reference tensor and neither feeds the active controller.
+DROID_FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS = FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS
 
 
 # Default combined sub-controller configuration
@@ -81,7 +58,7 @@ _DEFAULT_SUB_CONTROLLERS = {
             link_name=EE_LINK_NAME, offset_pos=[0.0, 0.0, 0.1114],
         ),
         # DROID IK/controller velocity limit for the Franka arm (rad/s).
-        "max_joint_pos_vel": DROID_FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS,
+        "max_joint_pos_vel": DROID_FRANKA_ARM_IK_VEL_LIMIT,
     },
     "gripper": {
         "controller_type": "mimic_joint_position",
@@ -93,7 +70,7 @@ _DEFAULT_SUB_CONTROLLERS = {
         "shift": 0.02,
         "control_low": -1,
         "control_high": 1,
-        "is_grasping_fn": _make_is_grasping(FINGER_PAD_LINK_NAMES),
+        "is_grasping_fn": make_is_grasping(FINGER_PAD_LINK_NAMES),
         # Grasp frame directions in the EEF frame (hand body frame).
         # approach_direction: axis along which the gripper approaches the
         #   object (fingertip direction); eef_offset is measured along this.

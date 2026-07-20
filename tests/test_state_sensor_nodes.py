@@ -35,7 +35,7 @@ from unienv_genesis.nodes.sensors import (
 from unienv_genesis.options.attach_option import AttachFromName
 
 BOX_LINK = "box_baselink"
-N_SETTLE_STEPS = 40
+N_MANUAL_STEPS = 40
 
 
 class BoxEntityNode(WorldNode):
@@ -79,7 +79,7 @@ class BoxEntityNode(WorldNode):
         return None
 
 
-def _settle(env: WorldEnv, n: int = N_SETTLE_STEPS) -> None:
+def _step_env(env: WorldEnv, n: int = N_MANUAL_STEPS) -> None:
     """Step the env ``n`` times so Genesis populates the sensor cache."""
     for _ in range(n):
         env.step(None)
@@ -280,14 +280,14 @@ def test_imu_shapes():
         option=IMUSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
     )
     env = _make_env(world, [node])
-    _settle(env)
+    _step_env(env)
 
     obs = node.get_observation()
     assert obs["lin_acc"].shape == (3,)
     assert obs["ang_vel"].shape == (3,)
     assert obs["mag"].shape == (3,)
     assert obs["lin_acc"].dtype == world.dtype
-    # After settling, gravity should show up in the z-component of lin_acc.
+    # After a few manual steps, gravity should show up in the z-component of lin_acc.
     assert obs["lin_acc"][2] > 5.0
     env.close()
 
@@ -300,7 +300,7 @@ def test_imu_observation_space_matches():
         option=IMUSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
     )
     env = _make_env(world, [node])
-    _settle(env)
+    _step_env(env)
 
     obs = node.get_observation()
     for key, space in node.observation_space.spaces.items():
@@ -324,7 +324,7 @@ def test_contact_force_shapes():
         option=ContactForceSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
     )
     env = _make_env(world, [node])
-    _settle(env)
+    _step_env(env)
 
     obs = node.get_observation()
     assert obs["contact_force"].shape == (3,)
@@ -342,7 +342,7 @@ def test_contact_force_observation_space_matches():
         option=ContactForceSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
     )
     env = _make_env(world, [node])
-    _settle(env)
+    _step_env(env)
 
     obs = node.get_observation()
     for key, space in node.observation_space.spaces.items():
@@ -366,7 +366,7 @@ def test_contact_shapes():
         option=ContactSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
     )
     env = _make_env(world, [node])
-    _settle(env)
+    _step_env(env)
 
     obs = node.get_observation()
     assert obs["in_contact"].shape == ()
@@ -383,7 +383,7 @@ def test_contact_observation_space_matches():
         option=ContactSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
     )
     env = _make_env(world, [node])
-    _settle(env)
+    _step_env(env)
 
     obs = node.get_observation()
     for key, space in node.observation_space.spaces.items():
@@ -395,14 +395,17 @@ def test_contact_observation_space_matches():
 
 
 # ---------------------------------------------------------------------------
-# n_settle_steps: meaningful observations immediately after reset
+# No-advance sensor-cache refresh after reset/reload
 # ---------------------------------------------------------------------------
 
 
-def test_settle_steps_populates_imu_and_contacts_after_reset():
-    """With ``n_settle_steps`` configured, every sensor returns meaningful
-    data on the very first ``env.reset()`` — no manual settling needed."""
-    world = GenesisWorld(n_settle_steps=5)
+def test_first_reset_reads_empty_caches_without_any_physics_step():
+    """Reset/reload finalization never steps the physics: right after the
+    first (reload) reset every sensor cache is still empty — the IMU reads
+    zero (there is no retained solver state yet at build time) and
+    contact-based sensors read zero/False until the first real
+    ``env.step()``."""
+    world = GenesisWorld()
     imu = IMUSensorNode(
         world=world,
         name="imu",
@@ -420,28 +423,28 @@ def test_settle_steps_populates_imu_and_contacts_after_reset():
     )
     env = _make_env(world, [imu, cf, ct])
 
-    # No _settle() call — observations must be meaningful right after reset.
+    # No manual stepping — the world must not have advanced the simulation.
     imu_obs = imu.get_observation()
     cf_obs = cf.get_observation()
     ct_obs = ct.get_observation()
 
-    # IMU accelerometer should reflect gravity.
     assert imu_obs["lin_acc"].shape == (3,)
-    assert imu_obs["lin_acc"][2] > 5.0, f"IMU lin_acc[2]={imu_obs['lin_acc'][2]}"
+    assert torch.all(imu_obs["lin_acc"] == 0.0)
 
-    # Box resting on plane → positive z normal force in the link frame.
     assert cf_obs["contact_force"].shape == (3,)
-    assert cf_obs["contact_force"][2] > 0.0, f"contact_force[2]={cf_obs['contact_force'][2]}"
+    assert torch.all(cf_obs["contact_force"] == 0.0)
 
-    # Box touching plane → in_contact is True.
     assert ct_obs["in_contact"].shape == ()
-    assert bool(ct_obs["in_contact"]) is True
+    assert bool(ct_obs["in_contact"]) is False
     env.close()
 
 
-def test_settle_steps_populates_on_subsequent_reset():
-    """After a non-reload reset, sensors should still be populated."""
-    world = GenesisWorld(n_settle_steps=5)
+def test_cache_refresh_populates_imu_on_subsequent_reset():
+    """After a non-reload reset, the no-advance cache refresh re-reads
+    retained solver quantities: the IMU accelerometer reflects gravity
+    immediately, with zero physics steps.  Contact-based sensors still read
+    empty until the collider runs on the next ``env.step()``."""
+    world = GenesisWorld()
     imu = IMUSensorNode(
         world=world,
         name="imu",
@@ -454,12 +457,104 @@ def test_settle_steps_populates_on_subsequent_reset():
     )
     env = _make_env(world, [imu, cf])
 
-    # Step a few times then do a plain (non-reload) reset.
-    _settle(env, n=3)
+    # Step a few times (so the solver has retained state) then do a plain
+    # (non-reload) reset.
+    _step_env(env, n=3)
     env.reset(seed=1)
 
     imu_obs = imu.get_observation()
     cf_obs = cf.get_observation()
     assert imu_obs["lin_acc"][2] > 5.0
-    assert cf_obs["contact_force"][2] > 0.0
+    # No automatic physics stepping: contacts stay cleared until env.step().
+    assert torch.all(cf_obs["contact_force"] == 0.0)
     env.close()
+
+
+# ---------------------------------------------------------------------------
+# Regression: reset/reload finalization never steps the physics
+# ---------------------------------------------------------------------------
+#
+# ``GenesisWorld`` deliberately never calls ``scene.step()`` outside of
+# ``env.step()``: Genesis ``scene.step()`` advances *all* batched
+# environments — there is no per-env stepping — so automatic stepping during
+# reset/reload would corrupt per-env simulation time.  Reset/reload
+# finalization is limited to a *no-advance* sensor-cache refresh
+# (``sensor_manager.step()``), and masked resets skip even that because the
+# refresh re-reads the entire batch.  These tests spy on call counts instead
+# of running real physics.
+
+
+class _SpySensorManager:
+    def __init__(self):
+        self.step_calls = 0
+
+    def step(self):
+        self.step_calls += 1
+
+
+class _SpySim:
+    def __init__(self):
+        self._sensor_manager = _SpySensorManager()
+
+
+class _SpyScene:
+    """Minimal stand-in for ``gs.Scene`` recording step/reset/cache calls."""
+
+    def __init__(self):
+        self.is_built = True
+        self.step_calls = 0
+        self.reset_calls = []
+        self._sim = _SpySim()
+
+    def reset(self, envs_idx=None):
+        self.reset_calls.append(envs_idx)
+
+    def step(self):
+        self.step_calls += 1
+
+
+def _make_spy_world() -> tuple[GenesisWorld, _SpyScene]:
+    """A batched GenesisWorld whose (unbuilt) scene is swapped for a spy."""
+    world = GenesisWorld(batch_size=2)
+    spy = _SpyScene()
+    world.scene = spy
+    return world, spy
+
+
+def test_full_reset_refreshes_caches_without_stepping():
+    """``after_reset(mask=None)`` runs the no-advance cache refresh exactly
+    once and never calls ``scene.step()``."""
+    world, spy = _make_spy_world()
+    world.after_reset()
+    assert spy._sim._sensor_manager.step_calls == 1
+    assert spy.step_calls == 0
+
+
+def test_masked_reset_skips_cache_refresh():
+    """``after_reset(mask=...)`` skips even the no-advance refresh, while the
+    masked reset itself is still forwarded to the scene."""
+    world, spy = _make_spy_world()
+    mask = torch.tensor([True, False])
+
+    # The masked reset path itself still works …
+    world.reset(mask=mask)
+    assert spy.reset_calls == [mask]
+
+    # … but the cache refresh is skipped entirely (and nothing steps).
+    world.after_reset(mask=mask)
+    assert spy._sim._sensor_manager.step_calls == 0
+    assert spy.step_calls == 0
+
+    # A subsequent full reset still refreshes (without stepping).
+    world.after_reset()
+    assert spy._sim._sensor_manager.step_calls == 1
+    assert spy.step_calls == 0
+
+
+def test_after_reload_refreshes_caches_without_stepping():
+    """Reloads (full-scene rebuild) run the no-advance cache refresh exactly
+    once and never call ``scene.step()``."""
+    world, spy = _make_spy_world()
+    world.after_reload()
+    assert spy._sim._sensor_manager.step_calls == 1
+    assert spy.step_calls == 0

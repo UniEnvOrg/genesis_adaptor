@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
-import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -35,12 +36,25 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
     #
     # Downloads are never written into the (possibly read-only) installed
     # package directory. Instead they are materialized under a user-writable
-    # cache directory (see :meth:`_default_download_cache_dir`), and the
-    # provider's ``checkpoint_dir`` is repointed there for loading.
+    # cache directory (see :meth:`_default_download_cache_dir`), and
+    # :meth:`_ensure_checkpoint_file` returns that cache directory for
+    # loading; the configured ``checkpoint_dir`` is never mutated.
+    #
+    # The URL is pinned to an immutable upstream commit (not a floating
+    # branch), and every downloaded/cached default checkpoint is validated
+    # against the independently verified size and SHA-256 below.
+    CHECKPOINT_UPSTREAM_COMMIT = "a3c92388a5134ac0ad6d200d6e51b6317656cc3f"
     DEFAULT_CHECKPOINT_URL = (
-        "https://raw.githubusercontent.com/elchun/contact_graspnet_pytorch/main/"
-        "checkpoints/contact_graspnet/checkpoints/model.pt"
+        "https://raw.githubusercontent.com/elchun/contact_graspnet_pytorch/"
+        f"{CHECKPOINT_UPSTREAM_COMMIT}"
+        "/checkpoints/contact_graspnet/checkpoints/model.pt"
     )
+    EXPECTED_CHECKPOINT_SIZE = 26_628_146  # bytes
+    EXPECTED_CHECKPOINT_SHA256 = (
+        "39fc3439d5814043ba64e0715c127c2e8aca6ea376c22614e11af1bc89317762"
+    )
+    CHECKPOINT_CHUNK_SIZE = 1 << 20  # 1 MiB streaming chunks
+    CHECKPOINT_URLOPEN_TIMEOUT = 60.0  # seconds; applied to every urlopen call
     MODEL_FILENAME = "model.pt"
     MODEL_SUBDIR = "checkpoints"
 
@@ -62,6 +76,9 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
         self.world = world
         self.camera_node = camera_node
         self.target_entity = target_entity
+        # Immutable: whether this provider uses the *default* checkpoint
+        # source is derived directly from this configured directory on every
+        # ensure; it is never repointed to the download cache.
         self.checkpoint_dir = str(checkpoint_dir or self.DEFAULT_CHECKPOINT_DIR)
         self.forward_passes = int(forward_passes)
         self.z_range = tuple(float(v) for v in z_range)
@@ -152,24 +169,21 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
                 "Failed to import vendored PyTorch Contact-GraspNet implementation."
             ) from exc
 
-        self._ensure_checkpoint_file()
+        resolved_checkpoint_dir = self._ensure_checkpoint_file()
 
         global_config = config_utils.load_config(
-            self.checkpoint_dir,
+            str(resolved_checkpoint_dir),
             batch_size=self.forward_passes,
         )
         grasp_estimator = estimator_mod.GraspEstimator(global_config)
         checkpoint_io = checkpoints_mod.CheckpointIO(
-            checkpoint_dir=str(Path(self.checkpoint_dir) / "checkpoints"),
+            checkpoint_dir=str(resolved_checkpoint_dir / "checkpoints"),
             model=grasp_estimator.model,
         )
         checkpoint_io.load(self.MODEL_FILENAME)
         grasp_estimator.model.eval()
         self._grasp_estimator = grasp_estimator
         return self._grasp_estimator
-
-    def _checkpoint_file_path(self) -> Path:
-        return Path(self.checkpoint_dir) / self.MODEL_SUBDIR / self.MODEL_FILENAME
 
     @staticmethod
     def _default_download_cache_dir() -> Path:
@@ -184,31 +198,125 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
             return Path(xdg) / "unienv_genesis_refpolicy" / "contact_graspnet"
         return Path.home() / ".cache" / "unienv_genesis_refpolicy" / "contact_graspnet"
 
-    def _ensure_checkpoint_file(self) -> None:
+    def _checkpoint_matches_expected(self, path: Path) -> bool:
+        """Return True iff ``path`` matches the pinned size and SHA-256."""
+        try:
+            if path.stat().st_size != self.EXPECTED_CHECKPOINT_SIZE:
+                return False
+        except OSError:
+            return False
+        hasher = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(self.CHECKPOINT_CHUNK_SIZE), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest() == self.EXPECTED_CHECKPOINT_SHA256
+
+    def _download_checkpoint(self, target: Path) -> None:
+        """Stream the pinned checkpoint to ``target`` atomically.
+
+        The payload is streamed to a temporary file in the target directory
+        while computing its size and SHA-256. The network read uses an
+        explicit timeout (``CHECKPOINT_URLOPEN_TIMEOUT``) and aborts
+        immediately if the streamed bytes exceed the expected size. The file
+        is flushed, fsynced, validated against the exact size and SHA-256,
+        and only then atomically ``os.replace``-d into place. The temporary
+        file is always removed on failure, and any pre-existing target is
+        left untouched until a fully validated replacement exists.
+        """
+        url = self.DEFAULT_CHECKPOINT_URL
+        target.parent.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[ContactGraspNet] Downloading checkpoint from '{url}' into "
+            f"'{target}'..."
+        )
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=target.name + ".", suffix=".part", dir=str(target.parent)
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            from urllib.request import urlopen
+
+            hasher = hashlib.sha256()
+            total = 0
+            with os.fdopen(fd, "wb") as fh:
+                with urlopen(url, timeout=self.CHECKPOINT_URLOPEN_TIMEOUT) as resp:
+                    while True:
+                        chunk = resp.read(self.CHECKPOINT_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        hasher.update(chunk)
+                        total += len(chunk)
+                        if total > self.EXPECTED_CHECKPOINT_SIZE:
+                            raise RuntimeError(
+                                f"Contact-GraspNet checkpoint from '{url}' "
+                                f"exceeds the expected "
+                                f"{self.EXPECTED_CHECKPOINT_SIZE} bytes; "
+                                f"aborting download."
+                            )
+                fh.flush()
+                os.fsync(fh.fileno())
+
+            if total != self.EXPECTED_CHECKPOINT_SIZE:
+                raise RuntimeError(
+                    f"Contact-GraspNet checkpoint size mismatch from '{url}': "
+                    f"expected {self.EXPECTED_CHECKPOINT_SIZE} bytes, got "
+                    f"{total} bytes."
+                )
+            digest = hasher.hexdigest()
+            if digest != self.EXPECTED_CHECKPOINT_SHA256:
+                raise RuntimeError(
+                    f"Contact-GraspNet checkpoint SHA-256 mismatch from '{url}': "
+                    f"expected {self.EXPECTED_CHECKPOINT_SHA256}, got {digest}."
+                )
+            os.replace(tmp_path, target)
+        except BaseException as exc:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if isinstance(exc, Exception) and not isinstance(exc, RuntimeError):
+                raise RuntimeError(
+                    f"Failed to download Contact-GraspNet checkpoint from "
+                    f"'{url}' to '{target}': {exc}"
+                ) from exc
+            raise
+
+    def _ensure_checkpoint_file(self) -> Path:
         """Make sure the Contact-GraspNet checkpoint file is present locally.
 
-        If the file already exists at ``checkpoint_dir``, this is a no-op
-        (preserving the existing behavior for both the default and custom
-        ``checkpoint_dir`` paths).
+        Returns the resolved checkpoint directory whose
+        ``MODEL_SUBDIR/MODEL_FILENAME`` file is ready for loading. The
+        configured ``self.checkpoint_dir`` is never mutated.
 
-        If the file is missing *and* the provider is using the default
-        checkpoint directory, the checkpoint is downloaded on demand from the
-        canonical upstream PyTorch-port GitHub URL into a user-writable cache
-        directory (see :meth:`_default_download_cache_dir`), and
-        ``checkpoint_dir`` is repointed there so subsequent loading reads the
-        cached file. For a custom ``checkpoint_dir`` that lacks the file, a
-        clear error is raised instead of silently downloading into an
-        arbitrary user-provided location.
+        Default vs custom behavior is derived directly from the immutable
+        configured ``self.checkpoint_dir`` on every call.
+
+        For a custom ``checkpoint_dir`` the behavior is explicit: an existing
+        file is used as-is (no integrity check against the default pinned
+        checkpoint, since users may supply their own weights), and a missing
+        file raises :class:`FileNotFoundError` instead of silently
+        downloading into a user-provided location.
+
+        For the default checkpoint directory, the checkpoint is validated
+        against the pinned size/SHA-256 on *every* call. An invalid file in
+        the (possibly read-only) package directory raises a clear error. When
+        the file is missing it is downloaded on demand from the immutable
+        upstream URL into a user-writable cache directory (see
+        :meth:`_default_download_cache_dir`) and that cache directory is
+        returned; an invalid cached file is re-downloaded, with the atomic
+        replace ensuring a failed re-download never destroys the previous
+        file.
         """
-        target = self._checkpoint_file_path()
-        if target.exists():
-            return
-
-        using_default = (
-            Path(self.checkpoint_dir).resolve()
-            == self.DEFAULT_CHECKPOINT_DIR.resolve()
+        checkpoint_dir = Path(self.checkpoint_dir)
+        is_default = (
+            checkpoint_dir.resolve() == self.DEFAULT_CHECKPOINT_DIR.resolve()
         )
-        if not using_default:
+
+        if not is_default:
+            target = checkpoint_dir / self.MODEL_SUBDIR / self.MODEL_FILENAME
+            if target.exists():
+                return checkpoint_dir
             raise FileNotFoundError(
                 f"Contact-GraspNet checkpoint not found at '{target}'. A custom "
                 f"checkpoint_dir was provided ('{self.checkpoint_dir}'); place the "
@@ -216,38 +324,34 @@ class ContactGraspNetGraspCandidateProvider(GraspCandidateProvider):
                 f"inside it, or omit checkpoint_dir to download it automatically."
             )
 
-        # Don't write into the (possibly read-only) installed package
-        # directory. Materialize under a user-writable cache dir and repoint
-        # the loader there.
-        cache_dir = self._default_download_cache_dir()
-        self.checkpoint_dir = str(cache_dir)
-        target = self._checkpoint_file_path()
-        if target.exists():
-            return
-
-        url = self.DEFAULT_CHECKPOINT_URL
-
-        target.parent.mkdir(parents=True, exist_ok=True)
-        print(
-            f"[ContactGraspNet] Downloading checkpoint from '{url}' into "
-            f"'{target}'..."
-        )
-        try:
-            from urllib.request import urlopen
-
-            with urlopen(url) as resp, open(target, "wb") as fh:
-                shutil.copyfileobj(resp, fh)
-        except Exception as exc:
+        # Validate anything already present in the default package directory,
+        # but never write into the (possibly read-only) installed package.
+        package_dir = self.DEFAULT_CHECKPOINT_DIR
+        package_target = package_dir / self.MODEL_SUBDIR / self.MODEL_FILENAME
+        if package_target.exists():
+            if self._checkpoint_matches_expected(package_target):
+                return package_dir
             raise RuntimeError(
-                f"Failed to download Contact-GraspNet checkpoint from '{url}' "
-                f"to '{target}': {exc}"
-            ) from exc
-
-        if not target.exists() or target.stat().st_size == 0:
-            raise RuntimeError(
-                f"Failed to download Contact-GraspNet checkpoint to '{target}'."
+                f"Contact-GraspNet checkpoint at '{package_target}' does not "
+                f"match the expected size/SHA-256 for pinned upstream commit "
+                f"{self.CHECKPOINT_UPSTREAM_COMMIT}. Remove the corrupt file "
+                f"or provide a custom checkpoint_dir."
             )
+
+        # Materialize under a user-writable cache dir and return it.
+        cache_dir = self._default_download_cache_dir()
+        target = cache_dir / self.MODEL_SUBDIR / self.MODEL_FILENAME
+        if target.exists():
+            if self._checkpoint_matches_expected(target):
+                return cache_dir
+            print(
+                f"[ContactGraspNet] Cached checkpoint at '{target}' failed "
+                f"integrity validation; re-downloading."
+            )
+
+        self._download_checkpoint(target)
         print(f"[ContactGraspNet] Checkpoint ready at '{target}'.")
+        return cache_dir
 
     def _grasps_cam_to_world_candidates(
         self,

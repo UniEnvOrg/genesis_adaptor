@@ -10,9 +10,21 @@ dependencies = [
     "torch",
     "PyYAML",
     "huggingface_hub>=0.23",
+    "numpy",
+    "xbarray",
+    "trimesh",
 ]
 
 [project.optional-dependencies]
+nyx = ["gs-nyx-plugin>=0.1.4"]
+# Test-only tooling. Install with `pip install -e '.[test]'` before running
+# the test suite. `tomli` is needed only on Python 3.10, where `tomllib` is
+# not yet in the stdlib (the metadata tests fall back to it).
+test = [
+    "pytest",
+    "build",
+    "tomli; python_version < '3.11'",
+]
 
 [project.urls]
 Homepage = "https://github.com/UniEnvOrg/genesis_adaptor"
@@ -22,7 +34,17 @@ Issues = "https://github.com/UniEnvOrg/genesis_adaptor/issues"
 Changelog = "https://github.com/UniEnvOrg/genesis_adaptor/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
-include = ["*"]
+# Only the three intended package roots may be packaged. A broad include
+# would also pick up stale build/scripts trees (e.g. build/lib copies) and
+# ship duplicate package files in the wheel.
+include = [
+    "unienv_genesis",
+    "unienv_genesis.*",
+    "unienv_genesis_collection",
+    "unienv_genesis_collection.*",
+    "unienv_genesis_refpolicy",
+    "unienv_genesis_refpolicy.*",
+]
 exclude = ["training*", "tests*", "examples*"]
 
 [tool.setuptools.package-data]

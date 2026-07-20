@@ -882,14 +882,20 @@ class ClutteredTableManager(WorldNode):
             # policy is honoured.  RNG is drawn only for the active envs
             # (inside set_pos_3d → _standing_quaternion), so masked resets
             # with few active objects stay cheap and reproducible.
+            # set_pos_3d accepts a boolean mask selector only, so the active
+            # global indices are expanded to a (batch_size,) bool mask.
             if active_idx.numel() > 0:
                 active_positions = pos_i[active_idx]  # (n_active, 3)
+                global_active_mask = torch.zeros(
+                    self.world.batch_size, dtype=torch.bool, device=device,
+                )
+                global_active_mask[global_active_idx] = True
                 obj.set_pos_3d(
                     entity,
                     active_positions,
                     random_quaternion=self.random_quaternion,
                     rng=self.rng,
-                    envs_idx=global_active_idx,
+                    envs_idx=global_active_mask,
                 )
 
             # --- Inactive subset: pinned directly to the cached per-object

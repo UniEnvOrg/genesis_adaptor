@@ -68,12 +68,11 @@ class IMUSensorNode(SensorNode[IMUSensor, None, Dict[str, PyTorchArrayType]]):
     .. note::
 
        Genesis only populates its sensor cache during ``scene.step()``.
-       :class:`GenesisWorld` runs a no-advance cache refresh (and optionally
-       ``n_settle_steps`` physics steps) at the end of ``after_reload`` /
-       ``after_reset`` so that this node returns a meaningful observation
-       (the accelerometer reads gravity) on the first ``env.reset()`` call.
-       Configure ``GenesisWorld(n_settle_steps=...)`` if contact-based
-       sensors in the same scene also need populated data immediately.
+       :class:`GenesisWorld` runs a no-advance cache refresh (it never steps
+       the physics automatically) at the end of ``after_reload`` / full
+       (unmasked) ``after_reset`` so that this node returns a meaningful
+       observation (the accelerometer reads gravity) on the first
+       ``env.reset()`` call.
     """
 
     reload_priorities = {0}

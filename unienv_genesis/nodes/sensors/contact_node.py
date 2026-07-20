@@ -59,12 +59,10 @@ class ContactSensorNode(SensorNode[ContactSensor, None, Dict[str, PyTorchArrayTy
 
        Genesis detects contacts during the collider pass inside
        ``scene.step()`` and clears the contact list on ``scene.reset()``.
-       :class:`GenesisWorld` refreshes the sensor cache after reset, but
-       ``in_contact`` will read **False** until the collider has run at least
-       one or two physics steps.  Set
-       ``GenesisWorld(n_settle_steps=2)`` (or more) so that a meaningful
-       contact observation is available on the very first ``env.reset()``
-       call.
+       :class:`GenesisWorld` performs a no-advance sensor-cache refresh after
+       full resets/reloads, but it never advances the physics automatically,
+       so ``in_contact`` will read **False** until the collider has run —
+       i.e. until after the first one or two ``env.step()`` calls.
     """
 
     reload_priorities = {0}

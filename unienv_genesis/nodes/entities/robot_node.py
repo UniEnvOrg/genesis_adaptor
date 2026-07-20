@@ -203,18 +203,20 @@ class RobotDescriptionNode(EntityNode[
     
     def reset(self, *, priority = 0, seed = None, mask = None, **kwargs):
         if priority == 50:
+            # Apply the rest/keyframe pose FIRST so that the controller reset
+            # below observes the final rest state rather than the world's
+            # default post-`scene.reset()` state.  This runs during the
+            # node-reset phase, i.e. before `world.after_reset` refreshes the
+            # sensor caches, so sensors also reflect the rest state.
+            self._apply_rest(mask=mask)
             if self.controller is not None:
                 self.controller.reset(mask=mask)
 
     def _apply_rest(self, mask : Optional[torch.Tensor] = None) -> None:
         if 'reset' in self.keyframes and isinstance(self.entity, gs_entities.RigidEntity):
             reset_keyframe = self.keyframes['reset']
-            if mask is not None:
-                # Genesis accepts boolean masks for indexing
-                # env_idx = mask.nonzero(as_tuple=True)[0]
-                env_idx = mask 
-            else:
-                env_idx = None
+            # Genesis accepts boolean masks directly for envs_idx.
+            env_idx = mask
             if reset_keyframe.pos is not None:
                 self.entity.set_pos(
                     reset_keyframe.pos,
@@ -238,7 +240,8 @@ class RobotDescriptionNode(EntityNode[
 
     def after_reset(self, *, priority = 0, mask = None):
         if priority == 50:
-            self._apply_rest(mask=mask)
+            # The rest/keyframe mutation is owned by `reset(priority=50)`;
+            # here we only consume the final state (controller bookkeeping).
             if self.controller is not None:
                 self.controller.after_reset(mask=mask)
         elif priority == 0:
@@ -251,6 +254,9 @@ class RobotDescriptionNode(EntityNode[
             else:
                 self.controller.entity = self.entity
             self.controller.reload()
+            # Reload-time rest application is intentional: the freshly built
+            # scene starts from default entity state, so the rest pose must be
+            # applied here (controllers require a built scene to exist first).
             self._apply_rest(mask=mask)
             self.controller.after_reload()
             self.update_observation()

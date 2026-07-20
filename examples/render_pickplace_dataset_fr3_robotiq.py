@@ -498,8 +498,8 @@ def render_video_object(
 
         for step in range(total_steps):
             action = policy.get_action()
-            env.step(action)
-            policy.step()
+            _, _, _, _, info = env.step(action)
+            policy.step(dt=info['control_step_elapsed_time'])
 
             if policy.get_success():
                 status = "success"
@@ -931,8 +931,8 @@ def main() -> None:
                                     )
                         for step in range(args.steps):
                             action = policy.get_action()
-                            env.step(action)
-                            policy.step()
+                            _, _, _, _, info = env.step(action)
+                            policy.step(dt=info['control_step_elapsed_time'])
                             if policy.get_success():
                                 status = "success"
                                 success_step = step

@@ -9,6 +9,14 @@ from unienv_genesis.world.genesis_world import GenesisWorld
 
 ActT = TypeVar('ActT')
 
+#: Tolerance (seconds) applied to duration-threshold comparisons across
+#: reference policies.  Guards against floating-point accumulation error
+#: when elapsed-time counters sum a per-step ``dt`` repeatedly (e.g.
+#: ``15 * (1/15) = 0.9999999999999999 < 1.0`` in float64).  Far below any
+#: realistic control timestep, so it never fires a transition a full step
+#: early.
+DURATION_COMPARISON_EPS = 1e-9
+
 
 def require_eef_controller(controller: Any, *, policy_name: str = "This policy") -> None:
     """Fail fast if *controller* does not expose end-effector semantics.
@@ -73,7 +81,18 @@ class BaseRefPolicy(abc.ABC, Generic[ActT]):
         self,
         *,
         mask : Optional[torch.Tensor] = None,
+        dt : float,
     ) -> None:
+        """Advance the policy's internal state by one control step.
+
+        Args:
+            mask: Optional boolean mask restricting the update to a subset
+                of environments (batched worlds only).
+            dt: Control/policy timestep in seconds — the wall-clock
+                (simulation) time advanced by one control step.  Required:
+                timing-based policies (timeouts, stall detection, phase
+                durations) always use this value for their time accounting.
+        """
         raise NotImplementedError
     
     # ========== Methods for querying policy state ==========

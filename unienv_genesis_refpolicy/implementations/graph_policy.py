@@ -159,13 +159,14 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         self,
         *,
         mask: Optional[torch.Tensor] = None,
+        dt: float,
     ) -> None:
         batched = is_batched(self.world.batch_size)
 
         if batched:
-            self._step_batched(mask)
+            self._step_batched(mask, dt)
         else:
-            self._step_unbatched()
+            self._step_unbatched(dt)
 
     def get_action(self) -> ActT:
         batched = is_batched(self.world.batch_size)
@@ -294,13 +295,13 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
     # Unbatched implementation
     # ------------------------------------------------------------------
 
-    def _step_unbatched(self) -> None:
+    def _step_unbatched(self, dt: float) -> None:
         if self._terminal_success.item() or self._terminal_failure.item():
             return
 
         node_name = self._node_names[self._current_idx.item()]
         policy = self._get_or_create_node(node_name)
-        policy.step()
+        policy.step(dt=dt)
 
         # Check success.
         if policy.get_success():
@@ -329,7 +330,11 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         next_policy = self._get_or_create_node(next_name)
         next_policy.reset()
     
-    def _step_batched(self, mask: Optional[torch.Tensor]) -> None:
+    def _step_batched(
+        self,
+        mask: Optional[torch.Tensor],
+        dt: float,
+    ) -> None:
         alive = mask if mask is not None else torch.ones_like(self._terminal_success)
         alive = alive & ~self._terminal_success & ~self._terminal_failure
 
@@ -354,7 +359,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
                 continue
 
             policy = self._get_or_create_node(node_name)
-            policy.step(mask=node_mask)
+            policy.step(mask=node_mask, dt=dt)
 
             success = policy.get_success()
             failure = policy.get_failure()

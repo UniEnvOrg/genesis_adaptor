@@ -37,8 +37,9 @@ class CachedTableBuilder(TableBuilder):
     needed between episodes.
 
     ``size`` and ``height`` are exposed as properties that follow the currently
-    active variant selection. Before the first reset they fall back to the
-    initial values from :class:`TableBuilder`.
+    active variant selection.  Before the first reset (i.e. before the
+    after_reload full reset initialises the per-env variant choices) they
+    return the fixed configured values from :class:`TableBuilder`.
 
     During ``reload()`` (priority 100):
       - Creates ``n_variants`` tables with randomly sampled combinations of
@@ -65,29 +66,31 @@ class CachedTableBuilder(TableBuilder):
     def size(self) -> torch.Tensor:
         if self._sampled_sizes_t is None or self._chosen_indices is None:
             return self._fixed_size_t
-        chosen_t = torch.as_tensor(self._chosen_indices, dtype=torch.long)
-        chosen_sizes = self._sampled_sizes_t[chosen_t]
+        chosen_sizes = self._sampled_sizes_t[self._chosen_indices]
         if self.world.batch_size is None:
             return chosen_sizes[0]
         return chosen_sizes
 
     @size.setter
     def size(self, value) -> None:
-        self._fixed_size_t = torch.as_tensor(value, dtype=self.world.dtype)
+        self._fixed_size_t = torch.as_tensor(
+            value, dtype=self.world.dtype, device=self.world.device,
+        )
 
     @property
     def height(self) -> torch.Tensor:
         if self._sampled_heights_t is None or self._chosen_indices is None:
             return self._fixed_height_t
-        chosen_t = torch.as_tensor(self._chosen_indices, dtype=torch.long)
-        chosen_heights = self._sampled_heights_t[chosen_t]
+        chosen_heights = self._sampled_heights_t[self._chosen_indices]
         if self.world.batch_size is None:
             return chosen_heights[0]
         return chosen_heights
 
     @height.setter
     def height(self, value) -> None:
-        self._fixed_height_t = torch.as_tensor(value, dtype=self.world.dtype)
+        self._fixed_height_t = torch.as_tensor(
+            value, dtype=self.world.dtype, device=self.world.device,
+        )
 
     def __init__(
         self,
@@ -130,9 +133,11 @@ class CachedTableBuilder(TableBuilder):
         self._variant_params: List[dict] = []
         self._sampled_sizes_t: Optional[torch.Tensor] = None   # (n_variants, 3)
         self._sampled_heights_t: Optional[torch.Tensor] = None # (n_variants,)
-        # After reset(): list of length 1 (unbatched) or n_envs (batched),
-        # giving the chosen variant index for each environment.
-        self._chosen_indices: Optional[List[int]] = None
+        # After reset(): LongTensor of shape (1,) (unbatched) or
+        # (n_envs,) (batched) on the world's device, giving the chosen
+        # variant index for each environment.  ``None`` until the first
+        # (full) reset initialises it.
+        self._chosen_indices: Optional[torch.Tensor] = None
 
     def _reseed(self, seed: int) -> None:
         """Reseed both RNGs from *seed*."""
@@ -220,8 +225,12 @@ class CachedTableBuilder(TableBuilder):
             sampled_sizes.append(variant_size)
             sampled_heights.append(variant_height)
 
-        self._sampled_sizes_t = torch.tensor(sampled_sizes, dtype=self.world.dtype)
-        self._sampled_heights_t = torch.tensor(sampled_heights, dtype=self.world.dtype)
+        self._sampled_sizes_t = torch.tensor(
+            sampled_sizes, dtype=self.world.dtype, device=self.world.device,
+        )
+        self._sampled_heights_t = torch.tensor(
+            sampled_heights, dtype=self.world.dtype, device=self.world.device,
+        )
 
     def after_reload(self, *, priority: int = 0, mask=None, **kwargs) -> None:
         # Scene is now built. Select initial active variant without reseeding.
@@ -249,38 +258,89 @@ class CachedTableBuilder(TableBuilder):
         n_envs = self.world.batch_size  # None -> unbatched (single environment)
 
         if n_envs is None:
-            # Unbatched: one environment, one active variant.
-            chosen = int(torch.randint(self.n_variants, (), generator=self.rng).item())
-            self._chosen_indices = [chosen]
+            # Unbatched: one environment, one active variant (mask N/A).
+            # The draw must be requested on the world's device: ``self.rng``
+            # is a device-matched generator, and torch raises when the
+            # generator device does not match the output device.
+            chosen = torch.randint(
+                self.n_variants, (1,),
+                generator=self.rng, device=self.world.device,
+            )
+            self._chosen_indices = chosen
+
+            target_pos = torch.tensor(self.pos, dtype=self.world.dtype, device=self.world.device)
+            target_quat = torch.tensor(self.quat, dtype=self.world.dtype, device=self.world.device)
+            park_pos = torch.tensor(_PARK_POS, dtype=self.world.dtype, device=self.world.device)
+            park_quat = torch.tensor(_PARK_QUAT, dtype=self.world.dtype, device=self.world.device)
 
             for i, group in enumerate(self._variants):
-                if i == chosen:
-                    group.set_pose(self.pos, self.quat)
+                if i == int(chosen.item()):
+                    group.set_pose(target_pos, target_quat)
                 else:
-                    group.set_pose(_PARK_POS, _PARK_QUAT)
+                    group.set_pose(park_pos, park_quat)
+            return
+
+        # Batched: each masked environment independently picks a variant;
+        # unmasked environments keep their current variant and pose.
+        # Reset masks are strictly ``(n_envs,)`` torch.bool tensors on the
+        # world's device — validated here at the reset boundary.
+        if mask is not None:
+            assert isinstance(mask, torch.Tensor) and mask.dtype == torch.bool, (
+                f"Reset mask must be a torch.bool tensor, got "
+                f"{type(mask)} with dtype {getattr(mask, 'dtype', None)}"
+            )
+            assert mask.shape == (n_envs,), (
+                f"Reset mask must have shape ({n_envs},), got {tuple(mask.shape)}"
+            )
+            assert mask.device == self.world.device, (
+                f"Reset mask must live on the world device "
+                f"{self.world.device}, got {mask.device}"
+            )
+            assert self._chosen_indices is not None, (
+                "Masked reset before the variant choices were initialised — "
+                "run a full reset first (after_reload performs one)."
+            )
+            n_select = int(mask.sum().item())
+            if n_select == 0:
+                return
         else:
-            # Batched: each environment independently picks a variant.
-            chosen_t = torch.randint(self.n_variants, (n_envs,), generator=self.rng)
-            self._chosen_indices = chosen_t.tolist()
+            n_select = n_envs
 
-            target_pos = torch.tensor(self.pos, dtype=self.world.dtype)
-            target_quat = torch.tensor(self.quat, dtype=self.world.dtype)
-            park_pos = torch.tensor(_PARK_POS, dtype=self.world.dtype)
-            park_quat = torch.tensor(_PARK_QUAT, dtype=self.world.dtype)
+        new_choices = torch.randint(
+            self.n_variants, (n_select,),
+            generator=self.rng, device=self.world.device,
+        )
 
-            for i, group in enumerate(self._variants):
-                is_active = (chosen_t == i).unsqueeze(-1)
+        # Start from the previous selection so unmasked envs keep their
+        # variant.  A full reset re-initialises the choices for every env.
+        if mask is None:
+            chosen_t = new_choices
+        else:
+            chosen_t = self._chosen_indices.clone()
+            chosen_t[mask] = new_choices
+        self._chosen_indices = chosen_t
 
-                positions = torch.where(
-                    is_active,
-                    target_pos.expand(n_envs, 3),
-                    park_pos.expand(n_envs, 3),
-                )
+        target_pos = torch.tensor(self.pos, dtype=self.world.dtype, device=chosen_t.device)
+        target_quat = torch.tensor(self.quat, dtype=self.world.dtype, device=chosen_t.device)
+        park_pos = torch.tensor(_PARK_POS, dtype=self.world.dtype, device=chosen_t.device)
+        park_quat = torch.tensor(_PARK_QUAT, dtype=self.world.dtype, device=chosen_t.device)
 
-                quats = torch.where(
-                    is_active,
-                    target_quat.expand(n_envs, 4),
-                    park_quat.expand(n_envs, 4),
-                )
+        for i, group in enumerate(self._variants):
+            is_active = (chosen_t == i).unsqueeze(-1)
 
-                group.set_pose(positions, quats)
+            positions = torch.where(
+                is_active,
+                target_pos.expand(n_envs, 3),
+                park_pos.expand(n_envs, 3),
+            )
+
+            quats = torch.where(
+                is_active,
+                target_quat.expand(n_envs, 4),
+                park_quat.expand(n_envs, 4),
+            )
+
+            # Pose tensors cover the full batch; EntityGroup forwards only
+            # the masked rows to Genesis (boolean masks are valid Genesis
+            # envs_idx), so unmasked envs are untouched.
+            group.set_pose(positions, quats, envs_idx=mask)

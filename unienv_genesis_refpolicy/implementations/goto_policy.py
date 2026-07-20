@@ -14,7 +14,11 @@ from unienv_genesis.utils.batch_dim_utils import (
     get_batch_aware_shape,
     broadcast_to_batch,
 )
-from unienv_genesis_refpolicy.base.policy import BaseRefPolicy, require_eef_controller
+from unienv_genesis_refpolicy.base.policy import (
+    BaseRefPolicy,
+    require_eef_controller,
+    DURATION_COMPARISON_EPS,
+)
 
 class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
     """Move an end-effector to a target world-frame pose.
@@ -47,8 +51,14 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             timeout.
 
     Notes:
-        Time accounting is based on :attr:`GenesisWorld.world_timestep`
-        added once per :meth:`step` call.
+        Time accounting always uses the explicit ``dt`` passed to
+        :meth:`step` (the control/policy timestep in seconds).
+
+        The frame-dependent action (world-frame target converted through the
+        controller's current base frame) is computed at construction and
+        **recomputed on every :meth:`reset`**, selectively for the reset
+        environments, so randomized or moving base frames do not retain
+        construction-time conversions.
     """
 
     def __init__(
@@ -88,7 +98,9 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             batch_size, 4, device=device,
         )
 
-        # Pre-compute the action (constant for the lifetime of the policy).
+        # Pre-compute the action so get_action() is valid before the first
+        # reset; reset() recomputes it from the stored targets against the
+        # controller's current base frame.
         self._action = controller.get_action_world(
             self.target_pos, self.target_quat,
         )
@@ -98,12 +110,16 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         pos_shape = get_batch_aware_shape(batch_size, 3)       # (3,) or (B, 3)
         quat_shape = get_batch_aware_shape(batch_size, 4)      # (4,) or (B, 4)
 
+        # Elapsed-time counters use float64: float32 accumulation error at
+        # common control rates (e.g. 60 Hz / 100 Hz) can leave the counter
+        # just below the threshold at the exact boundary step, delaying
+        # timeout/stall transitions by one full step.
         self._elapsed_seconds = torch.zeros(
-            scalar_shape, dtype=torch.float32, device=device,
+            scalar_shape, dtype=torch.float64, device=device,
         )
         self._reached = torch.zeros(scalar_shape, dtype=torch.bool, device=device)
         self._stall_elapsed_seconds = torch.zeros(
-            scalar_shape, dtype=torch.float32, device=device,
+            scalar_shape, dtype=torch.float64, device=device,
         )
         self._stalled = torch.zeros(scalar_shape, dtype=torch.bool, device=device)
         self._last_eef_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
@@ -121,7 +137,15 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         mask: Optional[torch.Tensor] = None,
         seed: Optional[int] = None,
     ) -> None:
+        # Recompute the frame-dependent action from the stored targets so a
+        # changed base frame (e.g. a randomized or moving robot base) does
+        # not retain a stale construction-time conversion.  Subclasses that
+        # resolve fresh targets in their own reset() write them into
+        # ``self.target_pos`` / ``self.target_quat`` before delegating here,
+        # so this single recomputation also covers them.
+        action = self.controller.get_action_world(self.target_pos, self.target_quat)
         if mask is not None:
+            self._action[mask] = action[mask]
             self._elapsed_seconds[mask] = 0.0
             self._reached[mask] = False
             self._stall_elapsed_seconds[mask] = 0.0
@@ -130,6 +154,7 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             self._last_eef_pos[mask] = eef_pos.detach().float()[mask]
             self._last_eef_quat[mask] = eef_quat.detach().float()[mask]
         else:
+            self._action.copy_(action)
             self._elapsed_seconds.zero_()
             self._reached.zero_()
             self._stall_elapsed_seconds.zero_()
@@ -143,14 +168,15 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         self,
         *,
         mask: Optional[torch.Tensor] = None,
+        dt: float,
     ) -> None:
-        dt = float(self.world.world_timestep)
+        step_dt = float(dt)
 
         # Increment elapsed time.
         if mask is not None:
-            self._elapsed_seconds[mask] += dt
+            self._elapsed_seconds[mask] += step_dt
         else:
-            self._elapsed_seconds += dt
+            self._elapsed_seconds += step_dt
 
         # Query current EEF pose (native shapes from controller).
         eef_pos, eef_quat = self.controller.get_eef_pose_absolute()
@@ -180,19 +206,23 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             if mask is not None:
                 updated = torch.where(
                     stalled_this_step[mask],
-                    self._stall_elapsed_seconds[mask] + dt,
+                    self._stall_elapsed_seconds[mask] + step_dt,
                     torch.zeros_like(self._stall_elapsed_seconds[mask]),
                 )
                 self._stall_elapsed_seconds[mask] = updated
             else:
                 self._stall_elapsed_seconds = torch.where(
                     stalled_this_step,
-                    self._stall_elapsed_seconds + dt,
+                    self._stall_elapsed_seconds + step_dt,
                     torch.zeros_like(self._stall_elapsed_seconds),
                 )
 
+            # The epsilon guards against float accumulation error when
+            # summing dt (e.g. 100 * 0.01 = 0.9999999999999999 < 1.0 in
+            # float64); it is far below any realistic control timestep.
             stall_trigger = (
-                (self._stall_elapsed_seconds >= self.stall_seconds) & ~self._reached
+                (self._stall_elapsed_seconds >= self.stall_seconds - DURATION_COMPARISON_EPS)
+                & ~self._reached
             )
             if mask is not None:
                 stall_trigger = stall_trigger & mask
@@ -244,7 +274,8 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
                 torch.zeros_like(self._reached),
             )
         timed_out = (
-            (self._elapsed_seconds >= self.max_seconds) & ~self._reached & ~self._stalled
+            (self._elapsed_seconds >= self.max_seconds - DURATION_COMPARISON_EPS)
+            & ~self._reached & ~self._stalled
         )
         return try_scalar(timed_out)
 

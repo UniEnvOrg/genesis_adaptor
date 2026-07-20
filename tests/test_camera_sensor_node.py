@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import pytest
 import torch
 import genesis as gs
@@ -12,6 +13,8 @@ if not gs._initialized:
 
 from unienv_interface.world import WorldEnv
 from unienv_interface.world.node import WorldNode
+from unienv_interface.backends.pytorch import PyTorchComputeBackend
+from xbarray.transformations.rotation_conversions import quaternion_to_matrix
 
 from unienv_genesis import GenesisWorld
 from unienv_genesis.nodes.sensors import (
@@ -50,6 +53,43 @@ class DummyBoxNode(WorldNode):
         if priority == 20:
             self.world.scene.add_entity(
                 gs.morphs.Box(size=(0.1, 0.1, 0.1), fixed=True, pos=(0, 0, 0.2)),
+                name=self._name,
+            )
+
+    def reset(self, *, priority=0, **kw):
+        pass
+
+    def pre_environment_step(self, dt, *, priority=0):
+        pass
+
+    def post_environment_step(self, dt, *, priority=0):
+        pass
+
+    def get_observation(self):
+        return None
+
+
+class MovableBoxNode(WorldNode):
+    """Free (non-fixed) box entity whose pose can be changed at runtime."""
+
+    reload_priorities = {20}
+    reset_priorities = {20}
+    pre_environment_step_priorities = {20}
+    post_environment_step_priorities = {20}
+
+    def __init__(self, world: GenesisWorld, name: str = "box", pos=(0.0, 0.0, 0.2)):
+        self.world = world
+        self._name = name
+        self._pos = pos
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def reload(self, *, priority=0, **kw):
+        if priority == 20:
+            self.world.scene.add_entity(
+                gs.morphs.Box(size=(0.1, 0.1, 0.1), pos=self._pos),
                 name=self._name,
             )
 
@@ -335,4 +375,118 @@ def test_nyx_observation_space_matches():
         assert cam_obs[key].shape == space.shape, (
             f"Shape mismatch for {key!r}: obs={cam_obs[key].shape}, space={space.shape}"
         )
+    env.close()
+
+
+# ============================================================================
+# Entity-only attachment normalization (link=None -> entity base link)
+# ============================================================================
+
+def test_genesis_entity_only_attach_normalizes_to_base_link():
+    """Genesis backend: entity-only attach resolves to the entity's base link."""
+    world = GenesisWorld()
+    box = DummyBoxNode(world)
+    camera = CameraSensorNode(
+        world=world,
+        name="cam",
+        option=_cam_opt(attach=AttachFromName("box")),
+        render_rgb=True,
+    )
+    env = WorldEnv(world, [box, camera], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    entity = world.scene.get_entity("box")
+    assert camera._attach_entity is entity
+    assert camera._attach_link is entity.base_link
+    env.close()
+
+
+_T_OPENGL_TO_OPENCV = torch.diag(torch.tensor([1.0, -1.0, -1.0, 1.0]))
+
+
+def _camera_to_world_gl(camera) -> torch.Tensor:
+    """Recover the OpenGL camera-to-world matrix from reported extrinsics."""
+    E = camera.get_observation()["extrinsics_cv"].detach().cpu().float()
+    E4 = torch.eye(4)
+    E4[:3] = E
+    return torch.linalg.inv(E4) @ _T_OPENGL_TO_OPENCV
+
+
+def _expected_cam_to_world(camera, link) -> torch.Tensor:
+    """Expected OpenGL camera-to-world: link world transform @ offset_T."""
+    link_pos = torch.as_tensor(link.get_pos(), dtype=torch.float32).cpu()
+    link_quat = torch.as_tensor(link.get_quat(), dtype=torch.float32).cpu()
+    R = quaternion_to_matrix(PyTorchComputeBackend, link_quat).float()
+    link_T = torch.eye(4)
+    link_T[:3, :3] = R
+    link_T[:3, 3] = link_pos
+    offset_T = torch.from_numpy(camera._offset_T).float()
+    return link_T @ offset_T
+
+
+@pytest.mark.skipif(not NYX_AVAILABLE, reason="NYX not available")
+def test_nyx_entity_only_attach_extrinsics_follow_entity():
+    """NYX entity-only attach: world extrinsics track the entity base link.
+
+    The camera is attached with ``link=None``; both rendering and the
+    reported ``extrinsics_cv`` must use the entity's base link.  Moving and
+    rotating the entity must therefore move the reported camera pose by the
+    same amount (a static world pose would be the pre-fix behaviour).
+    """
+    world = GenesisWorld()
+    box = MovableBoxNode(world)
+    offset_pos = (0.1, 0.0, 0.05)
+    cam_opt = _nyx_cam_opt(
+        pos=offset_pos,
+        quat=CameraSensorNodeOptions.quat_from_lookat(offset_pos, (0.0, 0.0, 0.0)),
+        attach=AttachFromName("box"),
+    )
+    camera = CameraSensorNode(
+        world=world,
+        name="cam",
+        option=cam_opt,
+        render_rgb=True,
+    )
+    env = WorldEnv(world, [box, camera], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    entity = world.scene.get_entity("box")
+    # Entity-only attachment is normalized to the base link.
+    assert camera._attach_entity is entity
+    assert camera._attach_link is entity.base_link
+
+    # World extrinsics equal the base-link transform composed with offset_T.
+    ctw = _camera_to_world_gl(camera)
+    expected = _expected_cam_to_world(camera, entity.base_link)
+    assert torch.allclose(ctw, expected, atol=1e-4), (
+        f"Initial extrinsics do not match base_link @ offset_T:\n{ctw}\nvs\n{expected}"
+    )
+
+    cam_pos_before = ctw[:3, 3].clone()
+    link_pos_before = torch.as_tensor(
+        entity.base_link.get_pos(), dtype=torch.float32,
+    ).cpu()
+
+    # Move and rotate the entity; the reported camera pose must follow.
+    new_pos = (0.3, -0.2, 0.5)
+    yaw = math.radians(90.0)
+    entity.set_pos(new_pos)
+    entity.set_quat((math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)))
+    camera.update_observation()
+
+    ctw2 = _camera_to_world_gl(camera)
+    expected2 = _expected_cam_to_world(camera, entity.base_link)
+    assert torch.allclose(ctw2, expected2, atol=1e-4), (
+        f"Extrinsics after moving entity do not match base_link @ offset_T:\n"
+        f"{ctw2}\nvs\n{expected2}"
+    )
+
+    # The camera actually moved (not a static world pose).  The exact camera
+    # pose — including the offset rotated by the entity's new orientation —
+    # is already covered by the composition assertions above.
+    link_pos_after = torch.as_tensor(
+        entity.base_link.get_pos(), dtype=torch.float32,
+    ).cpu()
+    assert not torch.allclose(link_pos_after, link_pos_before)
+    assert not torch.allclose(ctw2[:3, 3], cam_pos_before, atol=1e-3)
     env.close()

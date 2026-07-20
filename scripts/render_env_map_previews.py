@@ -363,7 +363,6 @@ def _build_world(
     precision: str,
     camera: str,
     res: Tuple[int, int],
-    n_settle_steps: int = 0,
 ):
     """Build the static ``WorldEnv`` reused for every HDRI preview.
 
@@ -389,7 +388,6 @@ def _build_world(
         ),
         # No scene lights — only the HDRI provides illumination.
         lights={},
-        n_settle_steps=n_settle_steps,
     )
 
     table = TableBuilder(

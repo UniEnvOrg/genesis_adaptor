@@ -5,7 +5,9 @@ robot's end-effector must reach a randomly sampled target position in the
 workspace.  Useful as a baseline or for evaluating EEF control.
 
 Provides:
-- **observation**: ``{"eef_position": (3,), "target_position": (3,)}``
+- **observation**: ``{"eef_position": ([B], 3), "target_position": ([B], 3)}``
+  (batch-aware shapes; ``target_orientation`` ``([B], 4)`` is added when a
+  fixed target orientation is configured)
 - **reward**: ``-distance(eef, target)`` (dense)
 - **termination**: ``True`` when ``distance < success_threshold``
 
@@ -32,6 +34,7 @@ from unienv_interface.backends.pytorch import (
 from unienv_interface.space import BoxSpace, DictSpace
 from unienv_interface.world.node import WorldNode
 from unienv_genesis.world import GenesisWorld
+from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
 
 __all__ = ["ReachTargetTask"]
 
@@ -126,21 +129,23 @@ class ReachTargetTask(WorldNode):
         self._reward: Union[float, torch.Tensor] = 0.0
         self._terminated: Union[bool, torch.Tensor] = False
 
-        # Observation space.
+        # Observation space (batch-aware shapes, world device).
         obs_spaces = {
             "eef_position": BoxSpace(
                 PyTorchComputeBackend,
                 low=-float("inf"),
                 high=float("inf"),
-                shape=(3,),
+                shape=get_batch_aware_shape(self.world.batch_size, 3),
                 dtype=self.world.dtype,
+                device=self.world.device,
             ),
             "target_position": BoxSpace(
                 PyTorchComputeBackend,
                 low=-float("inf"),
                 high=float("inf"),
-                shape=(3,),
+                shape=get_batch_aware_shape(self.world.batch_size, 3),
                 dtype=self.world.dtype,
+                device=self.world.device,
             ),
         }
         if self.target_orientation is not None:
@@ -148,12 +153,14 @@ class ReachTargetTask(WorldNode):
                 PyTorchComputeBackend,
                 low=-1.0,
                 high=1.0,
-                shape=(4,),
+                shape=get_batch_aware_shape(self.world.batch_size, 4),
                 dtype=self.world.dtype,
+                device=self.world.device,
             )
         self.observation_space = DictSpace(
             PyTorchComputeBackend,
             obs_spaces,
+            device=self.world.device,
         )
 
     @property
@@ -166,7 +173,7 @@ class ReachTargetTask(WorldNode):
     def after_reload(self, *, priority=0, mask=None):
         if priority not in self.after_reload_priorities:
             return
-        self.reset(priority=next(iter(self.reset_priorities)), seed=None, mask=None)
+        self.reset(priority=min(self.reset_priorities), seed=None, mask=None)
 
     def _sample_target_position(self, n: int) -> torch.Tensor:
         """Sample *n* target positions uniformly in the workspace box.
@@ -191,9 +198,8 @@ class ReachTargetTask(WorldNode):
         if seed is not None:
             self._reseed(seed)
 
-        self._target_pos = self._sample_target_position(1).squeeze(-2)  # ([B], 3) or (3,)
-
         if mask is None:
+            self._target_pos = self._sample_target_position(1).squeeze(-2)  # ([B], 3) or (3,)
             self._reward = (
                 0.0
                 if self.world.batch_size is None
@@ -209,10 +215,23 @@ class ReachTargetTask(WorldNode):
                 )
             )
         else:
-            assert self.world.batch_size is not None, (
-                "Masking only supported in batched environments"
+            # Reset masks are strictly ``(batch_size,)`` torch.bool tensors
+            # on the world's device — validated here at the reset boundary.
+            n_envs = self.world.batch_size
+            assert n_envs is not None, "Masking only supported in batched environments"
+            assert isinstance(mask, torch.Tensor) and mask.dtype == torch.bool, (
+                f"Reset mask must be a torch.bool tensor, got "
+                f"{type(mask)} with dtype {getattr(mask, 'dtype', None)}"
             )
-            # Sample for all envs (shape (B, 3)), then select only masked.
+            assert mask.shape == (n_envs,), (
+                f"Reset mask must have shape ({n_envs},), got {tuple(mask.shape)}"
+            )
+            assert mask.device == self.world.device, (
+                f"Reset mask must live on the world device "
+                f"{self.world.device}, got {mask.device}"
+            )
+            # Sample for all envs (shape (B, 3)), then assign only masked
+            # rows — unmasked targets / reward / termination are preserved.
             new_pos = self._sample_target_position(1).squeeze(-2)  # (B, 3)
             self._target_pos[mask] = new_pos[mask]
             self._reward.masked_fill_(mask, 0.0)
@@ -237,7 +256,13 @@ class ReachTargetTask(WorldNode):
             "target_position": self._target_pos,
         }
         if self._target_quat_t is not None:
-            obs["target_orientation"] = self._target_quat_t
+            # Expand the fixed orientation to the batched declared shape.
+            target_quat_obs = self._target_quat_t
+            if self.world.batch_size is not None:
+                target_quat_obs = target_quat_obs.unsqueeze(0).expand(
+                    self.world.batch_size, 4,
+                )
+            obs["target_orientation"] = target_quat_obs
         return obs
 
     def get_reward(self):

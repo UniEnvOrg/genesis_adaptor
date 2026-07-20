@@ -67,9 +67,11 @@ class CombinedRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self,
         *,
         mask: Optional[torch.Tensor] = None,
+        dt: float,
     ) -> None:
+        """Step every sub-policy, forwarding the explicit control-step dt."""
         for policy in self._policies.values():
-            policy.step(mask=mask)
+            policy.step(mask=mask, dt=dt)
 
     @torch.inference_mode()
     def get_action(self) -> Dict[str, torch.Tensor]:

@@ -44,7 +44,7 @@ from unienv_genesis.options.attach_option import AttachFromName
 
 N_ENVS = 2
 BOX_LINK = "box_baselink"
-N_SETTLE_STEPS = 40
+N_MANUAL_STEPS = 40
 
 
 class BoxEntityNode(WorldNode):
@@ -97,7 +97,7 @@ def _make_env(world: GenesisWorld, sensor_nodes) -> WorldEnv:
     return env
 
 
-def _settle(env: WorldEnv, n: int = N_SETTLE_STEPS) -> None:
+def _step_env(env: WorldEnv, n: int = N_MANUAL_STEPS) -> None:
     for _ in range(n):
         env.step(None)
 
@@ -175,7 +175,7 @@ def test_batched_imu_shapes():
         option=IMUSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
     )
     env = _make_env(world, [node])
-    _settle(env)
+    _step_env(env)
 
     obs = node.get_observation()
     assert obs["lin_acc"].shape == (N_ENVS, 3)
@@ -200,7 +200,7 @@ def test_batched_contact_force_shapes():
         option=ContactForceSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
     )
     env = _make_env(world, [node])
-    _settle(env)
+    _step_env(env)
 
     obs = node.get_observation()
     assert obs["contact_force"].shape == (N_ENVS, 3)
@@ -223,7 +223,7 @@ def test_batched_contact_shapes():
         option=ContactSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
     )
     env = _make_env(world, [node])
-    _settle(env)
+    _step_env(env)
 
     obs = node.get_observation()
     assert obs["in_contact"].shape == (N_ENVS,)
@@ -234,14 +234,14 @@ def test_batched_contact_shapes():
 
 
 # ---------------------------------------------------------------------------
-# n_settle_steps: meaningful observations immediately after reset (batched)
+# No-advance sensor-cache refresh after reset (batched)
 # ---------------------------------------------------------------------------
 
 
-def test_batched_settle_steps_populates_after_reset():
-    """With ``n_settle_steps``, all sensors return meaningful batched data on
-    the very first ``env.reset()`` — no manual settling needed."""
-    world = GenesisWorld(batch_size=N_ENVS, n_settle_steps=5)
+def test_batched_first_reset_reads_empty_caches():
+    """Batched reset/reload finalization never steps the physics: right after
+    the first (reload) reset every batched sensor cache is still empty."""
+    world = GenesisWorld(batch_size=N_ENVS)
     imu = IMUSensorNode(
         world=world,
         name="imu",
@@ -259,16 +259,45 @@ def test_batched_settle_steps_populates_after_reset():
     )
     env = _make_env(world, [imu, cf, ct])
 
+    # No manual stepping — the world must not have advanced the simulation.
     imu_obs = imu.get_observation()
     cf_obs = cf.get_observation()
     ct_obs = ct.get_observation()
 
     assert imu_obs["lin_acc"].shape == (N_ENVS, 3)
-    assert torch.all(imu_obs["lin_acc"][:, 2] > 5.0)
+    assert torch.all(imu_obs["lin_acc"] == 0.0)
 
     assert cf_obs["contact_force"].shape == (N_ENVS, 3)
-    assert torch.all(cf_obs["contact_force"][:, 2] > 0.0)
+    assert torch.all(cf_obs["contact_force"] == 0.0)
 
     assert ct_obs["in_contact"].shape == (N_ENVS,)
-    assert torch.all(ct_obs["in_contact"])
+    assert not torch.any(ct_obs["in_contact"])
+    env.close()
+
+
+def test_batched_cache_refresh_populates_imu_on_subsequent_reset():
+    """After a plain non-reload reset, the no-advance cache refresh populates
+    the batched IMU with gravity for every env — with zero physics steps —
+    while contact-based sensors stay empty until the next ``env.step()``."""
+    world = GenesisWorld(batch_size=N_ENVS)
+    imu = IMUSensorNode(
+        world=world,
+        name="imu",
+        option=IMUSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
+    )
+    cf = ContactForceSensorNode(
+        world=world,
+        name="contact_force",
+        option=ContactForceSensorNodeOptions(attach=AttachFromName("box", BOX_LINK)),
+    )
+    env = _make_env(world, [imu, cf])
+
+    _step_env(env, n=3)
+    env.reset(seed=1)
+
+    imu_obs = imu.get_observation()
+    cf_obs = cf.get_observation()
+    assert torch.all(imu_obs["lin_acc"][:, 2] > 5.0)
+    # No automatic physics stepping: contacts stay cleared until env.step().
+    assert torch.all(cf_obs["contact_force"] == 0.0)
     env.close()
