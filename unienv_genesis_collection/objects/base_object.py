@@ -554,6 +554,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         entity: EntityT,
         gripper_width: float,
         gripper_depth: float = 0.01,
+        rng: Optional[torch.Generator] = None,
     ) -> GraspCandidates:
         """Return candidate grasp poses in the **object's local frame**.
 
@@ -569,6 +570,11 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             entity: The loaded Genesis entity.
             gripper_width: Maximum gripper opening in metres.
             gripper_depth: Depth of the gripper fingers in metres.
+            rng: Optional :class:`torch.Generator` for reproducible
+                candidate generation.  The base implementation uses
+                deterministic bounding-box enumeration and ignores this
+                argument; subclasses that sample stochastically (e.g.
+                :class:`MeshObject`) consume it.
 
         Returns:
             :class:`GraspCandidates` in the object's local frame,
@@ -633,6 +639,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         entity: EntityT,
         gripper_width: float,
         gripper_depth: float = 0.01,
+        rng: Optional[torch.Generator] = None,
     ) -> GraspCandidates:
         """Return candidate grasp poses for a parallel-jaw gripper.
 
@@ -650,13 +657,18 @@ class ManipulatableObject(ABC, Generic[EntityT]):
                 world pose).
             gripper_width: Maximum gripper opening in metres.
             gripper_depth: Depth of the gripper fingers in metres.
+            rng: Optional :class:`torch.Generator` forwarded to
+                :meth:`list_box_gripper_grasping_candidates_local` for
+                reproducible candidate generation.  The base local
+                implementation ignores it (deterministic bbox
+                enumeration); stochastic subclasses consume it.
 
         Returns:
             :class:`GraspCandidates` in world coordinates,
                 shape ``([B], N, ...)`` where *N* is the number of candidates and *B* is the batch size (if the world is batched).
         """
         local = self.list_box_gripper_grasping_candidates_local(
-            entity, gripper_width, gripper_depth=gripper_depth,
+            entity, gripper_width, gripper_depth=gripper_depth, rng=rng,
         )
         pos = entity.get_pos().detach()
         quat = entity.get_quat().detach()

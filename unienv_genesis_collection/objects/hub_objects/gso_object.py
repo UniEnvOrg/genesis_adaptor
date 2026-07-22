@@ -312,6 +312,7 @@ def make_gso_pool(
             :func:`list_gso_objects`).  Combinable with *tags*.
         n: If given, sample *n* distinct objects from the selection.
         rng: Optional :class:`torch.Generator` for reproducible sampling.
+            When omitted (``None``), the global Torch RNG is used.
         **object_kwargs: Forwarded to every :class:`GSOObject` (e.g.
             ``scale=0.8``).
 

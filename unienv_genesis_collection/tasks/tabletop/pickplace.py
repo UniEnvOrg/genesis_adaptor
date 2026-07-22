@@ -49,6 +49,7 @@ class ObjectRelocateTask(WorldNode):
         reset_priority: Optional[int] = None,
         after_reload_priority: Optional[int] = None,
         post_environment_step_priority: int = DEFAULT_POSTSTEP_PRIORITY,
+        seed: Optional[int] = None,
     ):
         self.world = world
         self._name = name
@@ -77,7 +78,10 @@ class ObjectRelocateTask(WorldNode):
 
         # Random state.
         self.rng: torch.Generator = torch.Generator(device=world.device)
-        self.rng.seed()
+        if seed is None:
+            self.rng.seed()
+        else:
+            self.rng.manual_seed(seed)
 
         # Task state (persistent across episodes).
         self.target_object_entity = None

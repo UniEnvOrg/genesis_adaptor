@@ -204,6 +204,7 @@ class FloatingVisualPropsManager(WorldNode):
         max_placement_attempts: int = 100,
         random_quaternion: bool = True,
         park_clearance: float = _DEFAULT_PARK_CLEARANCE,
+        seed: Optional[int] = None,
     ):
         self.world = world
         self._name = name
@@ -252,7 +253,10 @@ class FloatingVisualPropsManager(WorldNode):
 
         # RNG state — reseeded when an explicit seed is provided.
         self.rng: torch.Generator = torch.Generator(device=world.device)
-        self.rng.seed()
+        if seed is None:
+            self.rng.seed()
+        else:
+            self.rng.manual_seed(seed)
 
         # Populated during reload().
         self._loaded_entities: List = []

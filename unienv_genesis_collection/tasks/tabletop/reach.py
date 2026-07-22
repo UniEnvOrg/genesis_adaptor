@@ -70,8 +70,8 @@ class ReachTargetTask(WorldNode):
     has_termination_signal = True
     has_truncation_signal = False
 
-    # No entities to load — reload is a no-op, so no reload priority.
-    reload_priorities = set()
+    # Capture reload seeds before after_reload samples the initial target.
+    reload_priorities = {DEFAULT_RESET_PRIORITY}
     after_reload_priorities = {DEFAULT_RESET_PRIORITY}
     reset_priorities = {DEFAULT_RESET_PRIORITY}
 
@@ -88,6 +88,7 @@ class ReachTargetTask(WorldNode):
         reset_priority: Optional[int] = None,
         after_reload_priority: Optional[int] = None,
         post_environment_step_priority: int = DEFAULT_POSTSTEP_PRIORITY,
+        seed: Optional[int] = None,
     ):
         self.world = world
         self._name = name
@@ -122,7 +123,10 @@ class ReachTargetTask(WorldNode):
 
         # Random state.
         self.rng: torch.Generator = torch.Generator(device=world.device)
-        self.rng.seed()
+        if seed is None:
+            self.rng.seed()
+        else:
+            self.rng.manual_seed(seed)
 
         # Per-episode state.
         self._target_pos: Optional[torch.Tensor] = None  # ([B], 3) or (3,)
@@ -169,6 +173,10 @@ class ReachTargetTask(WorldNode):
 
     def _reseed(self, seed: int) -> None:
         self.rng.manual_seed(seed)
+
+    def reload(self, *, priority=0, seed=None, mask=None, **kwargs):
+        if priority in self.reload_priorities and seed is not None:
+            self._reseed(seed)
 
     def after_reload(self, *, priority=0, mask=None):
         if priority not in self.after_reload_priorities:

@@ -106,6 +106,7 @@ class CachedTableBuilder(TableBuilder):
         leg_radius: float = DEFAULT_LEG_RADIUS,
         texture_path: Optional[Path] = None,
         leg_color: Optional[tuple] = None,
+        seed: Optional[int] = None,
     ):
         super().__init__(
             world=world,
@@ -124,9 +125,12 @@ class CachedTableBuilder(TableBuilder):
 
         # Persistent RNGs — reseeded when an explicit seed is provided,
         # otherwise their state carries over across reload/reset calls.
-        self.np_rng: np.random.Generator = np.random.default_rng()
+        self.np_rng: np.random.Generator = np.random.default_rng(seed)
         self.rng: torch.Generator = torch.Generator(device=world.device)
-        self.rng.seed()  # seed from OS entropy
+        if seed is None:
+            self.rng.seed()
+        else:
+            self.rng.manual_seed(seed)
 
         # Populated during reload().
         self._variants: List[EntityGroup] = []

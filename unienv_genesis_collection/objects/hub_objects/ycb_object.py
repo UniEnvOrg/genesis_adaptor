@@ -256,6 +256,7 @@ def make_ycb_pool(
         tags: Filter the catalog by tags (see :func:`list_ycb_objects`).
         n: If given, sample *n* distinct objects from the selection.
         rng: Optional :class:`torch.Generator` for reproducible sampling.
+            When omitted (``None``), the global Torch RNG is used.
         **object_kwargs: Forwarded to every :class:`YCBObject` (e.g.
             ``scale=0.8``).
 

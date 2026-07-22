@@ -33,9 +33,14 @@ class ObjectGeometryGraspCandidateProvider(GraspCandidateProvider):
         mask: Optional[torch.Tensor] = None,
         seed: Optional[int] = None,
     ) -> GraspCandidates:
-        del mask, seed
+        del mask
+        rng = None
+        if seed is not None:
+            rng = torch.Generator()
+            rng.manual_seed(seed)
         return self.target_object.list_box_gripper_grasping_candidates(
             self.target_entity,
             self.gripper_width,
             gripper_depth=self.gripper_depth,
+            rng=rng,
         )

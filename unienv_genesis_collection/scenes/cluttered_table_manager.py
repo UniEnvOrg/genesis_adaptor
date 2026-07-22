@@ -168,6 +168,7 @@ class ClutteredTableManager(WorldNode):
         max_placement_attempts: int = 100,
         random_quaternion: bool = True,
         park_clearance: float = _DEFAULT_PARK_CLEARANCE,
+        seed: Optional[int] = None,
     ):
         self.world = world
         self._name = name
@@ -199,7 +200,10 @@ class ClutteredTableManager(WorldNode):
         # RNG state — reseeded when an explicit seed is provided.
         # Use the world's device so that torch.rand/randint work on GPU backends.
         self.rng: torch.Generator = torch.Generator(device=world.device)
-        self.rng.seed()
+        if seed is None:
+            self.rng.seed()
+        else:
+            self.rng.manual_seed(seed)
 
         # Pre-tensorise static avoid spaces (XY only), inverse-rotated into
         # the table's local frame so placement sampling stays axis-aligned.

@@ -31,13 +31,13 @@ def list_all_table_textures() -> List[Path]:
         List of Path objects for all available tabletop textures
     """
     texture_dir = get_asset_path("scenes", "table", "tabletop_textures")
-    return list(texture_dir.glob("*.jpg"))
+    return sorted(texture_dir.glob("*.jpg"))
 
 
-def get_random_table_texture() -> Path:
+def get_random_table_texture(rng: Optional[random.Random] = None) -> Path:
     """Get a random table texture from the available textures."""
-    textures = list_all_table_textures()
-    return random.choice(textures)
+    choice = rng.choice if rng is not None else random.choice
+    return choice(list_all_table_textures())
 
 
 # Realistic leg colour presets (RGBA).
@@ -51,9 +51,10 @@ _LEG_COLORS = [
     (0.35, 0.25, 0.15, 1.0),  # dark bronze
 ]
 
-def get_random_leg_color() -> tuple:
+def get_random_leg_color(rng: Optional[random.Random] = None) -> tuple:
     """Return a random realistic table-leg RGBA colour."""
-    return random.choice(_LEG_COLORS)
+    choice = rng.choice if rng is not None else random.choice
+    return choice(_LEG_COLORS)
 
 
 def yaw_to_quat(yaw: float) -> Tuple[float, float, float, float]:
@@ -120,6 +121,7 @@ class TableBuilder(WorldNode):
         yaw: float = 0.0,
         texture_path: Optional[Path] = None,
         leg_color: Optional[tuple] = None,
+        seed: Optional[int] = None,
     ):
         self.world = world
         self._name = name
@@ -151,6 +153,12 @@ class TableBuilder(WorldNode):
         # EntityGroup is created in reload() once entities exist.
         self._group: Optional[EntityGroup] = None
 
+        # Per-instance RNG for randomised texture/leg-colour selection during
+        # reload().  Seeded from ``seed`` when provided so that reload(seed=...)
+        # is reproducible; otherwise OS entropy.  Reseeded again in reload()
+        # when an explicit seed is passed to that lifecycle pass.
+        self._rng = random.Random(seed)
+
     @property
     def name(self) -> str:
         return self._name
@@ -167,6 +175,7 @@ class TableBuilder(WorldNode):
         texture_path: Optional[Path] = None,
         leg_color: Optional[tuple] = None,
         batch_fixed_verts: bool = False,
+        rng: Optional[random.Random] = None,
     ) -> EntityGroup:
         """Static method to create a table directly without instantiating TableBuilder.
 
@@ -194,7 +203,7 @@ class TableBuilder(WorldNode):
         # ImageTexture renders correctly.  gs.morphs.Box lacks UV coordinates
         # and would silently show white when a texture is applied.
         if texture_path is None:
-            texture_path = get_random_table_texture()
+            texture_path = get_random_table_texture(rng)
         tabletop_surface = gs.surfaces.Plastic(
             diffuse_texture=gs.textures.ImageTexture(image_path=str(texture_path))
         )
@@ -231,7 +240,10 @@ class TableBuilder(WorldNode):
             (-leg_offset_x, -leg_offset_y, -size[2] - leg_height / 2),
         ]
 
-        resolved_leg_color = leg_color if leg_color is not None else get_random_leg_color()
+        if leg_color is not None:
+            resolved_leg_color = leg_color
+        else:
+            resolved_leg_color = get_random_leg_color(rng)
         for i, leg_local in enumerate(leg_locals):
             leg_world_pos, leg_world_quat = group.world_pose(leg_local)
             leg = world.scene.add_entity(
@@ -320,6 +332,9 @@ class TableBuilder(WorldNode):
 
     def reload(self, *, priority: int = 0, seed: Optional[int] = None, mask=None, **kwargs):
         if priority == 100:
+            # Reseed before appearance selection.
+            if seed is not None:
+                self._rng.seed(seed)
             self._group = self.create_table(
                 world=self.world,
                 name=self._name,
@@ -331,5 +346,6 @@ class TableBuilder(WorldNode):
                 texture_path=self.default_texture_path,
                 leg_color=self.default_leg_color,
                 batch_fixed_verts=False,
+                rng=self._rng,
             )
     

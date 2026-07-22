@@ -116,6 +116,7 @@ class MeshObject(ManipulatableObject):
         gripper_width: float,
         gripper_depth: float = 0.01,
         n_samples: int = 100,
+        rng: Optional[torch.Generator] = None,
     ) -> GraspCandidates:
         """Generate grasp candidates via mesh surface sampling (local frame).
 
@@ -125,18 +126,40 @@ class MeshObject(ManipulatableObject):
 
         Falls back to the bounding-box-based method from the base class if
         no antipodal pairs are found.
+
+        Args:
+            rng: Optional :class:`torch.Generator` for reproducible surface
+                sampling.  When ``None``, trimesh's default sampling RNG
+                behavior is used, matching the previous behavior.
         """
         if not hasattr(self, "_local_grasp_cache"):
             self._local_grasp_cache: dict[tuple, GraspCandidates] = {}
 
-        key = (gripper_width, gripper_depth, n_samples)
+        # Derive a trimesh-compatible int seed at the boundary.  trimesh's
+        # ``sample_surface`` accepts an int seed (not a torch.Generator), so
+        # draw one from the generator's stream when provided.  The derived
+        # int is also used as the cache key so caching stays consistent.
+        seed = (
+            int(torch.randint(2**31 - 1, (), generator=rng))
+            if rng is not None
+            else None
+        )
+
+        key = (gripper_width, gripper_depth, n_samples, seed)
         if key in self._local_grasp_cache:
             return self._local_grasp_cache[key].clone()
 
         mesh = self._load_trimesh()
 
-        # Sample surface points and their normals (numpy)
-        points, face_indices = mesh.sample(n_samples, return_index=True)
+        # Sample surface points and their normals (numpy).  ``Trimesh.sample``
+        # does not forward a ``seed`` to ``sample_surface``, so call
+        # ``trimesh.sample.sample_surface`` directly to obtain deterministic
+        # results when a seed is supplied.
+        import trimesh
+
+        points, face_indices = trimesh.sample.sample_surface(
+            mesh, n_samples, seed=seed,
+        )
         normals = mesh.face_normals[face_indices]
 
         local_positions: List[np.ndarray] = []
