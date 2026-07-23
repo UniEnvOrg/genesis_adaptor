@@ -278,7 +278,12 @@ def make_ycb_pool(
             raise ValueError(
                 f"Requested {n} objects but only {len(ids)} match the selection."
             )
-        perm = torch.randperm(len(ids), generator=rng)[:n].tolist()
+        # Pin the output device to the generator's device: with a Genesis
+        # CUDA default device, an unpinned randperm would create a CUDA tensor
+        # from a CPU generator and raise a device-mismatch error.
+        perm = torch.randperm(
+            len(ids), generator=rng, device=rng.device if rng is not None else None
+        )[:n].tolist()
         ids = [ids[i] for i in perm]
 
     return [YCBObject(object_id, **object_kwargs) for object_id in ids]

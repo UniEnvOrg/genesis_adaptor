@@ -139,8 +139,10 @@ class MeshObject(ManipulatableObject):
         # ``sample_surface`` accepts an int seed (not a torch.Generator), so
         # draw one from the generator's stream when provided.  The derived
         # int is also used as the cache key so caching stays consistent.
+        # The output device is pinned to the generator's device to avoid a
+        # device mismatch under a CUDA default device.
         seed = (
-            int(torch.randint(2**31 - 1, (), generator=rng))
+            int(torch.randint(2**31 - 1, (), generator=rng, device=rng.device))
             if rng is not None
             else None
         )
