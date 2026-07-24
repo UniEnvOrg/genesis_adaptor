@@ -56,7 +56,8 @@ EE_PALM_OFFSET = [0.0, -0.09, 0.0]
 # Joint1 is reduced from the MJCF value (0.712) to 0.2 so the hands rest
 # higher, letting the base sit closer to the tabletop without the hands
 # penetrating it.
-_ARM_HOME_LEFT = [0.2, -0.963, 0.0, -0.85, -0.356, 0.0, 0.0]
+# Left-arm Joint5 sign flipped (+0.356) to match the real left arm convention.
+_ARM_HOME_LEFT = [0.2, -0.963, 0.0, -0.85, 0.356, 0.0, 0.0]
 _ARM_HOME_RIGHT = [-0.2, -0.963, 0.0, -0.85, -0.356, 0.0, 0.0]
 HOME_JOINT_POSITIONS = torch.zeros(54)
 HOME_JOINT_POSITIONS[0:7] = torch.tensor(_ARM_HOME_LEFT)      # Joint1_L .. Joint7_L
