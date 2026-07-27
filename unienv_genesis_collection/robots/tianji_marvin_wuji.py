@@ -49,6 +49,28 @@ RIGHT_EE_LINK_NAME = "Link7_R"
 LEFT_ARM_JOINT_NAMES = [f"Joint{i}_L" for i in range(1, 8)]
 RIGHT_ARM_JOINT_NAMES = [f"Joint{i}_R" for i in range(1, 8)]
 MAX_JOINT_POS_VEL = 0.2  # rad/s — aligned with the real hardware adaptor (TianjiArmEefActor)
+# Minimum per-step joint-position delta (rad) that the rate-limit clip allows
+# through. Floors ``max_joint_pos_vel * dt`` so that a high physics-substep
+# count (small control dt) cannot shrink the corrective PD error to zero —
+# without this floor the clipped target tracks the sagging current pose and
+# the sim arm drifts down under gravity instead of holding the commanded EEF
+# pose. Set conservatively: only lifts the effective rate when dt is small.
+MIN_JOINT_POS_DELTA_PER_STEP = 0.1
+# Sim arm PD gains. The URDF defaults (Kp=[100,100,80,80,40,40,40],
+# Kv=[10,10,8,8,4,4,4]) are too weak to hold the arm against gravity: a
+# hold-home command sagged ~0.18 m and the rate-limit clip then tracked the
+# sagging pose down. Raising both gains ~20x lets the PD hold/lift the arm
+# (verified: hold sag < 0.01 m, +6 cm target tracked to ~+0.05 m, stable).
+# Per-joint values follow the URDF joint order Joint1..Joint7 (shoulder->wrist),
+# scaled from the defaults so the shoulder (heavier) joints get the most gain.
+_ARM_KP_SCALE = 20.0
+_ARM_KD_SCALE = 20.0
+_ARM_KP = [100.0 * _ARM_KP_SCALE, 100.0 * _ARM_KP_SCALE, 80.0 * _ARM_KP_SCALE,
+          80.0 * _ARM_KP_SCALE, 40.0 * _ARM_KP_SCALE, 40.0 * _ARM_KP_SCALE,
+          40.0 * _ARM_KP_SCALE]
+_ARM_KD = [10.0 * _ARM_KD_SCALE, 10.0 * _ARM_KD_SCALE, 8.0 * _ARM_KD_SCALE,
+          8.0 * _ARM_KD_SCALE, 4.0 * _ARM_KD_SCALE, 4.0 * _ARM_KD_SCALE,
+          4.0 * _ARM_KD_SCALE]
 
 # Hand joint names: 5 fingers x 4 joints per hand, in qpos order
 LEFT_HAND_JOINT_NAMES = [
@@ -139,6 +161,9 @@ _DEFAULT_SUB_CONTROLLERS = {
         "controller_type": "eef_pose",
         "joint_names": LEFT_ARM_JOINT_NAMES,
         "max_joint_pos_vel": MAX_JOINT_POS_VEL,
+        "min_joint_pos_delta_per_step": MIN_JOINT_POS_DELTA_PER_STEP,
+        "Kp": _ARM_KP,
+        "Kd": _ARM_KD,
         "target_link": LinkAttachment(
             link_name=LEFT_EE_LINK_NAME,
             offset_pos=EE_PALM_OFFSET,
@@ -149,6 +174,9 @@ _DEFAULT_SUB_CONTROLLERS = {
         "controller_type": "eef_pose",
         "joint_names": RIGHT_ARM_JOINT_NAMES,
         "max_joint_pos_vel": MAX_JOINT_POS_VEL,
+        "min_joint_pos_delta_per_step": MIN_JOINT_POS_DELTA_PER_STEP,
+        "Kp": _ARM_KP,
+        "Kd": _ARM_KD,
         "target_link": LinkAttachment(
             link_name=RIGHT_EE_LINK_NAME,
             offset_pos=EE_PALM_OFFSET,

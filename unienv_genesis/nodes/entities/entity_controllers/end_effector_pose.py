@@ -138,6 +138,7 @@ class EndEffectorPoseController(
         joint_indexes : Optional[Sequence[int]] = None,
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_pos_vel : Optional[Union[float, PyTorchArrayType]] = None,
+        min_joint_pos_delta_per_step : Optional[Union[float, PyTorchArrayType]] = None,
         rotation_representation : str = "euler", # "euler", "quat", "rot6d"
         normalize_rotation_action : bool = False,
         joint_names : Optional[Sequence[str]] = None,
@@ -155,6 +156,7 @@ class EndEffectorPoseController(
             is_grasping_fn=is_grasping_fn,
             max_joint_vel=max_joint_vel,
             max_joint_pos_vel=max_joint_pos_vel,
+            min_joint_pos_delta_per_step=min_joint_pos_delta_per_step,
             target_link=target_link,
             base_frame=base_frame,
             **kwargs,

@@ -1,6 +1,7 @@
 from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Generic, TypeVar, Sequence
 import abc
 import genesis as gs
+import numpy as np
 from genesis.engine import entities as gs_entities
 import torch
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
@@ -29,6 +30,7 @@ class JointPositionAndVelocityController(
         joint_indexes : Optional[Sequence[int]] = None,
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_pos_vel : Optional[Union[float, PyTorchArrayType]] = None,
+        min_joint_pos_delta_per_step : Optional[Union[float, PyTorchArrayType]] = None,
         joint_names : Optional[Sequence[str]] = None,
         is_grasping_fn = None,
         position_control_low : Optional[Union[float, PyTorchArrayType]] = None,
@@ -42,10 +44,19 @@ class JointPositionAndVelocityController(
         # Normalize tensor-valued config for device safety before any
         # broadcast_to_batch / BoxSpace construction.
         dev = world.device
-        Kp = Kp.to(device=dev, dtype=torch.float32) if isinstance(Kp, torch.Tensor) else Kp
-        Kd = Kd.to(device=dev, dtype=torch.float32) if isinstance(Kd, torch.Tensor) else Kd
+        def _coerce_gain(v):
+            if v is None:
+                return None
+            if isinstance(v, torch.Tensor):
+                return v.to(device=dev, dtype=torch.float32)
+            if isinstance(v, (list, tuple, np.ndarray)):
+                return torch.as_tensor(v, dtype=torch.float32, device=dev)
+            return float(v)
+        Kp = _coerce_gain(Kp)
+        Kd = _coerce_gain(Kd)
         max_joint_vel = max_joint_vel.to(device=dev, dtype=torch.float32) if isinstance(max_joint_vel, torch.Tensor) else max_joint_vel
         max_joint_pos_vel = max_joint_pos_vel.to(device=dev, dtype=torch.float32) if isinstance(max_joint_pos_vel, torch.Tensor) else max_joint_pos_vel
+        min_joint_pos_delta_per_step = min_joint_pos_delta_per_step.to(device=dev, dtype=torch.float32) if isinstance(min_joint_pos_delta_per_step, torch.Tensor) else min_joint_pos_delta_per_step
         position_control_low = position_control_low.to(device=dev, dtype=torch.float32) if isinstance(position_control_low, torch.Tensor) else position_control_low
         position_control_high = position_control_high.to(device=dev, dtype=torch.float32) if isinstance(position_control_high, torch.Tensor) else position_control_high
 
@@ -95,6 +106,7 @@ class JointPositionAndVelocityController(
             is_grasping_fn=is_grasping_fn,
             max_joint_vel=max_joint_vel,
             max_joint_pos_vel=max_joint_pos_vel,
+            min_joint_pos_delta_per_step=min_joint_pos_delta_per_step,
             **kwargs,
         )
         self.Kp = Kp

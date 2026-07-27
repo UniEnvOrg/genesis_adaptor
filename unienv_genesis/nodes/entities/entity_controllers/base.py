@@ -160,6 +160,7 @@ class DiscreteEntityController(
         # Optional rate-limit / velocity clipping
         max_joint_pos_vel : Optional[Union[float, PyTorchArrayType]] = None,
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
+        min_joint_pos_delta_per_step : Optional[Union[float, PyTorchArrayType]] = None,
         **kwargs,
     ) -> None:
         joint_indexes = resolve_joint_indexes(entity, joint_indexes, joint_names)
@@ -305,6 +306,7 @@ class DiscreteEntityController(
         # passed on the wrong device is relocated consistently.
         max_joint_pos_vel = max_joint_pos_vel.to(device=joint_position_low.device, dtype=torch.float32) if isinstance(max_joint_pos_vel, torch.Tensor) else max_joint_pos_vel
         max_joint_vel = max_joint_vel.to(device=joint_position_low.device, dtype=torch.float32) if isinstance(max_joint_vel, torch.Tensor) else max_joint_vel
+        min_joint_pos_delta_per_step = min_joint_pos_delta_per_step.to(device=joint_position_low.device, dtype=torch.float32) if isinstance(min_joint_pos_delta_per_step, torch.Tensor) else min_joint_pos_delta_per_step
         self._max_joint_pos_vel = (
             broadcast_to_batch(max_joint_pos_vel, batch_size, n_dofs, device=joint_position_low.device)
             if max_joint_pos_vel is not None else None
@@ -312,6 +314,15 @@ class DiscreteEntityController(
         self._max_joint_vel = (
             broadcast_to_batch(max_joint_vel, batch_size, n_dofs, device=joint_position_low.device)
             if max_joint_vel is not None else None
+        )
+        # Minimum per-step position-delta (rad) allowed through the rate-limit
+        # clip. Floors ``max_joint_pos_vel * dt`` so that a high substep count
+        # (small control dt) cannot starve the PD of corrective error: without
+        # this floor the clipped target tracks the sagging current pose and the
+        # arm drifts down under gravity. See ``_clip_target_qpos``.
+        self._min_joint_pos_delta_per_step = (
+            broadcast_to_batch(min_joint_pos_delta_per_step, batch_size, n_dofs, device=joint_position_low.device)
+            if min_joint_pos_delta_per_step is not None else None
         )
 
         # EEF offset: translates the virtual EEF point away from the physical
@@ -382,6 +393,15 @@ class DiscreteEntityController(
         """
         return self._max_joint_vel
 
+    @property
+    def min_joint_pos_delta_per_step(self) -> Optional[PyTorchArrayType]:
+        """Minimum per-step position delta (rad) that the rate-limit clip allows.
+
+        Floors ``max_joint_pos_vel * dt`` so a small control dt cannot starve
+        the PD of corrective error. Returns the expanded tensor or ``None``.
+        """
+        return self._min_joint_pos_delta_per_step
+
     def is_grasping(self, target_entity):
         """Check if this controller's entity is grasping the target.
 
@@ -418,6 +438,14 @@ class DiscreteEntityController(
         if self._max_joint_pos_vel is not None and dt is not None:
             current_qpos = self.entity.get_dofs_position(dofs_idx_local=self.joint_indexes)
             max_delta = self._max_joint_pos_vel * float(dt)
+            # Floor the per-step delta so a small control dt (many substeps)
+            # cannot shrink the correction below what is needed to counter
+            # gravity sag / track the true target. The clipped target would
+            # otherwise track the sagging current pose.
+            if self._min_joint_pos_delta_per_step is not None:
+                max_delta = torch.maximum(
+                    max_delta, self._min_joint_pos_delta_per_step,
+                )
             delta = target_qpos - current_qpos
             clipped_delta = torch.clamp(delta, -max_delta, max_delta)
             target_qpos = current_qpos + clipped_delta
