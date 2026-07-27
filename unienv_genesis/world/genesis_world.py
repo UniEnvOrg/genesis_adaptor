@@ -83,11 +83,16 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         self,
         disable_viewer: bool = False,
     ) -> gs.Scene:
-        if disable_viewer and "show_viewer" in self.scene_init_kwargs:
-            self.scene_init_kwargs["show_viewer"] = False
+        # Per-call viewer suppression must NOT mutate scene_init_kwargs:
+        # RobotNode's throwaway space-discovery build passes disable_viewer=True,
+        # and a persistent mutation here would silently disable the viewer on
+        # every subsequent (re)built scene as well.
+        scene_init_kwargs = self.scene_init_kwargs
+        if disable_viewer and "show_viewer" in scene_init_kwargs:
+            scene_init_kwargs = {**scene_init_kwargs, "show_viewer": False}
         
-        if isinstance(self.scene_init_kwargs.get("renderer", None), gs.options.renderers.RayTracer):
-            renderer_option : gs.options.renderers.RayTracer = self.scene_init_kwargs["renderer"]
+        if isinstance(scene_init_kwargs.get("renderer", None), gs.options.renderers.RayTracer):
+            renderer_option : gs.options.renderers.RayTracer = scene_init_kwargs["renderer"]
             new_lights = []
             for light in self.lights.values():
                 if light.light_type != "point":
@@ -111,7 +116,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
                 renderer_option.env_radius=self.env_map.png_radius
 
         scene = gs.Scene(
-            **self.scene_init_kwargs
+            **scene_init_kwargs
         )
 
         return scene
