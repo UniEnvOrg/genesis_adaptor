@@ -48,7 +48,7 @@ RIGHT_EE_LINK_NAME = "Link7_R"
 # Arm joint names (resolved to indexes at controller init)
 LEFT_ARM_JOINT_NAMES = [f"Joint{i}_L" for i in range(1, 8)]
 RIGHT_ARM_JOINT_NAMES = [f"Joint{i}_R" for i in range(1, 8)]
-MAX_JOINT_POS_VEL = 0.2  # rad/s — aligned with the real hardware adaptor (TianjiArmEefActor)
+MAX_JOINT_POS_VEL = 0.2  # rad/s — sim controller cap; real arms use SDK vel_ratio/acc_ratio limits.
 # Minimum per-step joint-position delta (rad) that the rate-limit clip allows
 # through. Floors ``max_joint_pos_vel * dt`` so that a high physics-substep
 # count (small control dt) cannot shrink the corrective PD error to zero —
