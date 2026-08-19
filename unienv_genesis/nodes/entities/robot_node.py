@@ -14,7 +14,7 @@ from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArra
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_interface.world.nodes.flat_combined_node import FlatCombinedWorldNode
 from .base import EntityNode, ContextType, ObsType, ActType
-from .entity_controllers.base import EntityController
+from .entity_controllers.base import EntityController, resolve_joint_indexes
 from .entity_controllers import CONTROL_MODE_MAP, CONTROL_MODE_T
 
 __all__ = [
@@ -26,11 +26,19 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass
 class RobotKeyframe:
-    """Keyframe for robot pose."""
+    """Keyframe for robot pose.
+
+    ``joint_position`` / ``joint_velocity`` are applied flat (in the entity's
+    internal DOF order) unless ``joint_names`` is given, in which case each
+    value is applied to the named joint's DOFs — the name-mapped form is
+    immune to DOF-ordering differences between the description file and the
+    built entity.
+    """
     pos: Optional[PyTorchArrayType] = None # Shape (3,)
     quat: Optional[PyTorchArrayType] = None # (w, x, y, z)
-    joint_position: Optional[PyTorchArrayType] = None # Shape (n_dofs,)
-    joint_velocity: Optional[PyTorchArrayType] = None # Shape (n_dofs,)
+    joint_position: Optional[PyTorchArrayType] = None # Shape (n_dofs,) or (len(joint_names),)
+    joint_velocity: Optional[PyTorchArrayType] = None # Shape (n_dofs,) or (len(joint_names),)
+    joint_names: Optional[Sequence[str]] = None # names for joint_position/joint_velocity
 
 class RobotDescriptionNode(EntityNode[
     BaseEntity,
@@ -227,14 +235,24 @@ class RobotDescriptionNode(EntityNode[
                     reset_keyframe.quat,
                     envs_idx=env_idx
                 )
+            # Name-mapped application when joint_names are declared: resolves
+            # to the entity's internal DOF indexes so the keyframe is immune
+            # to DOF-ordering differences between the description file and
+            # the built entity. Without joint_names, values are applied flat
+            # in internal DOF order (historical behaviour).
+            dofs_idx = resolve_joint_indexes(
+                self.entity, joint_names=reset_keyframe.joint_names,
+            )
             if reset_keyframe.joint_position is not None:
                 self.entity.set_dofs_position(
                     reset_keyframe.joint_position,
-                    envs_idx=env_idx
+                    dofs_idx_local=dofs_idx,
+                    envs_idx=env_idx,
                 )
             if reset_keyframe.joint_velocity is not None:
                 self.entity.set_dofs_velocity(
                     reset_keyframe.joint_velocity,
+                    dofs_idx_local=dofs_idx,
                     envs_idx=env_idx,
                 )
 

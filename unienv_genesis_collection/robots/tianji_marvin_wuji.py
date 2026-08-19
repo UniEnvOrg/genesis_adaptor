@@ -84,6 +84,21 @@ RIGHT_HAND_JOINT_NAMES = [
     for joint in range(1, 5)
 ]
 
+# Joint names in ``HOME_JOINT_POSITIONS`` order:
+# [left arm (7), left hand (20), right arm (7), right hand (20)].
+# Declared on the reset keyframe so the rest pose is applied by joint NAME
+# (resolved to the entity's internal DOF indexes at reset), not by flat
+# position in an assumed DOF ordering — the built entity's internal DOF order
+# differs from this layout (arms interleaved per joint index, finger joints
+# grouped by joint index), which previously scattered arm home angles onto
+# finger joints.
+ALL_JOINT_NAMES = (
+    LEFT_ARM_JOINT_NAMES
+    + LEFT_HAND_JOINT_NAMES
+    + RIGHT_ARM_JOINT_NAMES
+    + RIGHT_HAND_JOINT_NAMES
+)
+
 # Offset (in the wrist/EE link frame) from the Link7 origin to the hand palm
 # origin. The palm body is mounted at pos="0 -0.09 0" relative to Link7 (see
 # ``left_wuji_palm`` / ``right_wuji_palm`` in the MJCF, lines 131 and 301).
@@ -245,7 +260,10 @@ class TianjiMarvinWuji(RobotDescriptionNode):
     """
 
     keyframes = {
-        "reset": RobotKeyframe(joint_position=HOME_JOINT_POSITIONS),
+        "reset": RobotKeyframe(
+            joint_position=HOME_JOINT_POSITIONS,
+            joint_names=ALL_JOINT_NAMES,
+        ),
     }
 
     def __init__(
