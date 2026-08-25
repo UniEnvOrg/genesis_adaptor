@@ -434,19 +434,17 @@ class CameraSensorNode(SensorNode[
         mask: Optional[PyTorchArrayType] = None,
         **kwargs
     ) -> None:
-        """Reset camera state if needed."""
-        if mask is not None:
-            # Genesis accepts boolean masks for indexing
-            # env_indices = mask.nonzero(as_tuple=True)[0]
-            env_indices = mask
-        else:
-            env_indices = None
-        # BatchRenderer exposes reset(); the plain Camera class does not.
-        if hasattr(self.sensor, "reset"):
-            self.sensor.reset(envs_idx=env_indices)
-        # Also reset the secondary genesis sensor if it exists
-        if self._genesis_sensor is not None and hasattr(self._genesis_sensor, "reset"):
-            self._genesis_sensor.reset(envs_idx=env_indices)
+        """Reset camera state if needed.
+
+        Intentionally a no-op: camera/sensor state is owned by Genesis's
+        reset machinery — framework sensors (Nyx via ``scene.add_sensor``)
+        are reset by the ``SensorManager``, and visualizer cameras / the
+        BatchRenderer by ``scene.reset()`` -> ``visualizer.reset()``. Calling
+        their ``reset()`` directly is redundant and signature-incompatible
+        with the current Genesis API (framework ``Sensor.reset`` is a
+        classmethod taking shared metadata/cache; ``BatchRenderer.reset``
+        takes no ``envs_idx``).
+        """
     
     def after_reset(
         self,
@@ -456,7 +454,22 @@ class CameraSensorNode(SensorNode[
     ) -> None:
         """Update observation after reset."""
         if priority in self.after_reset_priorities:
+            self._invalidate_nyx_render_cache()
             self.update_observation()
+
+    def _invalidate_nyx_render_cache(self) -> None:
+        """Force the Nyx path tracer to re-render on the next ``read()``.
+
+        Genesis camera sensors only invalidate their cached frame when
+        ``scene.t`` advances. A reset that follows an episode with zero
+        elapsed steps leaves ``scene.t`` unchanged, so ``read()`` would
+        return the pre-reset image even though entities have moved. Marking
+        the sensor stale makes the post-reset ``update_observation()``
+        render the freshly-reset scene. (The Nyx renderer re-renders all
+        sibling cameras in one pass, so flagging this sensor is enough.)
+        """
+        if self.option.backend == "nyx" and self.sensor is not None:
+            self.sensor._stale = True
 
     def after_reload(
         self,
