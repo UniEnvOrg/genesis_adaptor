@@ -66,11 +66,13 @@ class MeshObject(ManipulatableObject):
         fixed: bool = False,
         language_annotations: Optional[Sequence[str]] = None,
         visual_texture_path: Optional[Union[str, os.PathLike]] = None,
+        standing_quaternion: Optional[Sequence[float]] = None,
     ):
         super().__init__(
             name=name,
             fixed=fixed,
             language_annotations=language_annotations,
+            standing_quaternion=standing_quaternion,
         )
         self.mesh_file = str(mesh_file)
         self.scale = scale if isinstance(scale, tuple) else (scale, scale, scale)

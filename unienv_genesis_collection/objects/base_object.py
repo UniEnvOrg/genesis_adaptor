@@ -263,6 +263,7 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         name: str = "object",
         fixed: bool = False,
         language_annotations: Optional[Sequence[str]] = None,
+        standing_quaternion: Optional[Sequence[float]] = None,
     ):
         """
         Args:
@@ -276,11 +277,22 @@ class ManipulatableObject(ABC, Generic[EntityT]):
                 :attr:`language_annotations` as an immutable tuple.
                 Pass ``None`` or an empty sequence to indicate no
                 annotations.
+            standing_quaternion: Optional ``(w, x, y, z)`` orientation used
+                by :meth:`set_pos_3d` instead of the identity when the object
+                is placed without randomisation — e.g. to stand a drill on
+                its battery pack.  When randomisation is requested, the
+                random yaw is composed **on top of** this orientation, so
+                the object stays upright and only its heading varies.
         """
         self.name = name
         self.fixed = fixed
         self.language_annotations: Tuple[str, ...] = (
             tuple(language_annotations) if language_annotations is not None else ()
+        )
+        self.standing_quaternion: Optional[Tuple[float, float, float, float]] = (
+            tuple(float(c) for c in standing_quaternion)
+            if standing_quaternion is not None
+            else None
         )
 
     # ------------------------------------------------------------------
@@ -500,8 +512,12 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         """Return *n* orientation quaternions ``(n, 4)`` for upright placement.
 
         The default implementation uses a random yaw (Z-rotation) when
-        *randomise* is ``True`` and the identity otherwise.  Subclasses
-        can override for custom behaviour (e.g. full SO(3), fixed pose).
+        *randomise* is ``True`` and the identity otherwise — unless the
+        descriptor defines a custom :attr:`standing_quaternion`, in which
+        case that orientation is used instead of the identity and any
+        random yaw is composed on top of it (keeping the object upright).
+        Subclasses can override for custom behaviour (e.g. full SO(3),
+        fixed pose).
 
         Args:
             n: Number of quaternions to generate.
@@ -510,6 +526,28 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             device: Target device for the output tensor.
             dtype: Target dtype for the output tensor.
         """
+        if self.standing_quaternion is not None:
+            standing = torch.tensor(
+                self.standing_quaternion, device=device, dtype=dtype
+            ).expand(n, 4)
+            if not randomise:
+                return standing.clone()
+            yaw = torch.rand(n, generator=rng, device=device, dtype=dtype) * (2 * math.pi)
+            half = yaw / 2.0
+            c, s = torch.cos(half), torch.sin(half)
+            w0, x0, y0, z0 = standing.unbind(dim=1)
+            # Compose world-frame yaw on top of the standing orientation:
+            # q = yaw ⊗ standing (Hamilton product, wxyz convention).
+            quat = torch.stack(
+                (
+                    c * w0 - s * z0,
+                    c * x0 - s * y0,
+                    c * y0 + s * x0,
+                    c * z0 + s * w0,
+                ),
+                dim=1,
+            )
+            return quat
         if randomise:
             yaw = torch.rand(n, generator=rng, device=device, dtype=dtype) * (2 * math.pi)
             half = yaw / 2.0

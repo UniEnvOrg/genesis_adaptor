@@ -77,6 +77,7 @@ class HubAssetMeshObject(MeshObject):
         fixed: bool = False,
         language_annotations: Optional[Sequence[str]] = None,
         visual_texture_file_name: Optional[str] = None,
+        standing_quaternion: Optional[Sequence[float]] = None,
     ):
         self.asset_relative_dir = asset_relative_dir
         # ASSETS_DIR is read via the module (and frozen here) so tests and
@@ -94,6 +95,7 @@ class HubAssetMeshObject(MeshObject):
             fixed=fixed,
             language_annotations=language_annotations,
             visual_texture_path=visual_texture_path,
+            standing_quaternion=standing_quaternion,
         )
         self._assets_ready = False
 

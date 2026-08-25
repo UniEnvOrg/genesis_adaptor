@@ -147,6 +147,14 @@ class YCBObject(HubAssetMeshObject):
         name: Technical identifier; defaults to *object_id*.
         fixed: Whether the object is immovable.
         language_annotations: Override the catalog's default annotations.
+        standing_quaternion: Optional ``(w, x, y, z)`` orientation used by
+            :meth:`set_pos_3d` instead of the identity when the object is
+            placed without randomisation (e.g. to stand a drill on its
+            battery pack).  Randomised placement applies a random yaw on
+            top of it.  Defaults to the catalog's ``standing_quaternion``
+            metadata when present; pass ``(1, 0, 0, 0)`` to force the
+            identity orientation for an object whose catalog entry defines
+            one.
     """
 
     def __init__(
@@ -156,6 +164,7 @@ class YCBObject(HubAssetMeshObject):
         name: Optional[str] = None,
         fixed: bool = False,
         language_annotations: Optional[Sequence[str]] = None,
+        standing_quaternion: Optional[Sequence[float]] = None,
     ):
         catalog = get_ycb_catalog()
         info = catalog.get(object_id)
@@ -176,6 +185,11 @@ class YCBObject(HubAssetMeshObject):
                 else info.language_annotations
             ),
             visual_texture_file_name="texture_map.png",
+            standing_quaternion=(
+                standing_quaternion
+                if standing_quaternion is not None
+                else info.standing_quaternion
+            ),
         )
         self.object_id = object_id
         self.info = info
