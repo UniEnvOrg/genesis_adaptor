@@ -40,6 +40,7 @@ from unienv_genesis.nodes.entities.robot_node import RobotKeyframe, RobotDescrip
 from unienv_genesis.nodes.entities.entity_controllers import CONTROL_MODE_T
 from unienv_genesis.options.attach_option import LinkAttachment
 from unienv_genesis_collection.asset_path import get_asset_path
+from unienv_genesis_collection.robots.grasp_utils import make_is_grasping
 
 # End-effector link names (last actuated arm link, the wrist before the hand)
 LEFT_EE_LINK_NAME = "Link7_L"
@@ -83,6 +84,23 @@ RIGHT_HAND_JOINT_NAMES = [
     for finger in range(1, 6)
     for joint in range(1, 5)
 ]
+
+# Finger pad links used for contact-based grasp detection.  ``link1`` has
+# ``contype=0`` (no collision geoms) and the fingertip meshes (``*_tip_link``
+# in the MJCF) are geoms on the ``link4`` bodies, not standalone Genesis
+# links — so link2/link3/link4 cover every contact-capable finger surface,
+# fingertips included.  Do NOT list ``*_tip_link`` names here: they do not
+# resolve on the built entity.
+LEFT_FINGER_PAD_LINK_NAMES = tuple(
+    f"left_finger{finger}_link{link}"
+    for finger in range(1, 6)
+    for link in (2, 3, 4)
+)
+RIGHT_FINGER_PAD_LINK_NAMES = tuple(
+    f"right_finger{finger}_link{link}"
+    for finger in range(1, 6)
+    for link in (2, 3, 4)
+)
 
 # Joint names in ``HOME_JOINT_POSITIONS`` order:
 # [left arm (7), left hand (20), right arm (7), right hand (20)].
@@ -201,10 +219,12 @@ _DEFAULT_SUB_CONTROLLERS = {
     "left_hand": {
         "controller_type": "joint_position",
         "joint_names": LEFT_HAND_JOINT_NAMES,
+        "is_grasping_fn": make_is_grasping(LEFT_FINGER_PAD_LINK_NAMES),
     },
     "right_hand": {
         "controller_type": "joint_position",
         "joint_names": RIGHT_HAND_JOINT_NAMES,
+        "is_grasping_fn": make_is_grasping(RIGHT_FINGER_PAD_LINK_NAMES),
     },
 }
 
