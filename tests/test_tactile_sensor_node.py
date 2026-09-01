@@ -170,3 +170,26 @@ def test_rejects_duplicate_link_names():
                 ],
             ),
         )
+
+
+@pytest.mark.parametrize("overrides, expected", [(None, -1.0), ({BOX_LINK: "+z"}, 1.0)])
+def test_face_axis_override_moves_the_band(overrides, expected):
+    """The override picks the face; without one the band stays on ``face_axis`` ("-z").
+
+    One column (``n_around=1``) puts every probe dead centre on the chosen face,
+    so the normals read the face axis directly instead of wrapping onto a corner.
+    """
+    world = GenesisWorld()
+    node = TactileSensorNode(
+        world, "t", _options(n_around=1, face_axis_overrides=overrides)
+    )
+    env = _make_env(world, node, steps=0)
+    normals = node.probe_normals[BOX_LINK]
+    assert np.allclose(normals[:, 2], expected, atol=1e-6), normals
+    env.close()
+
+
+def test_rejects_face_axis_override_for_unattached_link():
+    world = GenesisWorld()
+    with pytest.raises(ValueError, match="not attached"):
+        TactileSensorNode(world, "t", _options(face_axis_overrides={"nope": "+z"}))

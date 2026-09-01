@@ -16,7 +16,7 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 SIDE = "right"
 
 # Kept in step with TactileSensorNodeOptions; override per-run by editing here.
-FACE_AXIS = "+x"
+FACE_AXIS = "+x"          # the default; the thumb's per-link overrides come from the collection
 ARC = 120.0
 N_AROUND, N_ALONG = 3, 4
 MARGIN = 0.12
@@ -109,26 +109,49 @@ def link_mesh(link):
     return _link_mesh(link)
 
 
-def arc_probes(link, face_axis=FACE_AXIS, arc=ARC, n_around=N_AROUND,
+def face_axis_for(link_name: str) -> str:
+    """The face axis the sensor actually uses for this link.
+
+    ``make_wuji_hand_tactile`` corrects the thumb, whose links are rotated
+    relative to the other four fingers. Read from its table rather than copied,
+    so the drawings cannot drift from the placement.
+    """
+    from unienv_genesis_collection.robots.wuji_tactile import _THUMB_FACE_AXES
+
+    overrides = {
+        f"{side}_{link}": axis
+        for side, axes in _THUMB_FACE_AXES.items()
+        for link, axis in axes.items()
+    }
+    return overrides.get(link_name, FACE_AXIS)
+
+
+def arc_probes(link, face_axis=None, arc=ARC, n_around=N_AROUND,
                n_along=N_ALONG, margin=MARGIN):
-    """Probe positions and outward normals in link frame, placed as the sensor places them."""
+    """Probe positions and outward normals in link frame, placed as the sensor places them.
+
+    ``face_axis`` defaults to whatever the sensor uses for this link.
+    """
     from unienv_genesis.nodes.sensors.tactile_node import _arc_probes
 
+    if face_axis is None:
+        face_axis = face_axis_for(getattr(link, "name", ""))
     return _arc_probes(link, face_axis, arc, n_around, n_along, margin)
 
 
-def link_frame(mesh) -> dict:
+def link_frame(mesh, face_axis=FACE_AXIS) -> dict:
     """The link's long axis, its two cross axes ordered ``(face axis, other)``, and the
     AABB bounds and centre.
 
     The same decomposition ``_arc_probes`` uses, so anything measured or drawn here
-    lands in the coordinates the probes were placed in.
+    lands in the coordinates the probes were placed in. Pass the link's own
+    ``face_axis_for(name)`` -- the thumb does not use the default.
     """
     lo, hi = np.asarray(mesh.bounds[0]), np.asarray(mesh.bounds[1])
     long_axis = int(np.argmax(hi - lo))
-    axis, _sign = face_axes()[FACE_AXIS]
+    axis, sign = face_axes()[face_axis]
     u, v = [k for k in range(3) if k != long_axis]
     if u != axis:
         u, v = v, u
-    return dict(la=long_axis, u=u, v=v, sign=face_axes()[FACE_AXIS][1],
+    return dict(la=long_axis, u=u, v=v, sign=sign,
                 lo=lo, hi=hi, centre=0.5 * (lo + hi))

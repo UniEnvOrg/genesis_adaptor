@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Union
+from typing import Dict, Mapping, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -147,7 +147,14 @@ class TactileSensorNodeOptions:
     """One of ``"contact_depth"`` or ``"kinematic"`` (see module docstring)."""
 
     face_axis: str = "+x"
-    """Link-local face the taxel band is centred on, same for all links; ``"+x"`` is the Wuji palm side."""
+    """Link-local face the taxel band is centred on; ``"+x"`` is the Wuji palm side.
+
+    The default for every link. Links whose frame is rotated relative to the rest
+    -- a thumb base, typically -- need :attr:`face_axis_overrides` instead.
+    """
+
+    face_axis_overrides: Optional[Mapping[str, str]] = None
+    """Per-link ``face_axis``, keyed by link name; links absent from it use :attr:`face_axis`."""
 
     probe_radius: float = 0.004
     """Per-taxel sensing radius in metres; keep it well under the link's cross-section radius."""
@@ -205,6 +212,13 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                 f"TactileSensorNode '{name}' has duplicate link names: {self._keys}"
             )
 
+        unknown = set(option.face_axis_overrides or {}) - set(self._keys)
+        if unknown:
+            raise ValueError(
+                f"TactileSensorNode '{name}': face_axis_overrides names links that "
+                f"are not attached: {sorted(unknown)}. Attached links are {self._keys}."
+            )
+
         self.n_taxels: int = option.n_around * option.n_along
         self._sensors: Dict[str, Sensor] = {}
         self._positions: Dict[str, np.ndarray] = {}
@@ -240,6 +254,7 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
             if self.option.sensor_type == "kinematic"
             else gs.options.sensors.ContactDepthProbe
         )
+        overrides = self.option.face_axis_overrides or {}
         self._sensors, self._positions, self._normals = {}, {}, {}
         for attach in self.option.attaches:
             key = attach.link_name
@@ -247,7 +262,7 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
             link = link if link is not None else entity.base_link
             probe, normal = _arc_probes(
                 link,
-                self.option.face_axis,
+                overrides.get(key, self.option.face_axis),
                 self.option.arc_degrees,
                 self.option.n_around,
                 self.option.n_along,

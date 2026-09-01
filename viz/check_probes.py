@@ -2,7 +2,8 @@
 import numpy as np
 import trimesh
 
-from common import SENSED as NAMES, arc_probes, build_hand, link_frame, link_mesh
+from common import (SENSED as NAMES, arc_probes, build_hand, face_axis_for,
+                    link_frame, link_mesh)
 
 env, e = build_hand()
 print(f"{'link':24s} {'N':>3s} {'off-surface mm':>15s} {'|n|':>6s} {'outward':>8s} {'band°':>7s}")
@@ -15,12 +16,14 @@ for n in NAMES:
     d = trimesh.proximity.closest_point(mesh, pos)[1]
     worst_off = max(worst_off, float(d.max()))
 
-    f = link_frame(mesh)
+    f = link_frame(mesh, face_axis_for(n))
     la, u, v, c = f["la"], f["u"], f["v"], f["centre"]
     rad = pos - c
     rad[:, la] = 0.0
     outward = float((np.einsum("ij,ij->i", nrm, rad) > 0).mean())
-    ang = np.degrees(np.arctan2(pos[:, v] - c[v], pos[:, u] - c[u]))
+    # fold in the face's sign, as the shading does; a "-" face axis is otherwise
+    # measured about the opposite direction and the span wraps
+    ang = np.degrees(np.arctan2(pos[:, v] - c[v], (pos[:, u] - c[u]) * f["sign"]))
     band = float(ang.max() - ang.min())
     print(f"{n:24s} {len(pos):3d} {d.max()*1000:15.3f} "
           f"{np.linalg.norm(nrm,axis=1).mean():6.3f} {outward*100:7.0f}% {band:7.0f}")

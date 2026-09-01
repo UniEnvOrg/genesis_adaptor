@@ -20,7 +20,7 @@ from PIL import Image
 
 from common import (
     ARC, MARGIN, N_ALONG, N_AROUND, PLAIN, SENSED, SIDE,
-    build_hand, link_frame, link_mesh, out_path, to_link, to_world,
+    build_hand, face_axis_for, link_frame, link_mesh, out_path, to_link, to_world,
     view_matrix, world_T,
 )
 
@@ -48,9 +48,9 @@ class Hand(NamedTuple):
 
 
 # ---------------------------------------------------------------- geometry ---
-def band_params(mesh):
+def band_params(mesh, face_axis):
     """`link_frame` plus where the probe rows and columns land in it."""
-    f = link_frame(mesh)
+    f = link_frame(mesh, face_axis)
     span = f["hi"][f["la"]] - f["lo"][f["la"]]
     stations = np.linspace(
         f["lo"][f["la"]] + MARGIN * span, f["hi"][f["la"]] - MARGIN * span, N_ALONG
@@ -92,7 +92,7 @@ def collect(ent, palm):
         verts_w.append(to_world(vl, lk))
         faces.append(np.asarray(m.faces) + base)
         fl.append(np.full(len(m.faces), k if n in SENSED else -1))
-        params.append(band_params(m) if n in SENSED else None)
+        params.append(band_params(m, face_axis_for(n)) if n in SENSED else None)
         base += len(vl)
 
         if n in SENSED:

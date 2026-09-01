@@ -11,7 +11,8 @@ import numpy as np
 import trimesh
 
 from common import (
-    ARC, N_ALONG, N_AROUND, SENSED as NAMES, arc_probes, build_hand, link_frame,
+    ARC, N_ALONG, N_AROUND, SENSED as NAMES, arc_probes, build_hand,
+    face_axis_for, link_frame,
     link_mesh,
 )
 
@@ -22,9 +23,9 @@ SLAB = 0.004              # half-thickness of the cross-section slab sampled, m
 env, e = build_hand()
 
 
-def sensed_band(mesh, probes, radius):
+def sensed_band(mesh, probes, radius, face_axis):
     """Angular span covered by the union of probe footprints, about the long axis."""
-    f = link_frame(mesh)
+    f = link_frame(mesh, face_axis)
     la, u, v, c = f["la"], f["u"], f["v"], f["centre"]
 
     # sample the cross-section through a probe row, not through the link's
@@ -51,7 +52,7 @@ bands = []
 for n in NAMES:
     lk = e.get_link(n)
     pos, _ = arc_probes(lk)
-    b = sensed_band(link_mesh(lk), pos, PROBE_RADIUS)
+    b = sensed_band(link_mesh(lk), pos, PROBE_RADIUS, face_axis_for(n))
     bands.append(b)
     print(f"{n:24s} {b:11.0f}°")
 
