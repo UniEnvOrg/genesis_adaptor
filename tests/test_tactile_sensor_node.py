@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 import genesis as gs
@@ -61,29 +62,35 @@ class BoxEntityNode(WorldNode):
         return None
 
 
-def _make_env(world: GenesisWorld, node: TactileSensorNode) -> WorldEnv:
+def _make_env(world: GenesisWorld, node: TactileSensorNode, steps: int = 40) -> WorldEnv:
+    """Build the scene and settle it for ``steps``; probes are placed in reload, so geometry checks can pass 0."""
     env = WorldEnv(world, [BoxEntityNode(world), node], render_mode=None)
     env.reset(seed=0, reload=True)
-    for _ in range(40):
+    for _ in range(steps):
         env.step(None)
     return env
 
 
+N_AROUND, N_ALONG = 3, 4
+N_TAXELS = N_AROUND * N_ALONG
+
+
+def _options(**kw) -> TactileSensorNodeOptions:
+    kw.setdefault("attaches", [AttachFromName("box", BOX_LINK)])
+    kw.setdefault("face_axis", "-z")
+    kw.setdefault("n_around", N_AROUND)
+    kw.setdefault("n_along", N_ALONG)
+    return TactileSensorNodeOptions(**kw)
+
+
 def test_contact_depth_shapes_and_signal():
     world = GenesisWorld()
-    node = TactileSensorNode(
-        world, "hand_tactile",
-        TactileSensorNodeOptions(
-            attaches=[AttachFromName("box", BOX_LINK)],
-            sensor_type="contact_depth",
-            face_axis="-z",
-        ),
-    )
+    node = TactileSensorNode(world, "hand_tactile", _options(sensor_type="contact_depth"))
     env = _make_env(world, node)
     obs = node.get_observation()
 
     assert set(obs) == {BOX_LINK}
-    assert obs[BOX_LINK].shape == (1,)
+    assert obs[BOX_LINK].shape == (N_TAXELS,)
     assert obs[BOX_LINK].dtype == world.dtype
     assert torch.all(obs[BOX_LINK] >= 0.0)
     assert float(obs[BOX_LINK].max()) > 0.0  # pressed into the plane
@@ -95,24 +102,47 @@ def test_contact_depth_shapes_and_signal():
 
 def test_kinematic_shapes_and_signal():
     world = GenesisWorld()
-    node = TactileSensorNode(
-        world, "hand_tactile",
-        TactileSensorNodeOptions(
-            attaches=[AttachFromName("box", BOX_LINK)],
-            sensor_type="kinematic",
-            face_axis="-z",
-        ),
-    )
+    node = TactileSensorNode(world, "hand_tactile", _options(sensor_type="kinematic"))
     env = _make_env(world, node)
     obs = node.get_observation()
 
     assert set(obs[BOX_LINK]) == {"force", "torque"}
-    assert obs[BOX_LINK]["force"].shape == (3,)
-    assert obs[BOX_LINK]["torque"].shape == (3,)
-    assert float(torch.linalg.norm(obs[BOX_LINK]["force"])) > 0.0
+    assert obs[BOX_LINK]["force"].shape == (N_TAXELS, 3)
+    assert obs[BOX_LINK]["torque"].shape == (N_TAXELS, 3)
+    assert float(torch.linalg.norm(obs[BOX_LINK]["force"], dim=-1).max()) > 0.0
 
     space = node.observation_space.spaces[BOX_LINK]
     assert obs[BOX_LINK]["force"].shape == space.spaces["force"].shape
+    env.close()
+
+
+def test_probes_lie_on_the_mesh_surface():
+    """Regression: probes used to sit on the AABB face, 9.5 mm off the contoured palm."""
+    import trimesh
+    from unienv_genesis.nodes.sensors.tactile_node import _link_mesh
+
+    world = GenesisWorld()
+    node = TactileSensorNode(world, "hand_tactile", _options())
+    env = _make_env(world, node, steps=0)
+
+    pos = node.probe_positions[BOX_LINK]
+    assert pos.shape == (N_TAXELS, 3)
+    link = world.scene.get_entity("box").get_link(BOX_LINK)
+    dist = trimesh.proximity.closest_point(_link_mesh(link), pos)[1]
+    assert float(dist.max()) < 1e-4, f"probe {dist.max()*1000:.2f} mm off the surface"
+    env.close()
+
+
+def test_probe_normals_are_unit_and_outward():
+    world = GenesisWorld()
+    node = TactileSensorNode(world, "hand_tactile", _options())
+    env = _make_env(world, node, steps=0)
+
+    pos, nrm = node.probe_positions[BOX_LINK], node.probe_normals[BOX_LINK]
+    assert nrm.shape == (N_TAXELS, 3)
+    assert np.allclose(np.linalg.norm(nrm, axis=1), 1.0, atol=1e-5)
+    # outward = away from the box centre, which sits at the origin of the link frame
+    assert np.all(np.einsum("ij,ij->i", nrm, pos) > 0.0)
     env.close()
 
 

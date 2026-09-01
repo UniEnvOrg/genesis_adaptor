@@ -1,4 +1,4 @@
-"""Tactile (touch) sensor node for Genesis: one probe per link, observation keyed by link name."""
+"""Tactile (touch) sensor node for Genesis: a band of taxels per link, keyed by link name."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ __all__ = [
     "TactileSensorNode",
 ]
 
-_SENSOR_TYPES = ("contact_depth", "kinematic")  # depth (1,) m | link-frame force/torque (3,)
+_SENSOR_TYPES = ("contact_depth", "kinematic")  # depth (N,) m | link-frame force/torque (N,3)
 
 _FACE_AXES = {
     "+x": (0, 1.0), "-x": (0, -1.0),
@@ -41,14 +41,8 @@ _FACE_AXES = {
 }
 
 
-def _inner_face_point(link, face_axis: str) -> np.ndarray:
-    """Probe position on the ``face_axis`` face of the link's collision bounds, in link frame."""
-    if face_axis not in _FACE_AXES:
-        raise ValueError(
-            f"face_axis must be one of {sorted(_FACE_AXES)}, got {face_axis!r}."
-        )
-    axis, sign = _FACE_AXES[face_axis]
-
+def _link_mesh(link) -> trimesh.Trimesh:
+    """The link's collision geometry in link frame, available before the scene is built."""
     meshes = []
     for geom in link.geoms:
         mesh = geom.get_trimesh().copy()
@@ -57,13 +51,89 @@ def _inner_face_point(link, face_axis: str) -> np.ndarray:
     if not meshes:
         raise ValueError(
             f"Link '{getattr(link, 'name', link)}' has no collision geometry to "
-            f"place a tactile probe on."
+            f"place tactile probes on."
         )
-    lo, hi = trimesh.util.concatenate(meshes).bounds
+    return trimesh.util.concatenate(meshes)
 
-    point = 0.5 * (np.asarray(lo) + np.asarray(hi))
-    point[axis] = hi[axis] if sign > 0 else lo[axis]
-    return point.astype(np.float64)
+
+def _arc_probes(
+    link,
+    face_axis: str,
+    arc_degrees: float,
+    n_around: int,
+    n_along: int,
+    margin: float,
+):
+    """Return taxel positions and outward normals (N, 3) each, in link frame, N = n_around * n_along."""
+    if face_axis not in _FACE_AXES:
+        raise ValueError(
+            f"face_axis must be one of {sorted(_FACE_AXES)}, got {face_axis!r}."
+        )
+    if n_around < 1 or n_along < 1:
+        raise ValueError(
+            f"n_around and n_along must be >= 1, got {n_around} and {n_along}."
+        )
+    axis, sign = _FACE_AXES[face_axis]
+
+    mesh = _link_mesh(link)
+    lo, hi = np.asarray(mesh.bounds[0]), np.asarray(mesh.bounds[1])
+    long_axis = int(np.argmax(hi - lo))
+    if axis == long_axis:
+        raise ValueError(
+            f"face_axis {face_axis!r} points along link "
+            f"'{getattr(link, 'name', link)}'s long axis; the band would wrap its "
+            f"end cap. Pick a face on one of the two cross axes."
+        )
+    cross = 3 - long_axis - axis  # the third axis, since the three indices sum to 3
+
+    centre = 0.5 * (lo + hi)
+    span = hi[long_axis] - lo[long_axis]
+    stations = (
+        np.linspace(lo[long_axis] + margin * span, hi[long_axis] - margin * span, n_along)
+        if n_along > 1
+        else np.array([centre[long_axis]])
+    )
+    # arc_degrees spans probe centres; each probe also senses its own footprint,
+    # so the band actually sensed is wider by roughly one footprint.
+    half = np.radians(arc_degrees) / 2.0
+    angles = np.linspace(-half, half, n_around) if n_around > 1 else np.array([0.0])
+
+    # one ray per (station, angle), cast outward from the cross-section centre
+    origins = np.tile(centre, (n_along, n_around, 1))
+    origins[..., long_axis] = stations[:, None]
+    dirs = np.zeros((n_along, n_around, 3))
+    dirs[..., axis] = sign * np.cos(angles)
+    dirs[..., cross] = np.sin(angles)
+    origins, dirs = origins.reshape(-1, 3), dirs.reshape(-1, 3)
+
+    pos = np.empty((len(origins), 3))
+    nrm = np.empty((len(origins), 3))
+    hit = np.zeros(len(origins), dtype=bool)
+    loc, ray_idx, tri_idx = mesh.ray.intersects_location(
+        ray_origins=origins, ray_directions=dirs, multiple_hits=True
+    )
+    if len(ray_idx):
+        # keep each ray's outermost hit: the surface facing away from the long axis
+        t = np.einsum("ij,ij->i", loc - origins[ray_idx], dirs[ray_idx])
+        order = np.lexsort((-t, ray_idx))
+        rows = order[np.concatenate(([True], np.diff(ray_idx[order]) != 0))]
+        hit[ray_idx[rows]] = True
+        pos[ray_idx[rows]] = loc[rows]
+        nrm[ray_idx[rows]] = mesh.face_normals[tri_idx[rows]]
+
+    if not hit.all():  # concave pocket: fall back to the nearest point on the surface
+        reach = 4.0 * float(np.linalg.norm(hi - lo))  # comfortably past the surface
+        near, _, tri = trimesh.proximity.closest_point(
+            mesh, origins[~hit] + dirs[~hit] * reach
+        )
+        pos[~hit] = near
+        nrm[~hit] = mesh.face_normals[tri]
+
+    # orient every normal outward from the link's long axis
+    flip = np.einsum("ij,ij->i", nrm, pos - origins) < 0
+    nrm[flip] *= -1.0
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-12)
+    return pos, nrm
 
 
 @dataclass(frozen=True)
@@ -77,10 +147,22 @@ class TactileSensorNodeOptions:
     """One of ``"contact_depth"`` or ``"kinematic"`` (see module docstring)."""
 
     face_axis: str = "+x"
-    """Link-local box face every probe sits on, same for all links; ``"+x"`` is the Wuji palm side."""
+    """Link-local face the taxel band is centred on, same for all links; ``"+x"`` is the Wuji palm side."""
 
-    probe_radius: float = 0.012
-    """Probe sensing radius in metres; deliberately wide to cover a broad patch of the link face."""
+    probe_radius: float = 0.004
+    """Per-taxel sensing radius in metres; keep it well under the link's cross-section radius."""
+
+    arc_degrees: float = 120.0
+    """Angular span of the taxel band, measured between probe centres."""
+
+    n_around: int = 4
+    """Taxels across the band."""
+
+    n_along: int = 5
+    """Taxel rows along the link's long axis. ``N = n_around * n_along`` per link."""
+
+    margin: float = 0.12
+    """Fraction of the link's length left clear at each end."""
 
     draw_debug: bool = False
 
@@ -123,11 +205,24 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                 f"TactileSensorNode '{name}' has duplicate link names: {self._keys}"
             )
 
+        self.n_taxels: int = option.n_around * option.n_along
         self._sensors: Dict[str, Sensor] = {}
+        self._positions: Dict[str, np.ndarray] = {}
+        self._normals: Dict[str, np.ndarray] = {}
         self._last_observation: Optional[Dict[str, PyTorchArrayType]] = None
         self.observation_space: Space[
             PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
         ] = self._get_observation_space()
+
+    @property
+    def probe_positions(self) -> Dict[str, np.ndarray]:
+        """Per-link taxel positions ``(N, 3)`` in link frame. Populated by ``reload``."""
+        return self._positions
+
+    @property
+    def probe_normals(self) -> Dict[str, np.ndarray]:
+        """Per-link outward taxel normals ``(N, 3)`` in link frame; ContactDepthProbe has none of its own."""
+        return self._normals
 
     def reload(
         self,
@@ -145,16 +240,25 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
             if self.option.sensor_type == "kinematic"
             else gs.options.sensors.ContactDepthProbe
         )
-        self._sensors = {}
-        for key, attach in zip(self._keys, self.option.attaches):
+        self._sensors, self._positions, self._normals = {}, {}, {}
+        for attach in self.option.attaches:
+            key = attach.link_name
             entity, link = attach.get_attachment(self.world)
             link = link if link is not None else entity.base_link
-            probe = _inner_face_point(link, self.option.face_axis)
+            probe, normal = _arc_probes(
+                link,
+                self.option.face_axis,
+                self.option.arc_degrees,
+                self.option.n_around,
+                self.option.n_along,
+                self.option.margin,
+            )
+            self._positions[key], self._normals[key] = probe, normal
             self._sensors[key] = self.world.scene.add_sensor(
                 cls(
                     entity_idx=entity.idx,
                     link_idx_local=link.idx_local,
-                    probe_local_pos=[tuple(probe)],
+                    probe_local_pos=[tuple(p) for p in probe],
                     probe_radius=self.option.probe_radius,
                     draw_debug=self.option.draw_debug,
                 )
@@ -209,9 +313,9 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
         for key, sensor in self._sensors.items():
             data = sensor.read()
             if self.option.sensor_type == "kinematic":
-                obs[key] = {  # (1, 3) unbatched / (B, 1, 3) batched -> drop the probe axis
-                    "force": self._to_tensor(data.force).squeeze(-2),
-                    "torque": self._to_tensor(data.torque).squeeze(-2),
+                obs[key] = {  # (N, 3) unbatched / (B, N, 3) batched
+                    "force": self._to_tensor(data.force),
+                    "torque": self._to_tensor(data.torque),
                 }
             else:
                 obs[key] = self._to_tensor(data)
@@ -230,7 +334,7 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                     PyTorchComputeBackend,
                     low=-torch.inf,
                     high=torch.inf,
-                    shape=get_batch_aware_shape(B, 3),
+                    shape=get_batch_aware_shape(B, (self.n_taxels, 3)),
                     dtype=dtype,
                     device=device,
                 )
@@ -243,7 +347,7 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                 PyTorchComputeBackend,
                 low=0.0,
                 high=torch.inf,
-                shape=get_batch_aware_shape(B, 1),
+                shape=get_batch_aware_shape(B, self.n_taxels),
                 dtype=dtype,
                 device=device,
             )

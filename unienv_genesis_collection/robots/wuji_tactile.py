@@ -1,4 +1,4 @@
-"""Touch-sensor layout for the Wuji dexterous hand: one taxel per instrumented hand link."""
+"""Touch-sensor layout for the Wuji dexterous hand: a band of taxels per instrumented hand link."""
 
 from __future__ import annotations
 
@@ -19,17 +19,22 @@ def make_wuji_hand_tactile(
     robot_name: str = "tianji",
     sides: Sequence[str] = ("left", "right"),
     sensor_type: str = "contact_depth",
+    taxels: tuple[int, int] | None = None,
 ) -> TactileSensorNode:
-    """Build a :class:`TactileSensorNode` covering the Wuji hand(s) of ``robot_name`` in ``world``."""
+    """Build a TactileSensorNode covering the Wuji hand(s) of ``robot_name``; ``taxels`` is ``(n_around, n_along)``."""
     link_names = [f"{side}_wuji_palm" for side in sides] + [
         f"{side}_finger{finger}_link{seg}"  # link1 has no collision geoms; fingertips are geoms on link4
         for side in sides
         for finger in range(1, 6)
         for seg in (2, 3, 4)
     ]
-    attaches = [AttachFromName(robot_name, name) for name in link_names]
+    grid = dict(zip(("n_around", "n_along"), taxels)) if taxels else {}
     return TactileSensorNode(
         world,
         "hand_tactile",
-        TactileSensorNodeOptions(attaches=attaches, sensor_type=sensor_type),
+        TactileSensorNodeOptions(
+            attaches=[AttachFromName(robot_name, name) for name in link_names],
+            sensor_type=sensor_type,
+            **grid,
+        ),
     )
