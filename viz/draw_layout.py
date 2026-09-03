@@ -1,11 +1,7 @@
-"""Wuji hand taxel layout, unrolled into the palm plane -- multi-taxel version.
-
-Each instrumented link's sensing face is drawn at its true size, placed and
-oriented by projecting the link into the palm plane, then tiled into an
-``n_around x n_along`` grid: one tile per taxel, filled edge to edge.
-``link1`` of every finger has no collision geometry and therefore no taxels;
-a connector bridges that stretch so the hand reads as one continuous surface.
-"""
+"""Wuji hand taxel layout, unrolled into the palm plane."""
+# Each sensing face is drawn at true size, projected into the palm plane, then
+# tiled n_around x n_along -- one tile per taxel, edge to edge. Every finger's
+# link1 has no collision geometry and so no taxels; a connector bridges it.
 import json, math
 import numpy as np
 

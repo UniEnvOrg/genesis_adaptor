@@ -1,11 +1,7 @@
-"""How far around each link does the sensed band actually reach?
-
-``arc_degrees`` is the span of probe *centres*; each probe additionally senses
-its own spherical footprint, so the band that can register contact is wider.
-This measures the real thing: sample the link surface, keep every point within
-``probe_radius`` of some probe, and report the arc that spans about the link's
-long axis.
-"""
+"""How far around each link the sensed band actually reaches."""
+# arc_degrees spans probe *centres*; each probe also senses its own spherical
+# footprint, so the real band is wider. Samples the surface, keeps points
+# within probe_radius of a probe, and reports the arc about the long axis.
 
 import numpy as np
 import trimesh

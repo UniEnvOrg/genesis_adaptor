@@ -36,6 +36,12 @@ python viz/draw_layout.py  # out/taxels.json -> out/hand_layout.svg
 `draw_layout.py` reads the existing `taxels.json` and builds no scene, so it is
 the fast one to iterate on while tweaking the flat schematic.
 
+`tactile_view.py` run on its own makes a demo video from a synthetic contact wave:
+
+```bash
+python viz/tactile_view.py   # -> out/tactile_demo.mp4
+```
+
 Two diagnostics stand alone:
 
 ```bash
@@ -44,6 +50,31 @@ python viz/measure_wrap.py   # how far around each link the sensed band really r
 ```
 
 Outputs all land in `out/`, which is gitignored.
+
+## Watching the taxels while an env runs
+
+`TactileView` paints one `TactileSensorNode`'s readings on the flat palm. Build it
+right after the first reset — the hand is measured once, open, and only the pad
+colours move after that.
+
+```python
+import sys; sys.path.insert(0, "viz")
+from tactile_view import TactileView
+
+view = TactileView(node)
+_, obs, _ = env.reset(seed=0)
+for _ in range(200):
+    obs, *_ = env.step(action)
+    view.show(obs)                           # popup window, needs a display
+    view.record(obs, obs["camera"]["rgb"])   # or collect frames instead
+view.save("out/grasp.mp4")
+view.close()
+```
+
+`show` and `record` take the whole observation or just the node's sub-dict, plus
+`env=` when batched. White is no contact, red is `vmax` (8 mm for `contact_depth`,
+2 N for `kinematic`); the scale is fixed, so a colour means the same thing in
+every run. Pass `vmax=` to change it.
 
 ## Viewing the page over SSH
 
@@ -87,5 +118,6 @@ helpers (`_arc_probes`, `_link_mesh`, `_FACE_AXES`), wrapped as `arc_probes`,
 | `bake.py` | builds the hand once, then emits both things that need it: the face table (each instrumented link's sensed face projected into the palm plane — size, angle, centre in mm, area) and the three renders. Rasterises the hand's collision geometry and shades each pixel by which taxel owns it, so tiles curve with the surface; pure numpy, no renderer dependency |
 | `draw_layout.py` | flat palmar schematic from the face table: every link tiled into an `n_around × n_along` grid, filled edge to edge |
 | `build.py` | the entry point — runs the two above and inlines the SVG and the renders into one self-contained HTML page |
+| `tactile_view.py` | live taxel readings painted on the palmar schematic: the hand gray, each pad white through red. A window while an env runs, or an mp4 with the scene camera beside it |
 | `check_probes.py` | asserts probes sit on the mesh (not its bounding box) with unit outward normals |
 | `measure_wrap.py` | measures the band that can actually register contact — wider than `arc_degrees`, which only spans probe *centres* |

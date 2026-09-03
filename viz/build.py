@@ -1,11 +1,6 @@
-"""Build the tactile artifact page end to end.
-
-The single entry point: bakes the hand (`bake.py`), draws the palmar schematic
-(`draw_layout.py`), and inlines both into `out/tactile.html`, which is what gets
-published as the artifact. Run it from anywhere:
-
-    python viz/build.py
-"""
+"""Build the tactile artifact page end to end: `python viz/build.py`."""
+# Bakes the hand (bake.py), draws the schematic (draw_layout.py), and inlines
+# both into out/tactile.html.
 
 import base64
 

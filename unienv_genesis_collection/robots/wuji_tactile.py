@@ -31,11 +31,9 @@ def make_wuji_hand_tactile(
     taxels: tuple[int, int] | None = None,
     face_axis_overrides: dict[str, str] | None = None,
 ) -> TactileSensorNode:
-    """Build a TactileSensorNode covering the Wuji hand(s) of ``robot_name``; ``taxels`` is ``(n_around, n_along)``.
-
-    The thumb links get a corrected ``face_axis`` by default;
-    ``face_axis_overrides`` is merged on top of that, keyed by full link name.
-    """
+    """Build a TactileSensorNode covering ``robot_name``'s Wuji hand(s); ``taxels`` is ``(n_around, n_along)``."""
+    # Thumb links get a corrected face_axis by default; face_axis_overrides is
+    # merged on top of that, keyed by full link name.
     link_names = [f"{side}_wuji_palm" for side in sides] + [
         f"{side}_finger{finger}_link{seg}"  # link1 has no collision geoms; fingertips are geoms on link4
         for side in sides

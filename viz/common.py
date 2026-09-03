@@ -1,8 +1,4 @@
-"""Shared setup for the tactile-layout viz scripts.
-
-Everything here reads geometry only -- no physics is stepped -- so a CPU
-backend is enough and no GPU is required.
-"""
+"""Shared setup for the tactile-layout viz scripts; geometry only, so CPU is enough."""
 
 from __future__ import annotations
 
@@ -33,12 +29,9 @@ def out_path(name: str) -> str:
 
 
 def build_hand():
-    """A built scene holding the Tianji robot. Returns ``(env, entity)``.
-
-    ``gs.init()`` is the caller's responsibility throughout this repo; a script
-    is the caller, so it is done here rather than in library code. The caller
-    closes the returned env.
-    """
+    """A built scene holding the Tianji robot; returns ``(env, entity)`` for the caller to close."""
+    # gs.init() is the caller's responsibility throughout this repo, and a
+    # script is the caller, so it happens here rather than in library code.
     if not gs._initialized:
         from genesis.constants import backend as gs_backend
 
@@ -110,12 +103,9 @@ def link_mesh(link):
 
 
 def face_axis_for(link_name: str) -> str:
-    """The face axis the sensor actually uses for this link.
-
-    ``make_wuji_hand_tactile`` corrects the thumb, whose links are rotated
-    relative to the other four fingers. Read from its table rather than copied,
-    so the drawings cannot drift from the placement.
-    """
+    """The face axis the sensor actually uses for this link."""
+    # Read from make_wuji_hand_tactile's own table rather than copied, so the
+    # drawings cannot drift from the placement; it corrects the rotated thumb.
     from unienv_genesis_collection.robots.wuji_tactile import _THUMB_FACE_AXES
 
     overrides = {
@@ -128,10 +118,8 @@ def face_axis_for(link_name: str) -> str:
 
 def arc_probes(link, face_axis=None, arc=ARC, n_around=N_AROUND,
                n_along=N_ALONG, margin=MARGIN):
-    """Probe positions and outward normals in link frame, placed as the sensor places them.
-
-    ``face_axis`` defaults to whatever the sensor uses for this link.
-    """
+    """Probe positions and outward normals in link frame, placed as the sensor places them."""
+    # face_axis defaults to whatever the sensor uses for this link.
     from unienv_genesis.nodes.sensors.tactile_node import _arc_probes
 
     if face_axis is None:
@@ -140,13 +128,10 @@ def arc_probes(link, face_axis=None, arc=ARC, n_around=N_AROUND,
 
 
 def link_frame(mesh, face_axis=FACE_AXIS) -> dict:
-    """The link's long axis, its two cross axes ordered ``(face axis, other)``, and the
-    AABB bounds and centre.
-
-    The same decomposition ``_arc_probes`` uses, so anything measured or drawn here
-    lands in the coordinates the probes were placed in. Pass the link's own
-    ``face_axis_for(name)`` -- the thumb does not use the default.
-    """
+    """The link's long axis, its cross axes ordered ``(face axis, other)``, and the AABB."""
+    # The same decomposition _arc_probes uses, so anything measured or drawn
+    # here lands in the coordinates the probes were placed in. Pass the link's
+    # own face_axis_for(name) -- the thumb does not use the default.
     lo, hi = np.asarray(mesh.bounds[0]), np.asarray(mesh.bounds[1])
     long_axis = int(np.argmax(hi - lo))
     axis, sign = face_axes()[face_axis]

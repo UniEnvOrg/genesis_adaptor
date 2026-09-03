@@ -1,16 +1,9 @@
-"""Build the hand once, then emit everything the page needs from it.
-
-Merges what used to be ``project_faces`` and ``render_hand``: both wanted the
-same scene and the same link meshes, and building the scene is expensive, so it
-now happens once. Writes ``out/taxels.json`` and ``out/hand_*.jpg``, and returns
-both so ``build.py`` can inline them without a second pass over the disk.
-
-The renders rasterise the hand's collision geometry -- the surface the contact
-probes actually act on -- and shade every pixel by which taxel owns it.
-Ownership is the probe's Voronoi cell in the link's own (angle-about-long-axis,
-along-axis) coordinates, exactly the coordinates ``_arc_probes`` places probes
-in, so the tiles curve with the link instead of being drawn flat.
-"""
+"""Build the hand once, then emit everything the page needs from it."""
+# Writes out/taxels.json and out/hand_*.jpg and returns both, so build.py can
+# inline them without re-reading the disk. The renders rasterise the collision
+# geometry -- what the probes act on -- shading each pixel by the taxel whose
+# Voronoi cell owns it, in the same (angle-about-long-axis, along-axis)
+# coordinates _arc_probes uses, so tiles curve with the link.
 import io
 import json
 from typing import NamedTuple
@@ -35,11 +28,9 @@ C_SEAM = np.array([0.31, 0.17, 0.03])
 
 
 class Hand(NamedTuple):
-    """The whole hand as one triangle soup, in world and link coordinates.
-
-    ``FL`` labels each triangle with its index into ``params``, or -1 for a link
-    that carries no taxels; ``params[k]`` is None for those.
-    """
+    """The whole hand as one triangle soup, in world and link coordinates."""
+    # FL labels each triangle with its index into params, or -1 for a link with
+    # no taxels; params[k] is None for those.
     V_w: np.ndarray
     V_l: np.ndarray
     F: np.ndarray
@@ -226,11 +217,8 @@ def encode(img) -> bytes:
 
 # ------------------------------------------------------------------- bake ---
 def bake():
-    """Build the hand, measure its faces, render the views.
-
-    Returns ``(rows, images)`` -- the face table and ``{tag: JPEG bytes}`` -- and
-    writes both to ``out/`` on the way through.
-    """
+    """Build the hand, measure its faces, render the views; returns ``(rows, images)``."""
+    # Also writes the face table and the JPEGs to out/ on the way through.
     env, ent = build_hand()
     palm = ent.get_link(f"{SIDE}_wuji_palm")
     hand, rows = collect(ent, palm)
