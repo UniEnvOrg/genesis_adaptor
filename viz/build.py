@@ -5,8 +5,33 @@
 import base64
 
 from bake import bake
-from common import N_ALONG, N_AROUND, out_path
+from common import N_ALONG, N_AROUND, SENSED, out_path
 from draw_layout import draw_layout
+
+N_PER_LINK = N_AROUND * N_ALONG
+N_LINKS = len(SENSED)
+N_PER_HAND = N_PER_LINK * N_LINKS
+N_BOTH = N_PER_HAND * 2
+
+
+def _area_table(rows):
+    """<tr> rows of link-type, count, face-area range, per-taxel-area range -- from the live bake, not hardcoded."""
+    groups = [("palm plate", lambda n: n.endswith("wuji_palm")),
+              ("finger <code>link2</code>", lambda n: n.endswith("link2")),
+              ("finger <code>link3</code>", lambda n: n.endswith("link3")),
+              ("finger <code>link4</code>", lambda n: n.endswith("link4"))]
+    out = []
+    for label, match in groups:
+        areas = [r["area_cm2"] for r in rows if match(r["link"])]
+        if not areas:
+            continue
+        per_taxel = [a / N_PER_LINK for a in areas]
+        lo, hi = f"{min(areas):.1f}", f"{max(areas):.1f}"
+        area_s = lo if lo == hi else f"{lo} &ndash; {hi}"
+        plo, phi = f"{min(per_taxel):.2f}", f"{max(per_taxel):.2f}"
+        pt_s = plo if plo == phi else f"{plo} &ndash; {phi}"
+        out.append(f"<tr><td>{label}</td><td>{len(areas)}</td><td>{area_s}</td><td>{pt_s}</td></tr>")
+    return "\n".join(out)
 
 HTML = """<title>Wuji Taxel Placement</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -53,12 +78,12 @@ th{font-family:"Space Mono",monospace;font-size:.66rem;letter-spacing:.09em;text
 <div class="w">
 <p class="eb">genesis_adaptor &middot; wuji hand</p>
 <h1>Where the taxels sit</h1>
-<p class="sub">Each instrumented link carries a <b>3&nbsp;&times;&nbsp;4</b> grid of taxels &mdash; 3 around the link, 4 along it. 16 links per hand, so 192 taxels per hand and 384 across both. Every taxel shaded across its full share of the sensing face.</p>
+<p class="sub">Each instrumented link carries a <b>__N_AROUND__&nbsp;&times;&nbsp;__N_ALONG__</b> grid of taxels &mdash; __N_AROUND__ around the link, __N_ALONG__ along it. __N_LINKS__ links per hand, so __N_PER_HAND__ taxels per hand and __N_BOTH__ across both. Every taxel shaded across its full share of the sensing face.</p>
 
 <div class="stats">
-  <div class="stat"><b>12</b><span>taxels / link</span></div>
-  <div class="stat"><b>16</b><span>links / hand</span></div>
-  <div class="stat"><b>192</b><span>taxels / hand</span></div>
+  <div class="stat"><b>__N_PER_LINK__</b><span>taxels / link</span></div>
+  <div class="stat"><b>__N_LINKS__</b><span>links / hand</span></div>
+  <div class="stat"><b>__N_PER_HAND__</b><span>taxels / hand</span></div>
   <div class="stat"><b>4&nbsp;mm</b><span>probe radius</span></div>
 </div>
 
@@ -101,7 +126,7 @@ th{font-family:"Space Mono",monospace;font-size:.66rem;letter-spacing:.09em;text
 </div>
 
 <figure>
-  <img src="data:image/jpeg;base64,__HAND_PALM__" alt="Rendered Wuji hand, palmar view, every link wrapped in a 3 by 4 grid of taxel tiles that curve with the surface">
+  <img src="data:image/jpeg;base64,__HAND_PALM__" alt="Rendered Wuji hand, palmar view, every link wrapped in a __N_AROUND__ by __N_ALONG__ grid of taxel tiles that curve with the surface">
   <figcaption>Palmar view. Straight on, almost everything you can see is sensed &mdash; the band covers the whole palm-facing half of each link.</figcaption>
 </figure>
 
@@ -119,10 +144,7 @@ th{font-family:"Space Mono",monospace;font-size:.66rem;letter-spacing:.09em;text
 <h2>Area per taxel</h2>
 <table>
 <tr><th>link</th><th>count</th><th>face cm&sup2;</th><th>cm&sup2; per taxel</th></tr>
-<tr><td>palm plate</td><td>2</td><td>85.0</td><td>7.08</td></tr>
-<tr><td>finger <code>link2</code></td><td>10</td><td>6.6 &ndash; 8.1</td><td>0.55 &ndash; 0.68</td></tr>
-<tr><td>finger <code>link3</code></td><td>10</td><td>5.8</td><td>0.48</td></tr>
-<tr><td>finger <code>link4</code></td><td>10</td><td>4.9 &ndash; 5.8</td><td>0.41 &ndash; 0.48</td></tr>
+__AREA_TABLE__
 </table>
 <p>The palm plate still carries an order of magnitude more surface per taxel than any fingertip. Raising <code>n_around</code>/<code>n_along</code> for the palm alone is the cheapest way to close that if palm localisation starts to matter.</p>
 
@@ -137,6 +159,10 @@ def main():
     open(out_path("hand_layout.svg"), "w").write(svg)
 
     page = HTML.replace("__HAND__", svg)
+    page = page.replace("__N_AROUND__", str(N_AROUND)).replace("__N_ALONG__", str(N_ALONG))
+    page = page.replace("__N_PER_LINK__", str(N_PER_LINK)).replace("__N_LINKS__", str(N_LINKS))
+    page = page.replace("__N_PER_HAND__", str(N_PER_HAND)).replace("__N_BOTH__", str(N_BOTH))
+    page = page.replace("__AREA_TABLE__", _area_table(rows))
     for tag, jpg in images.items():
         page = page.replace(f"__{tag.upper()}__", base64.b64encode(jpg).decode())
 

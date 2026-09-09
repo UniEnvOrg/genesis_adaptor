@@ -11,11 +11,19 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
 SIDE = "right"
 
-# Kept in step with TactileSensorNodeOptions; override per-run by editing here.
-FACE_AXIS = "+x"          # the default; the thumb's per-link overrides come from the collection
-ARC = 120.0
-N_AROUND, N_ALONG = 3, 4
-MARGIN = 0.12
+def _tactile_defaults():
+    """TactileSensorNodeOptions' own field defaults, so this can't drift from them."""
+    from unienv_genesis.nodes.sensors.tactile_node import TactileSensorNodeOptions
+
+    return TactileSensorNodeOptions(attaches=[])
+
+
+_DEFAULTS = _tactile_defaults()
+
+FACE_AXIS = _DEFAULTS.face_axis      # the default; the thumb's per-link overrides come from the collection
+ARC = _DEFAULTS.arc_degrees
+N_AROUND, N_ALONG = _DEFAULTS.n_around, _DEFAULTS.n_along
+MARGIN = _DEFAULTS.margin
 
 SENSED = [f"{SIDE}_wuji_palm"] + [
     f"{SIDE}_finger{f}_link{s}" for f in range(1, 6) for s in (2, 3, 4)
