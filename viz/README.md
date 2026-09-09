@@ -53,9 +53,9 @@ Outputs all land in `out/`, which is gitignored.
 
 ## Watching the taxels while an env runs
 
-`TactileView` paints one `TactileSensorNode`'s readings on the flat palm. Build it
-right after the first reset — the hand is measured once, open, and only the pad
-colours move after that.
+`TactileView` paints one `TactileSensorNode`'s readings on a fixed open-palm layout.
+It computes that layout with forward kinematics without changing the environment;
+only the pad colours change after construction.
 
 ```python
 import sys; sys.path.insert(0, "viz")
@@ -101,23 +101,27 @@ On plain ssh rather than VS Code, tunnel first with
 
 ## Configuration
 
-`common.py` holds the layout constants — `FACE_AXIS`, `ARC`, `N_AROUND`,
-`N_ALONG`, `MARGIN`. Edit them there and every script follows. Keep them in step
-with `TactileSensorNodeOptions`; nothing enforces that automatically. The prose
-and the summary table in `build.py`'s HTML are hand-written and do *not* follow —
-update them by hand if you change the grid.
+`common.py` reads `FACE_AXIS`, `ARC`, `N_AROUND`, `N_ALONG`, `MARGIN`, and
+`PROBE_RADIUS` from `TactileSensorNodeOptions`, so the visualizations use the
+sensor defaults. `build.py` also derives its grid, taxel counts, probe radius,
+and area table from the live configuration and artifact output. The scripts remain a
+right-hand Wuji visualization with the factory's built-in thumb-axis overrides.
 
-`common.py` is also the single place that reaches into the sensor's private
-helpers (`_arc_probes`, `_link_mesh`, `_FACE_AXES`), wrapped as `arc_probes`,
-`link_mesh`, and `face_axes`. If those move, this is the only file to fix.
+`common.py` is the single place that reaches into the sensor's private helpers
+(`_compute_arc_probes`, `_build_link_mesh`, `_FACE_AXES`). If those move, this is the only file
+to fix.
 
 ## What each script does
 
 | script | output |
 |---|---|
-| `bake.py` | builds the hand once, then emits both things that need it: the face table (each instrumented link's sensed face projected into the palm plane — size, angle, centre in mm, area) and the three renders. Rasterises the hand's collision geometry and shades each pixel by which taxel owns it, so tiles curve with the surface; pure numpy, no renderer dependency |
+| `artifacts.py` | builds the hand and emits the projected face table and three rendered views |
+| `renderer.py` | projects and rasterises the hand's collision geometry, then shades taxels with pure NumPy |
+| `layout.py` | shared face, tile, connector, bounds, and canvas calculations |
+| `bake.py` | compatibility command for building the static artifacts |
 | `draw_layout.py` | flat palmar schematic from the face table: every link tiled into an `n_around × n_along` grid, filled edge to edge |
-| `build.py` | the entry point — runs the two above and inlines the SVG and the renders into one self-contained HTML page |
+| `build.py` | builds the artifacts and SVG, then fills `template.html` to create the self-contained page |
+| `template.html` | page markup, styles, and interactions with placeholders for generated content |
 | `tactile_view.py` | live taxel readings painted on the palmar schematic: the hand gray, each pad white through red. A window while an env runs, or an mp4 with the scene camera beside it |
-| `check_probes.py` | asserts probes sit on the mesh (not its bounding box) with unit outward normals |
+| `check_probes.py` | reports probe distance from the mesh, normal length and direction, and band width |
 | `measure_wrap.py` | measures the band that can actually register contact — wider than `arc_degrees`, which only spans probe *centres* |

@@ -20,7 +20,7 @@ N_AROUND, N_ALONG = 3, 4
 N_TAXELS = N_AROUND * N_ALONG
 
 # A stand-in face table: a palm plate and two finger segments, in the mm palm-plane
-# coordinates bake.face_row produces.
+# coordinates artifacts.compute_face_row produces.
 ROWS = [
     {"link": "right_wuji_palm", "area_cm2": 85.0, "w": 81.0, "h": 105.0,
      "ang": 90.0, "c": [-2.4, 43.4]},
@@ -49,15 +49,15 @@ class _FakeNode:
         self.option.sensor_type = sensor_type
 
 
-def _view(sensor_type="contact_depth", **kwargs):
+def _make_view(sensor_type="contact_depth", **kwargs):
     return TactileView(_FakeNode(sensor_type), layout=ROWS, **kwargs)
 
 
-def _flat_obs(value):
+def _make_flat_observation(value):
     return {r["link"]: np.full(N_TAXELS, value) for r in ROWS}
 
 
-def _pixel(view, img, link, k):
+def _get_pixel(view, img, link, k):
     """The colour at the centre of one taxel's pad."""
     poly = next(p for name, idx, p in view._taxels if name == link and idx == k)
     x, y = poly.mean(axis=0)
@@ -65,7 +65,7 @@ def _pixel(view, img, link, k):
 
 
 def test_layout_covers_every_taxel_of_every_link():
-    view = _view()
+    view = _make_view()
     assert len(view._taxels) == len(ROWS) * N_TAXELS
     assert len({(name, k) for name, k, _ in view._taxels}) == len(ROWS) * N_TAXELS
     assert {name for name, _, _ in view._taxels} == {r["link"] for r in ROWS}
@@ -77,7 +77,7 @@ def test_no_pad_is_painted_over_by_a_later_one():
     # short; without that, each segment hid the end of the one before it
     import cv2
 
-    view = _view()
+    view = _make_view()
     for i, (_, _, poly) in enumerate(view._taxels):
         centre = tuple(float(x) for x in poly.mean(axis=0))
         covered = [
@@ -88,7 +88,7 @@ def test_no_pad_is_painted_over_by_a_later_one():
 
 
 def test_pads_of_one_link_do_not_overlap():
-    view = _view()
+    view = _make_view()
     palm = [p for name, _, p in view._taxels if name == "right_wuji_palm"]
     centres = np.array([p.mean(axis=0) for p in palm])
     gaps = np.linalg.norm(centres[:, None] - centres[None, :], axis=-1)
@@ -96,85 +96,85 @@ def test_pads_of_one_link_do_not_overlap():
 
 
 def test_frame_shape_and_dtype():
-    view = _view(width=400)
-    img = view.update(_flat_obs(0.0))
+    view = _make_view(width=400)
+    img = view.update(_make_flat_observation(0.0))
     assert img.shape == (view.height, view.width, 3)
     assert img.dtype == np.uint8
     assert view.width % 2 == 0 and view.height % 2 == 0  # h264 needs even sides
 
 
 def test_no_contact_is_white_and_vmax_is_red():
-    view = _view()
-    cold = _pixel(view, view.update(_flat_obs(0.0)), "right_wuji_palm", 0)
-    hot = _pixel(view, view.update(_flat_obs(view.vmax)), "right_wuji_palm", 0)
+    view = _make_view()
+    cold = _get_pixel(view, view.update(_make_flat_observation(0.0)), "right_wuji_palm", 0)
+    hot = _get_pixel(view, view.update(_make_flat_observation(view.vmax)), "right_wuji_palm", 0)
     assert tuple(cold) == (255, 255, 255)
     assert tuple(hot) == (214, 32, 28)
 
 
 def test_colour_rises_with_contact_and_saturates_above_vmax():
-    view = _view()
-    mid = _pixel(view, view.update(_flat_obs(view.vmax / 2)), "right_wuji_palm", 0)
-    hot = _pixel(view, view.update(_flat_obs(view.vmax)), "right_wuji_palm", 0)
-    over = _pixel(view, view.update(_flat_obs(view.vmax * 10)), "right_wuji_palm", 0)
+    view = _make_view()
+    mid = _get_pixel(view, view.update(_make_flat_observation(view.vmax / 2)), "right_wuji_palm", 0)
+    hot = _get_pixel(view, view.update(_make_flat_observation(view.vmax)), "right_wuji_palm", 0)
+    over = _get_pixel(view, view.update(_make_flat_observation(view.vmax * 10)), "right_wuji_palm", 0)
     assert 32 < mid[1] < 255                     # green falls off as red takes over
     assert mid[1] > hot[1]
     assert tuple(over) == tuple(hot)
 
 
 def test_each_taxel_gets_its_own_reading():
-    view = _view()
-    obs = _flat_obs(0.0)
+    view = _make_view()
+    obs = _make_flat_observation(0.0)
     obs["right_finger2_link2"] = np.linspace(0.0, view.vmax, N_TAXELS)
     img = view.update(obs)
-    first = _pixel(view, img, "right_finger2_link2", 0)
-    last = _pixel(view, img, "right_finger2_link2", N_TAXELS - 1)
+    first = _get_pixel(view, img, "right_finger2_link2", 0)
+    last = _get_pixel(view, img, "right_finger2_link2", N_TAXELS - 1)
     assert tuple(first) == (255, 255, 255)
     assert tuple(last) == (214, 32, 28)
-    assert tuple(_pixel(view, img, "right_wuji_palm", 0)) == (255, 255, 255)
+    assert tuple(_get_pixel(view, img, "right_wuji_palm", 0)) == (255, 255, 255)
 
 
 def test_batched_observation_picks_the_asked_for_env():
-    view = _view()
+    view = _make_view()
     obs = {r["link"]: np.stack([np.zeros(N_TAXELS), np.full(N_TAXELS, view.vmax)])
            for r in ROWS}
-    assert tuple(_pixel(view, view.update(obs, env=0), "right_wuji_palm", 0)) == (255, 255, 255)
-    assert tuple(_pixel(view, view.update(obs, env=1), "right_wuji_palm", 0)) == (214, 32, 28)
+    assert tuple(_get_pixel(view, view.update(obs, env=0), "right_wuji_palm", 0)) == (255, 255, 255)
+    assert tuple(_get_pixel(view, view.update(obs, env=1), "right_wuji_palm", 0)) == (214, 32, 28)
 
 
 def test_kinematic_readings_use_force_magnitude():
-    view = _view("kinematic")
+    view = _make_view("kinematic")
     force = np.zeros((N_TAXELS, 3))
     force[:, 1] = view.vmax               # magnitude vmax, off the first axis
     obs = {r["link"]: {"force": force, "torque": np.zeros((N_TAXELS, 3))} for r in ROWS}
-    assert tuple(_pixel(view, view.update(obs), "right_wuji_palm", 0)) == (214, 32, 28)
+    assert tuple(_get_pixel(view, view.update(obs), "right_wuji_palm", 0)) == (214, 32, 28)
 
 
 def test_observation_may_be_nested_under_the_node_name():
-    view = _view()
-    img = view.update({"hand_tactile": _flat_obs(view.vmax)})
-    assert tuple(_pixel(view, img, "right_wuji_palm", 0)) == (214, 32, 28)
+    view = _make_view()
+    img = view.update({"hand_tactile": _make_flat_observation(view.vmax)})
+    assert tuple(_get_pixel(view, img, "right_wuji_palm", 0)) == (214, 32, 28)
 
 
 def test_scene_frame_sits_beside_the_hand():
-    view = _view()
+    view = _make_view()
     scene = np.zeros((240, 320, 3), np.uint8)
-    frame = view.record(_flat_obs(0.0), scene_rgb=scene)
+    frame = view.record(_make_flat_observation(0.0), scene_rgb=scene)
     assert frame.shape[0] == view.height
     assert frame.shape[1] > view.width
     assert frame.shape[1] % 2 == 0
 
 
 def test_missing_link_raises():
-    view = _view()
-    obs = _flat_obs(0.0)
+    view = _make_view()
+    obs = _make_flat_observation(0.0)
     del obs["right_finger2_link3"]
     with pytest.raises(ValueError, match="right_finger2_link3"):
         view.update(obs)
 
 
 def test_wrong_taxel_count_raises():
-    view = _view()
-    obs = _flat_obs(0.0)
+    view = _make_view()
+    obs = _make_flat_observation(0.0)
     obs["right_wuji_palm"] = np.zeros(N_TAXELS + 1)
     with pytest.raises(ValueError, match="expected"):
         view.update(obs)
@@ -182,21 +182,21 @@ def test_wrong_taxel_count_raises():
 
 def test_bad_vmax_and_width_raise():
     with pytest.raises(ValueError, match="vmax"):
-        _view(vmax=0.0)
+        _make_view(vmax=0.0)
     with pytest.raises(ValueError, match="width"):
-        _view(width=16)
+        _make_view(width=16)
 
 
 def test_save_needs_recorded_frames():
     with pytest.raises(RuntimeError, match="nothing recorded"):
-        _view().save("unused.mp4")
+        _make_view().save("unused.mp4")
 
 
 def test_save_writes_a_video(tmp_path):
     pytest.importorskip("imageio")
-    view = _view(width=200)
+    view = _make_view(width=200)
     for step in range(5):
-        view.record(_flat_obs(view.vmax * step / 4))
+        view.record(_make_flat_observation(view.vmax * step / 4))
     path = view.save(str(tmp_path / "tactile.mp4"), fps=5)
     assert os.path.getsize(path) > 0
 
@@ -225,8 +225,8 @@ def test_pad_order_follows_the_probe_order():
             ang = math.radians(row["ang"])
             u = np.array([math.cos(ang), math.sin(ang)])
             v = np.array([-u[1], u[0]])
-            probes = common.to_link(
-                common.to_world(node.probe_positions[row["link"]], links[row["link"]]),
+            probes = common.transform_to_link(
+                common.transform_to_world(node.probe_positions[row["link"]], links[row["link"]]),
                 palm,
             )
             xy = np.stack([probes[:, 1] * 1000, probes[:, 2] * 1000], 1)

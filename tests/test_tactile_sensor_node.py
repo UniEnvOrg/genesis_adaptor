@@ -75,7 +75,7 @@ N_AROUND, N_ALONG = 3, 4
 N_TAXELS = N_AROUND * N_ALONG
 
 
-def _options(**kw) -> TactileSensorNodeOptions:
+def _make_options(**kw) -> TactileSensorNodeOptions:
     kw.setdefault("attaches", [AttachFromName("box", BOX_LINK)])
     kw.setdefault("face_axis", "-z")
     kw.setdefault("n_around", N_AROUND)
@@ -85,7 +85,7 @@ def _options(**kw) -> TactileSensorNodeOptions:
 
 def test_contact_depth_shapes_and_signal():
     world = GenesisWorld()
-    node = TactileSensorNode(world, "hand_tactile", _options(sensor_type="contact_depth"))
+    node = TactileSensorNode(world, "hand_tactile", _make_options(sensor_type="contact_depth"))
     env = _make_env(world, node)
     obs = node.get_observation()
 
@@ -102,7 +102,7 @@ def test_contact_depth_shapes_and_signal():
 
 def test_kinematic_shapes_and_signal():
     world = GenesisWorld()
-    node = TactileSensorNode(world, "hand_tactile", _options(sensor_type="kinematic"))
+    node = TactileSensorNode(world, "hand_tactile", _make_options(sensor_type="kinematic"))
     env = _make_env(world, node)
     obs = node.get_observation()
 
@@ -119,23 +119,23 @@ def test_kinematic_shapes_and_signal():
 def test_probes_lie_on_the_mesh_surface():
     """Regression: probes used to sit on the AABB face, 9.5 mm off the contoured palm."""
     import trimesh
-    from unienv_genesis.nodes.sensors.tactile_node import _link_mesh
+    from unienv_genesis.nodes.sensors.tactile_node import _build_link_mesh
 
     world = GenesisWorld()
-    node = TactileSensorNode(world, "hand_tactile", _options())
+    node = TactileSensorNode(world, "hand_tactile", _make_options())
     env = _make_env(world, node, steps=0)
 
     pos = node.probe_positions[BOX_LINK]
     assert pos.shape == (N_TAXELS, 3)
     link = world.scene.get_entity("box").get_link(BOX_LINK)
-    dist = trimesh.proximity.closest_point(_link_mesh(link), pos)[1]
+    dist = trimesh.proximity.closest_point(_build_link_mesh(link), pos)[1]
     assert float(dist.max()) < 1e-4, f"probe {dist.max()*1000:.2f} mm off the surface"
     env.close()
 
 
 def test_probe_normals_are_unit_and_outward():
     world = GenesisWorld()
-    node = TactileSensorNode(world, "hand_tactile", _options())
+    node = TactileSensorNode(world, "hand_tactile", _make_options())
     env = _make_env(world, node, steps=0)
 
     pos, nrm = node.probe_positions[BOX_LINK], node.probe_normals[BOX_LINK]
@@ -179,7 +179,7 @@ def test_face_axis_override_moves_the_band(overrides, expected):
     # normals read the face axis directly instead of wrapping onto a corner.
     world = GenesisWorld()
     node = TactileSensorNode(
-        world, "t", _options(n_around=1, face_axis_overrides=overrides)
+        world, "t", _make_options(n_around=1, face_axis_overrides=overrides)
     )
     env = _make_env(world, node, steps=0)
     normals = node.probe_normals[BOX_LINK]
@@ -190,4 +190,4 @@ def test_face_axis_override_moves_the_band(overrides, expected):
 def test_rejects_face_axis_override_for_unattached_link():
     world = GenesisWorld()
     with pytest.raises(ValueError, match="not attached"):
-        TactileSensorNode(world, "t", _options(face_axis_overrides={"nope": "+z"}))
+        TactileSensorNode(world, "t", _make_options(face_axis_overrides={"nope": "+z"}))

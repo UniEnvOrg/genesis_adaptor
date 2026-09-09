@@ -1,173 +1,68 @@
-"""Build the tactile artifact page end to end: `python viz/build.py`."""
-# Bakes the hand (bake.py), draws the schematic (draw_layout.py), and inlines
-# both into out/tactile.html.
-
 import base64
+from pathlib import Path
 
-from bake import bake
-from common import N_ALONG, N_AROUND, SENSED, out_path
+from artifacts import build_static_artifacts
+from common import N_ALONG, N_AROUND, PROBE_RADIUS, SENSED, get_output_path
 from draw_layout import draw_layout
 
-N_PER_LINK = N_AROUND * N_ALONG
-N_LINKS = len(SENSED)
-N_PER_HAND = N_PER_LINK * N_LINKS
-N_BOTH = N_PER_HAND * 2
+TEMPLATE_PATH = Path(__file__).with_name("template.html")
+TAXELS_PER_LINK = N_AROUND * N_ALONG
+LINKS_PER_HAND = len(SENSED)
+TAXELS_PER_HAND = TAXELS_PER_LINK * LINKS_PER_HAND
 
 
-def _area_table(rows):
-    """<tr> rows of link-type, count, face-area range, per-taxel-area range -- from the live bake, not hardcoded."""
-    groups = [("palm plate", lambda n: n.endswith("wuji_palm")),
-              ("finger <code>link2</code>", lambda n: n.endswith("link2")),
-              ("finger <code>link3</code>", lambda n: n.endswith("link3")),
-              ("finger <code>link4</code>", lambda n: n.endswith("link4"))]
-    out = []
-    for label, match in groups:
-        areas = [r["area_cm2"] for r in rows if match(r["link"])]
-        if not areas:
-            continue
-        per_taxel = [a / N_PER_LINK for a in areas]
-        lo, hi = f"{min(areas):.1f}", f"{max(areas):.1f}"
-        area_s = lo if lo == hi else f"{lo} &ndash; {hi}"
-        plo, phi = f"{min(per_taxel):.2f}", f"{max(per_taxel):.2f}"
-        pt_s = plo if plo == phi else f"{plo} &ndash; {phi}"
-        out.append(f"<tr><td>{label}</td><td>{len(areas)}</td><td>{area_s}</td><td>{pt_s}</td></tr>")
-    return "\n".join(out)
+def _format_range(values, precision):
+    lower = f"{min(values):.{precision}f}"
+    upper = f"{max(values):.{precision}f}"
+    return lower if lower == upper else f"{lower} &ndash; {upper}"
 
-HTML = """<title>Wuji Taxel Placement</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Source+Sans+3:wght@400;600;700&display=swap">
-<style>
-:root{--bg:#eef1f2;--card:#fff;--ink:#111a1d;--dim:#5d686c;--faint:#8d9699;--line:#d5dcdd;--cy:#0b93a8;--rd:#c8362a;--gn:#1c7a52}
-@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b1113;--card:#141c1f;--ink:#e3ebec;--dim:#98a4a8;--faint:#6c7679;--line:#222d31;--cy:#35c6dc;--rd:#f2594a;--gn:#3fc18a}}
-:root[data-theme="dark"]{--bg:#0b1113;--card:#141c1f;--ink:#e3ebec;--dim:#98a4a8;--faint:#6c7679;--line:#222d31;--cy:#35c6dc;--rd:#f2594a;--gn:#3fc18a}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 "Source Sans 3",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-.w{max-width:960px;margin:0 auto;padding:clamp(2rem,5vw,3.5rem) clamp(1rem,4vw,2rem) 4rem}
-.eb{font-family:"Space Mono",monospace;font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 0 .6rem}
-h1{font-size:clamp(1.6rem,4vw,2.2rem);font-weight:700;letter-spacing:-.02em;margin:0 0 .5rem;text-wrap:balance}
-.sub{color:var(--dim);margin:0 0 2rem;max-width:62ch}
-figure{margin:0 0 1.6rem;background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
-figure img{display:block;width:100%;height:auto}
-figcaption{font-family:"Space Mono",monospace;font-size:.72rem;color:var(--dim);padding:.8rem 1rem;line-height:1.55;border-top:1px solid var(--line)}
-.key{display:flex;gap:1.4rem;flex-wrap:wrap;margin:.5rem 0 1.6rem;font-family:"Space Mono",monospace;font-size:.76rem}
-.key span{display:flex;align-items:center;gap:.45rem}
-.dot{width:13px;height:13px;border-radius:50%;display:inline-block}
-.verdict{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--rd);border-radius:6px;padding:1rem 1.2rem;margin:1.8rem 0}
-.verdict b{color:var(--rd)}
-.verdict p{margin:.4rem 0 0;color:var(--dim);font-size:.94rem}
-h2{font-size:1.05rem;font-weight:700;margin:2.6rem 0 .6rem;padding-top:1.2rem;border-top:1px solid var(--line)}
-p{max-width:66ch}
-code{font-family:"Space Mono",monospace;font-size:.85em;color:var(--cy)}
-table{width:100%;border-collapse:collapse;font-size:.88rem;margin:.8rem 0}
-td,th{text-align:left;padding:.5rem .7rem;border-bottom:1px solid var(--line)}
-th{font-family:"Space Mono",monospace;font-size:.66rem;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);font-weight:400}
-.ok{color:var(--gn);font-weight:600}
-.no{color:var(--rd)}
-.tip{position:fixed;z-index:9;pointer-events:none;opacity:0;transition:opacity .12s;background:var(--ink);color:var(--bg);font-family:"Space Mono",monospace;font-size:.72rem;line-height:1.45;padding:.4rem .55rem;border-radius:5px;white-space:nowrap;box-shadow:0 3px 12px rgba(0,0,0,.3)}
-.tip.on{opacity:1}
-.tx{cursor:crosshair;transition:fill .1s}
-.tx:hover{fill:#f5c15e}
-.hand{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1.4rem 1rem 1rem}
-.hand svg{display:block;width:100%;max-width:430px;height:auto;margin:0 auto}
-.grid{display:grid;gap:1.2rem;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
-.stats{display:flex;gap:2rem;flex-wrap:wrap;margin:1.4rem 0 .4rem}
-.stat b{display:block;font-family:"Space Mono",monospace;font-size:1.5rem;line-height:1.2}
-.stat span{font-family:"Space Mono",monospace;font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
-</style>
-<div class="w">
-<p class="eb">genesis_adaptor &middot; wuji hand</p>
-<h1>Where the taxels sit</h1>
-<p class="sub">Each instrumented link carries a <b>__N_AROUND__&nbsp;&times;&nbsp;__N_ALONG__</b> grid of taxels &mdash; __N_AROUND__ around the link, __N_ALONG__ along it. __N_LINKS__ links per hand, so __N_PER_HAND__ taxels per hand and __N_BOTH__ across both. Every taxel shaded across its full share of the sensing face.</p>
 
-<div class="stats">
-  <div class="stat"><b>__N_PER_LINK__</b><span>taxels / link</span></div>
-  <div class="stat"><b>__N_LINKS__</b><span>links / hand</span></div>
-  <div class="stat"><b>__N_PER_HAND__</b><span>taxels / hand</span></div>
-  <div class="stat"><b>4&nbsp;mm</b><span>probe radius</span></div>
-</div>
+def _render_area_table(rows):
+    groups = (
+        ("palm plate", "wuji_palm"),
+        ("finger <code>link2</code>", "link2"),
+        ("finger <code>link3</code>", "link3"),
+        ("finger <code>link4</code>", "link4"),
+    )
+    table_rows = []
+    for label, suffix in groups:
+        areas = [row["area_cm2"] for row in rows if row["link"].endswith(suffix)]
+        if areas:
+            per_taxel = [area / TAXELS_PER_LINK for area in areas]
+            table_rows.append(
+                f"<tr><td>{label}</td><td>{len(areas)}</td><td>{_format_range(areas, 1)}</td>"
+                f"<td>{_format_range(per_taxel, 2)}</td></tr>"
+            )
+    return "\n".join(table_rows)
 
-<div class="hand">
-  __HAND__
-  <p style="font-family:'Space Mono',monospace;font-size:.72rem;color:var(--dim);margin:.9rem 0 0;max-width:none">Palmar view, unrolled from the model's own link geometry. Heavy outlines are links, hairlines are taxel boundaries. All five fingers &mdash; the thumb included &mdash; have three instrumented segments (<code>link2</code>, <code>link3</code>, <code>link4</code>); <code>link1</code> carries no collision geometry, so it gets nothing. Hover a tile for its link, index, and area.</p>
-</div>
 
-<div class="tip" id="tip"></div>
-<script>
-(function(){
-  var tip=document.getElementById('tip');
-  function move(e){
-    var x=e.clientX+14,y=e.clientY+16,r=tip.getBoundingClientRect();
-    if(x+r.width>innerWidth-8)x=e.clientX-r.width-14;
-    if(y+r.height>innerHeight-8)y=e.clientY-r.height-16;
-    tip.style.left=x+'px';tip.style.top=y+'px';
-  }
-  function at(e){
-    var t=e.target;
-    return (t&&t.classList&&t.classList.contains('tx'))?t:null;
-  }
-  document.addEventListener('pointermove',function(e){
-    var el=at(e);
-    if(el){
-      tip.textContent=el.getAttribute('data-l')+'  \\u00b7  '+el.getAttribute('data-a')+' cm2';
-      tip.classList.add('on');move(e);
-    } else tip.classList.remove('on');
-  },true);
-  document.addEventListener('pointerleave',function(){tip.classList.remove('on');},true);
-})();
-</script>
-
-<h2>The same layout on the real surface</h2>
-<p>Rendered from the hand's own collision geometry &mdash; the surface the contact probes actually act on. Each pixel is coloured by which taxel owns it, in the link's own <em>angle-about-the-long-axis</em> and <em>along-the-link</em> coordinates. The tiles therefore curve with the link instead of being drawn flat, and grey is surface no taxel reaches.</p>
-
-<div class="key">
-  <span><i class="dot" style="background:#e08a2c"></i> sensed &mdash; one tile per taxel</span>
-  <span><i class="dot" style="background:#a4adb2"></i> unsensed surface</span>
-</div>
-
-<figure>
-  <img src="data:image/jpeg;base64,__HAND_PALM__" alt="Rendered Wuji hand, palmar view, every link wrapped in a __N_AROUND__ by __N_ALONG__ grid of taxel tiles that curve with the surface">
-  <figcaption>Palmar view. Straight on, almost everything you can see is sensed &mdash; the band covers the whole palm-facing half of each link.</figcaption>
-</figure>
-
-<div class="grid">
-  <figure>
-    <img src="data:image/jpeg;base64,__HAND_THREE_QUARTER__" alt="Rendered Wuji hand at three quarters, taxel tiles wrapping around the sides of the fingers into grey on the back">
-    <figcaption>Three-quarter. The tiles wrap over the curve of each finger and stop; the knuckle side stays grey.</figcaption>
-  </figure>
-  <figure>
-    <img src="data:image/jpeg;base64,__HAND_EDGE__" alt="Rendered Wuji hand edge on, showing the sensed band ending halfway around each link">
-    <figcaption>Edge on. The boundary sits about halfway round, which is the 182&deg; the band actually measures.</figcaption>
-  </figure>
-</div>
-
-<h2>Area per taxel</h2>
-<table>
-<tr><th>link</th><th>count</th><th>face cm&sup2;</th><th>cm&sup2; per taxel</th></tr>
-__AREA_TABLE__
-</table>
-<p>The palm plate still carries an order of magnitude more surface per taxel than any fingertip. Raising <code>n_around</code>/<code>n_along</code> for the palm alone is the cheapest way to close that if palm localisation starts to matter.</p>
-
-</div>
-"""
+def _render_page(rows, images, svg):
+    values = {
+        "HAND": svg,
+        "N_AROUND": N_AROUND,
+        "N_ALONG": N_ALONG,
+        "N_PER_LINK": TAXELS_PER_LINK,
+        "N_LINKS": LINKS_PER_HAND,
+        "N_PER_HAND": TAXELS_PER_HAND,
+        "N_BOTH": TAXELS_PER_HAND * 2,
+        "PROBE_RADIUS_MM": f"{PROBE_RADIUS * 1000:g}",
+        "AREA_TABLE": _render_area_table(rows),
+    }
+    page = TEMPLATE_PATH.read_text()
+    for key, value in values.items():
+        page = page.replace(f"__{key}__", str(value))
+    for name, image in images.items():
+        page = page.replace(f"__{name.upper()}__", base64.b64encode(image).decode())
+    return page
 
 
 def main():
-    rows, images = bake()
-
+    rows, images = build_static_artifacts()
     svg = draw_layout(rows)
-    open(out_path("hand_layout.svg"), "w").write(svg)
-
-    page = HTML.replace("__HAND__", svg)
-    page = page.replace("__N_AROUND__", str(N_AROUND)).replace("__N_ALONG__", str(N_ALONG))
-    page = page.replace("__N_PER_LINK__", str(N_PER_LINK)).replace("__N_LINKS__", str(N_LINKS))
-    page = page.replace("__N_PER_HAND__", str(N_PER_HAND)).replace("__N_BOTH__", str(N_BOTH))
-    page = page.replace("__AREA_TABLE__", _area_table(rows))
-    for tag, jpg in images.items():
-        page = page.replace(f"__{tag.upper()}__", base64.b64encode(jpg).decode())
-
-    path = out_path("tactile.html")
-    open(path, "w").write(page)
+    Path(get_output_path("hand_layout.svg")).write_text(svg)
+    page = _render_page(rows, images, svg)
+    path = Path(get_output_path("tactile.html"))
+    path.write_text(page)
     print(f"wrote {path}  ({len(page) // 1024} KB, {N_AROUND}x{N_ALONG} taxels per link)")
 
 

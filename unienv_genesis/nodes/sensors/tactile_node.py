@@ -32,7 +32,7 @@ __all__ = [
     "TactileSensorNode",
 ]
 
-_SENSOR_TYPES = ("contact_depth", "kinematic")  # depth (N,) m | link-frame force/torque (N,3)
+_SENSOR_TYPES = ("contact_depth", "kinematic")
 
 _FACE_AXES = {
     "+x": (0, 1.0), "-x": (0, -1.0),
@@ -41,7 +41,7 @@ _FACE_AXES = {
 }
 
 
-def _link_mesh(link) -> trimesh.Trimesh:
+def _build_link_mesh(link) -> trimesh.Trimesh:
     """The link's collision geometry in link frame, available before the scene is built."""
     meshes = []
     for geom in link.geoms:
@@ -49,42 +49,25 @@ def _link_mesh(link) -> trimesh.Trimesh:
         mesh.apply_transform(trans_quat_to_T(geom.init_pos, geom.init_quat))  # rest, known pre-build
         meshes.append(mesh)
     if not meshes:
-        raise ValueError(
-            f"Link '{getattr(link, 'name', link)}' has no collision geometry to "
-            f"place tactile probes on."
-        )
+        raise ValueError(f"Link '{getattr(link, 'name', link)}' has no collision geometry to place tactile probes on.")
     return trimesh.util.concatenate(meshes)
 
 
-def _arc_probes(
-    link,
-    face_axis: str,
-    arc_degrees: float,
-    n_around: int,
-    n_along: int,
-    margin: float,
-):
+def _compute_arc_probes(link, face_axis: str, arc_degrees: float, n_around: int, n_along: int, margin: float):
+
     """Return taxel positions and outward normals (N, 3) each, in link frame, N = n_around * n_along."""
     if face_axis not in _FACE_AXES:
-        raise ValueError(
-            f"face_axis must be one of {sorted(_FACE_AXES)}, got {face_axis!r}."
-        )
+        raise ValueError(f"face_axis must be one of {sorted(_FACE_AXES)}; got {face_axis!r}.")
     if n_around < 1 or n_along < 1:
-        raise ValueError(
-            f"n_around and n_along must be >= 1, got {n_around} and {n_along}."
-        )
+        raise ValueError(f"n_around and n_along must be >= 1; got {n_around} and {n_along}.")
     axis, sign = _FACE_AXES[face_axis]
 
-    mesh = _link_mesh(link)
+    mesh = _build_link_mesh(link)
     lo, hi = np.asarray(mesh.bounds[0]), np.asarray(mesh.bounds[1])
     long_axis = int(np.argmax(hi - lo))
     if axis == long_axis:
-        raise ValueError(
-            f"face_axis {face_axis!r} points along link "
-            f"'{getattr(link, 'name', link)}'s long axis; the band would wrap its "
-            f"end cap. Pick a face on one of the two cross axes."
-        )
-    cross = 3 - long_axis - axis  # the third axis, since the three indices sum to 3
+        raise ValueError(f"face_axis {face_axis!r} points along link '{getattr(link, 'name', link)}'s long axis; the band would wrap its end cap. Pick a face on one of the two cross axes.")
+    cross = 3 - long_axis - axis
 
     centre = 0.5 * (lo + hi)
     span = hi[long_axis] - lo[long_axis]
@@ -98,7 +81,6 @@ def _arc_probes(
     half = np.radians(arc_degrees) / 2.0
     angles = np.linspace(-half, half, n_around) if n_around > 1 else np.array([0.0])
 
-    # one ray per (station, angle), cast outward from the cross-section centre
     origins = np.tile(centre, (n_along, n_around, 1))
     origins[..., long_axis] = stations[:, None]
     dirs = np.zeros((n_along, n_around, 3))
@@ -113,7 +95,6 @@ def _arc_probes(
         ray_origins=origins, ray_directions=dirs, multiple_hits=True
     )
     if len(ray_idx):
-        # keep each ray's outermost hit: the surface facing away from the long axis
         t = np.einsum("ij,ij->i", loc - origins[ray_idx], dirs[ray_idx])
         order = np.lexsort((-t, ray_idx))
         rows = order[np.concatenate(([True], np.diff(ray_idx[order]) != 0))]
@@ -122,14 +103,13 @@ def _arc_probes(
         nrm[ray_idx[rows]] = mesh.face_normals[tri_idx[rows]]
 
     if not hit.all():  # concave pocket: fall back to the nearest point on the surface
-        reach = 4.0 * float(np.linalg.norm(hi - lo))  # comfortably past the surface
+        reach = 4.0 * float(np.linalg.norm(hi - lo))
         near, _, tri = trimesh.proximity.closest_point(
             mesh, origins[~hit] + dirs[~hit] * reach
         )
         pos[~hit] = near
         nrm[~hit] = mesh.face_normals[tri]
 
-    # orient every normal outward from the link's long axis
     flip = np.einsum("ij,ij->i", nrm, pos - origins) < 0
     nrm[flip] *= -1.0
     nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-12)
@@ -138,8 +118,6 @@ def _arc_probes(
 
 @dataclass(frozen=True)
 class TactileSensorNodeOptions:
-    """Options for :class:`TactileSensorNode`."""
-
     attaches: Sequence[AttachmentProvider]
     """One provider per instrumented link; each must resolve a named link, used as the sub-key."""
 
@@ -149,7 +127,7 @@ class TactileSensorNodeOptions:
     face_axis: str = "+x"
     """Link-local face the taxel band is centred on; ``"+x"`` is the Wuji palm side.
 
-    The default for every link. Links whose frame is rotated relative to the rest
+    The default for every link. Links whose compute_frame is rotated relative to the rest
     -- a thumb base, typically -- need :attr:`face_axis_overrides` instead.
     """
 
@@ -175,8 +153,6 @@ class TactileSensorNodeOptions:
 
 
 class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
-    """Sensor node wrapping one Genesis probe sensor per link."""
-
     reload_priorities = {0}
     after_reload_priorities = {-50}
     reset_priorities = {0}
@@ -200,33 +176,23 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
         self.world: GenesisWorld = world
 
         if option.sensor_type not in _SENSOR_TYPES:
-            raise ValueError(
-                f"TactileSensorNode '{name}': sensor_type must be one of "
-                f"{_SENSOR_TYPES}, got {option.sensor_type!r}."
-            )
+            raise ValueError(f"TactileSensorNode '{name}': sensor_type must be one of {_SENSOR_TYPES}; got {option.sensor_type!r}.")
         self.option = option
 
         self._keys: list[str] = [a.link_name for a in option.attaches]
         if len(set(self._keys)) != len(self._keys):
-            raise ValueError(
-                f"TactileSensorNode '{name}' has duplicate link names: {self._keys}"
-            )
+            raise ValueError(f"TactileSensorNode '{name}' has duplicate link names: {self._keys}")
 
         unknown = set(option.face_axis_overrides or {}) - set(self._keys)
         if unknown:
-            raise ValueError(
-                f"TactileSensorNode '{name}': face_axis_overrides names links that "
-                f"are not attached: {sorted(unknown)}. Attached links are {self._keys}."
-            )
+            raise ValueError(f"TactileSensorNode '{name}': face_axis_overrides names links that are not attached: {sorted(unknown)}. Attached links: {self._keys}.")
 
         self.n_taxels: int = option.n_around * option.n_along
         self._sensors: Dict[str, Sensor] = {}
         self._positions: Dict[str, np.ndarray] = {}
         self._normals: Dict[str, np.ndarray] = {}
         self._last_observation: Optional[Dict[str, PyTorchArrayType]] = None
-        self.observation_space: Space[
-            PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
-        ] = self._get_observation_space()
+        self.observation_space: Space[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType] = self._get_observation_space()
 
     @property
     def probe_positions(self) -> Dict[str, np.ndarray]:
@@ -238,14 +204,8 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
         """Per-link outward taxel normals ``(N, 3)`` in link frame; ContactDepthProbe has none of its own."""
         return self._normals
 
-    def reload(
-        self,
-        *,
-        priority: int = 0,
-        seed: Optional[int] = None,
-        mask: Optional[PyTorchArrayType] = None,
-        **kwargs,
-    ) -> None:
+    def reload(self, *, priority: int = 0, seed: Optional[int] = None,
+               mask: Optional[PyTorchArrayType] = None, **kwargs) -> None:
         """Add one probe sensor per link to the (unbuilt) scene."""
         if priority != 0:
             return
@@ -260,7 +220,7 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
             key = attach.link_name
             entity, link = attach.get_attachment(self.world)
             link = link if link is not None else entity.base_link
-            probe, normal = _arc_probes(
+            probe, normal = _compute_arc_probes(
                 link,
                 overrides.get(key, self.option.face_axis),
                 self.option.arc_degrees,
@@ -279,41 +239,19 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                 )
             )
 
-    def reset(
-        self,
-        *,
-        priority: int = 0,
-        seed: Optional[int] = None,
-        mask: Optional[PyTorchArrayType] = None,
-        **kwargs,
-    ) -> None:
-        """No-op; the cache is refreshed in ``after_reset``."""
+    def reset(self, *, priority: int = 0, seed: Optional[int] = None,
+              mask: Optional[PyTorchArrayType] = None, **kwargs) -> None:
         pass
 
-    def after_reload(
-        self,
-        *,
-        priority: int = 0,
-        mask: Optional[PyTorchArrayType] = None,
-    ) -> None:
+    def after_reload(self, *, priority: int = 0, mask: Optional[PyTorchArrayType] = None) -> None:
         if priority in self.after_reload_priorities:
             self.update_observation()
 
-    def after_reset(
-        self,
-        *,
-        priority: int = 0,
-        mask: Optional[PyTorchArrayType] = None,
-    ) -> None:
+    def after_reset(self, *, priority: int = 0, mask: Optional[PyTorchArrayType] = None) -> None:
         if priority in self.after_reset_priorities:
             self.update_observation()
 
-    def post_environment_step(
-        self,
-        dt: Union[float, PyTorchArrayType],
-        *,
-        priority: int = 0,
-    ) -> None:
+    def post_environment_step(self, dt: Union[float, PyTorchArrayType], *, priority: int = 0) -> None:
         if priority == 0:
             self.update_observation()
 
@@ -328,7 +266,7 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
         for key, sensor in self._sensors.items():
             data = sensor.read()
             if self.option.sensor_type == "kinematic":
-                obs[key] = {  # (N, 3) unbatched / (B, N, 3) batched
+                obs[key] = {
                     "force": self._to_tensor(data.force),
                     "torque": self._to_tensor(data.torque),
                 }
@@ -336,14 +274,12 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                 obs[key] = self._to_tensor(data)
         self._last_observation = obs
 
-    def _get_observation_space(
-        self,
-    ) -> DictSpace[PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
+    def _get_observation_space(self) -> DictSpace[PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
         B = self.world.batch_size
         dtype = self.world.dtype
         device = self.world.device
 
-        def _link_space() -> Space:
+        def _create_link_space() -> Space:
             if self.option.sensor_type == "kinematic":
                 vec = BoxSpace(
                     PyTorchComputeBackend,
@@ -367,7 +303,7 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                 device=device,
             )
 
-        spaces: Dict[str, Space] = {key: _link_space() for key in self._keys}
+        spaces: Dict[str, Space] = {key: _create_link_space() for key in self._keys}
         return DictSpace(PyTorchComputeBackend, spaces, device=device)
 
     def get_observation(self) -> Dict[str, PyTorchArrayType]:

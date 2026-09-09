@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from unienv_genesis.nodes.sensors import (
-    TactileSensorNode,
-    TactileSensorNodeOptions,
-)
+from unienv_genesis.nodes.sensors import TactileSensorNode, TactileSensorNodeOptions
 from unienv_genesis.options.attach_option import AttachFromName
 
 __all__ = ["make_wuji_hand_tactile"]
@@ -22,15 +19,10 @@ _THUMB_FACE_AXES = {
 }
 
 
-def make_wuji_hand_tactile(
-    world: Any,
-    *,
-    robot_name: str = "tianji",
-    sides: Sequence[str] = ("left", "right"),
-    sensor_type: str = "contact_depth",
-    taxels: tuple[int, int] | None = None,
-    face_axis_overrides: dict[str, str] | None = None,
-) -> TactileSensorNode:
+def make_wuji_hand_tactile(world: Any, *, robot_name: str = "tianji",
+                           sides: Sequence[str] = ("left", "right"), sensor_type: str = "contact_depth",
+                           taxels: tuple[int, int] | None = None,
+                           face_axis_overrides: dict[str, str] | None = None) -> TactileSensorNode:
     """Build a TactileSensorNode covering ``robot_name``'s Wuji hand(s); ``taxels`` is ``(n_around, n_along)``."""
     # Thumb links get a corrected face_axis by default; face_axis_overrides is
     # merged on top of that, keyed by full link name.
