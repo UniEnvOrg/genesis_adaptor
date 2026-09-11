@@ -52,6 +52,14 @@ def build_hand(with_tactile=False):
     return environment, actors[-1] if with_tactile else world.scene.get_entity("tianji")
 
 
+def ensure_fk_ready(entity):
+    """Genesis 1.3 allocates the scratch fields ``forward_kinematics`` uses only on the first
+    IK call; run a one-iteration IK at the current pose so FK works before the env has stepped."""
+    if getattr(entity, "_IK_qpos_orig", None) is None:
+        link = entity.base_link
+        entity.inverse_kinematics(link, pos=link.get_pos(), quat=link.get_quat(), max_solver_iters=1)
+
+
 def get_link_pose(link):
     return np.asarray(link.get_pos().cpu()).reshape(3), np.asarray(link.get_quat().cpu()).reshape(4)
 

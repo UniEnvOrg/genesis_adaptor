@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from artifacts import compute_face_row
-from common import build_hand, get_link_mesh, get_output_path
+from common import build_hand, ensure_fk_ready, get_link_mesh, get_output_path
 from layout import compute_bounds, compute_connector, compute_rectangle, generate_tiles, transform_to_canvas
 
 BACKGROUND_COLOR = (238, 239, 241)
@@ -21,10 +21,13 @@ def _round_up_even(value):
     return int(value) + int(value) % 2
 
 
-def compute_open_hand_layout(node):
+def compute_open_hand_layout(node, side=None):
+    """Face rows for the node's links; ``side`` keeps only ``{side}_*`` links of a two-hand node."""
     links = {}
     entity = None
     for attachment in node.option.attaches:
+        if side is not None and not attachment.link_name.startswith(f"{side}_"):
+            continue
         attached_entity, link = attachment.get_attachment(node.world)
         entity = attached_entity if entity is None else entity
         if attached_entity is not entity:
@@ -39,6 +42,7 @@ def compute_open_hand_layout(node):
             open_qpos[..., joint.qs_idx_local] = 0.0
 
     names = list(links)
+    ensure_fk_ready(entity)
     positions, quaternions = entity.forward_kinematics(
         open_qpos, links_idx_local=[links[name].idx_local for name in names]
     )
@@ -53,7 +57,7 @@ def compute_open_hand_layout(node):
 
 
 class TactileView:
-    def __init__(self, node, *, vmax=None, width=560, layout=None):
+    def __init__(self, node, *, vmax=None, width=560, layout=None, side=None):
         if width < 64:
             raise ValueError(f"width must be at least 64 px, got {width}")
         self.node = node
@@ -64,7 +68,7 @@ class TactileView:
         self.n_around = node.option.n_around
         self.n_along = node.option.n_along
         self.n_taxels = node.n_taxels
-        self.rows = list(layout) if layout is not None else compute_open_hand_layout(node)
+        self.rows = list(layout) if layout is not None else compute_open_hand_layout(node, side)
         self._place_layout(width)
         self._frames = []
         self._window = None
