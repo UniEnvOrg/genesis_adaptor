@@ -64,8 +64,8 @@ MIN_JOINT_POS_DELTA_PER_STEP = 0.1
 # (verified: hold sag < 0.01 m, +6 cm target tracked to ~+0.05 m, stable).
 # Per-joint values follow the URDF joint order Joint1..Joint7 (shoulder->wrist),
 # scaled from the defaults so the shoulder (heavier) joints get the most gain.
-_ARM_KP_SCALE = 20.0
-_ARM_KD_SCALE = 20.0
+_ARM_KP_SCALE = 10.0
+_ARM_KD_SCALE = 5.0
 _ARM_KP = [100.0 * _ARM_KP_SCALE, 100.0 * _ARM_KP_SCALE, 80.0 * _ARM_KP_SCALE,
           80.0 * _ARM_KP_SCALE, 40.0 * _ARM_KP_SCALE, 40.0 * _ARM_KP_SCALE,
           40.0 * _ARM_KP_SCALE]
@@ -84,6 +84,11 @@ RIGHT_HAND_JOINT_NAMES = [
     for finger in range(1, 6)
     for joint in range(1, 5)
 ]
+
+# Sim hand PD gains: 10x the MJCF kp=0.5, which is too soft to reach the
+# fingers' 0.15-0.65 N*m rated torques without ~0.3-0.8 rad of error.
+_HAND_KP = 10.0
+_HAND_KD = 0.25
 
 # Finger pad links used for contact-based grasp detection.  ``link1`` has
 # ``contype=0`` (no collision geoms) and the fingertip meshes (``*_tip_link``
@@ -197,6 +202,7 @@ _DEFAULT_SUB_CONTROLLERS = {
         "min_joint_pos_delta_per_step": MIN_JOINT_POS_DELTA_PER_STEP,
         "Kp": _ARM_KP,
         "Kd": _ARM_KD,
+        "ik_kwargs": {"damping": 0.05, "max_step_size": 0.1},
         "target_link": LinkAttachment(
             link_name=LEFT_EE_LINK_NAME,
             offset_pos=EE_PALM_OFFSET,
@@ -210,6 +216,7 @@ _DEFAULT_SUB_CONTROLLERS = {
         "min_joint_pos_delta_per_step": MIN_JOINT_POS_DELTA_PER_STEP,
         "Kp": _ARM_KP,
         "Kd": _ARM_KD,
+        "ik_kwargs": {"damping": 0.05, "max_step_size": 0.1},
         "target_link": LinkAttachment(
             link_name=RIGHT_EE_LINK_NAME,
             offset_pos=EE_PALM_OFFSET,
@@ -220,11 +227,15 @@ _DEFAULT_SUB_CONTROLLERS = {
         "controller_type": "joint_position",
         "joint_names": LEFT_HAND_JOINT_NAMES,
         "is_grasping_fn": make_is_grasping(LEFT_FINGER_PAD_LINK_NAMES),
+        "Kp": _HAND_KP,
+        "Kd": _HAND_KD,
     },
     "right_hand": {
         "controller_type": "joint_position",
         "joint_names": RIGHT_HAND_JOINT_NAMES,
         "is_grasping_fn": make_is_grasping(RIGHT_FINGER_PAD_LINK_NAMES),
+        "Kp": _HAND_KP,
+        "Kd": _HAND_KD,
     },
 }
 
