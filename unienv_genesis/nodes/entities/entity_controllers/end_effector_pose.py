@@ -10,6 +10,7 @@ from xbarray.transformations.rotation_conversions.pytorch import (
     matrix_to_quaternion,
     quaternion_apply,
     quaternion_invert,
+    quaternion_multiply,
     quaternion_to_matrix,
     matrix_to_euler_angles,
     matrix_to_rotation_6d,
@@ -38,7 +39,9 @@ class AbsoluteRotationConventionUtils:
             quat = matrix_to_quaternion(rot_matrix)
             return quat
         elif representation == "quat":
-            return rotation
+            # Normalize: a non-unit quaternion scales the virtual-EEF offset
+            # (quaternion_apply scales by |q|^2), shifting the position target.
+            return rotation / torch.clip(torch.norm(rotation, dim=-1, keepdim=True), min=1e-6)
         elif representation == "rot6d":
             rot_matrix = rotation_6d_to_matrix(rotation)
             quat = matrix_to_quaternion(rot_matrix)
@@ -99,6 +102,46 @@ class AbsoluteRotationConventionUtils:
             return matrix_to_rotation_6d(quaternion_to_matrix(quaternion))
         else:
             raise ValueError(f"Unsupported rotation representation: {representation}")
+
+def se3_pose_error(
+    achieved_position : PyTorchArrayType,
+    achieved_quaternion : PyTorchArrayType,
+    target_position : PyTorchArrayType,
+    target_quaternion : PyTorchArrayType,
+) -> PyTorchArrayType:
+    """Body-frame pose error ``log(inv(T_achieved) @ T_target)`` as ``[v(3), omega(3)]``.
+
+    Matches mink's ``FrameTask.compute_error`` (``SE3.log`` of ``T_bt``), which
+    the real Tianji arm reports as ``last_ik_solved_error``, so sim and real
+    expose the same quantity.
+    """
+    inv_achieved = quaternion_invert(achieved_quaternion)
+    q = quaternion_multiply(inv_achieved, target_quaternion)
+    p = quaternion_apply(inv_achieved, target_position - achieved_position)
+
+    # SO3 log (shortest rotation), as mink.SO3.log.
+    q = q * torch.where(q[..., :1] < 0, -1.0, 1.0)
+    w, v = q[..., :1], q[..., 1:]
+    v_norm = torch.norm(v, dim=-1, keepdim=True)
+    omega = torch.where(
+        v_norm > 1e-9,
+        2 * torch.atan2(v_norm, w) * v / v_norm.clamp(min=1e-9),
+        torch.zeros_like(v),
+    )
+
+    # SE3 log translation part: v = V^-1 p, as mink.SE3.log.
+    theta = torch.norm(omega, dim=-1, keepdim=True)
+    t2 = theta * theta
+    half = (0.5 * theta).clamp(min=1e-9)
+    coeff = torch.where(
+        t2 > 1e-9,
+        (1.0 - 0.5 * theta * torch.cos(half) / torch.sin(half)) / t2.clamp(min=1e-9),
+        torch.full_like(theta, 1.0 / 12.0),
+    )
+    omega_x_p = torch.cross(omega, p, dim=-1)
+    omega_x_omega_x_p = torch.cross(omega, omega_x_p, dim=-1)
+    v_err = p - 0.5 * omega_x_p + coeff * omega_x_omega_x_p
+    return torch.cat([v_err, omega], dim=-1)
 
 class EndEffectorPoseController(
     JointPositionController
@@ -183,6 +226,10 @@ class EndEffectorPoseController(
             device=world.device,
         )
         self._last_ik_result = {}
+        # Last commanded virtual-EEF pose in world frame, cached for debug
+        # visualization (the action itself is in the base frame and is not
+        # otherwise retained). None until the first apply_action.
+        self._last_target_pose_absolute: Optional[Tuple[PyTorchArrayType, PyTorchArrayType]] = None
 
     def reload(self) -> None:
         # Link re-resolution is handled by DiscreteEntityController.reload().
@@ -191,7 +238,23 @@ class EndEffectorPoseController(
     def reset(self, mask: Optional[PyTorchArrayType] = None) -> None:
         """Reset the controller's IK result cache."""
         self._last_ik_result = {}
-    
+        self._last_target_pose_absolute = None
+
+    def get_last_commanded_eef_pose_absolute(
+        self,
+    ) -> Optional[Tuple[PyTorchArrayType, PyTorchArrayType]]:
+        """Return the last commanded virtual EEF pose in world frame.
+
+        Returns ``(position, quaternion)`` — the target handed to
+        :meth:`apply_action`, converted out of the base frame — or ``None``
+        when no action has been applied since the last reset.  This is the
+        *commanded* pose, before IK, rate-limit clipping and PD tracking; pair
+        it with :meth:`get_eef_pose_absolute` (the achieved pose) to see the
+        tracking error.
+        """
+        return self._last_target_pose_absolute
+
+
     def solve_ik_absolute(
         self,
         target_position : Optional[PyTorchArrayType],
@@ -283,19 +346,19 @@ class EndEffectorPoseController(
             target_quaternion: (batch_size, 4) tensor of target end-effector rotations in quaternion format in the end-effector's base frame
         Returns:
             target_joint_positions: (batch_size, n_dof) tensor of target joint positions
-            achieved_error: (batch_size, 6) tensor of end-effector pose error (position error + rotation error), where position error = target_position - achieved_position, rotation error = quat_to_rotvec(achieved_quaternion^{-1} * target_quaternion)
+            achieved_error: (batch_size, 6) body-frame error ``log(inv(T_achieved) @ T_target)`` of the
+                virtual EEF pose reached by the IK solution (see :func:`se3_pose_error`; same
+                convention as the real arm's mink IK error).
         """
         target_position_absolute, target_quaternion_absolute = self.convert_base_to_absolute(target_position, target_quaternion)
-        target_joint_positions, achieved_error_absolute = self.solve_ik_absolute(target_position_absolute, target_quaternion_absolute)
-        
-        base_transform = self.get_base_transform()
-        if base_transform is None:
-            achieved_error = achieved_error_absolute
-        else:
-            _, base_quaternion = base_transform
-            achieved_position_error = quaternion_apply(quaternion_invert(base_quaternion), achieved_error_absolute[..., :3])
-            achieved_rotation_error = achieved_error_absolute[..., 3:]
-            achieved_error = torch.cat([achieved_position_error, achieved_rotation_error], dim=-1)
+        target_joint_positions, _ = self.solve_ik_absolute(target_position_absolute, target_quaternion_absolute)
+
+        # Genesis reports its error at the physical link origin in mixed
+        # frames; recompute it at the virtual EEF from the solution via FK.
+        achieved_position, achieved_quaternion = self._target_qpos_to_eef(target_joint_positions)
+        achieved_error = se3_pose_error(
+            achieved_position, achieved_quaternion, target_position, target_quaternion,
+        )
         return target_joint_positions, achieved_error
 
     def get_observation(self):
@@ -350,6 +413,11 @@ class EndEffectorPoseController(
         if self.normalize_rotation_action:
             target_rot = AbsoluteRotationConventionUtils.unnormalize_action(self.rotation_representation, target_rot)
         target_rot_quat = AbsoluteRotationConventionUtils.to_quaternion(self.rotation_representation, target_rot)
+        # Cache the command in world frame (no-op pass-through when no base
+        # frame is configured) so debug visualizers can draw it.
+        self._last_target_pose_absolute = self.convert_base_to_absolute(
+            target_pos, target_rot_quat,
+        )
         target_joint_positions, achieved_error = self.solve_ik_base(
             target_pos, target_rot_quat
         ) # (batch_size, n_dof), (batch_size, 3), (batch_size, 4), (batch_size, 6)
