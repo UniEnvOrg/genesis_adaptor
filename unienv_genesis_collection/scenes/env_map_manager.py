@@ -260,6 +260,7 @@ class EnvMapManager(WorldNode):
 
         self._current_index: Optional[int] = None
         self._current_env_map: Optional[GenesisWorldEnvMapOption] = None
+        self._current_env_map_id: Optional[str] = None
         self._next_cycle_index = 0
 
     @property
@@ -283,10 +284,13 @@ class EnvMapManager(WorldNode):
 
     @property
     def current_env_map_id(self) -> Optional[str]:
-        """Identifier for the current env map, from the manifest or filename."""
-        if self._current_env_map is None or self._current_env_map.hdr_path is None:
-            return None
-        return _infer_env_map_id(self._current_env_map.hdr_path)
+        """Identifier for the current env map, from the manifest or filename.
+
+        Resolved once per :meth:`reload` — inferring it re-reads the manifest
+        and resolves every entry's path, which must not happen on every
+        ``get_info`` call.
+        """
+        return self._current_env_map_id
 
     def _reseed(self, seed: int) -> None:
         self.rng.manual_seed(seed)
@@ -322,6 +326,11 @@ class EnvMapManager(WorldNode):
         idx = self._select_index()
         self._current_index = idx
         self._current_env_map = self._pool[idx]
+        self._current_env_map_id = (
+            _infer_env_map_id(self._current_env_map.hdr_path)
+            if self._current_env_map.hdr_path is not None
+            else None
+        )
 
         # Mutate the world's env map so that Nyx cameras (re-)created later in
         # the reload sequence pick up the newly selected env map.
