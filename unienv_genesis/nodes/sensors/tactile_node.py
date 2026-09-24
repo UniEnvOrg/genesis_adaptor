@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Mapping, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -28,6 +28,7 @@ from unienv_genesis.options.attach_option import AttachmentProvider
 from .base import SensorNode
 
 __all__ = [
+    "TaxelPatch",
     "TactileSensorNodeOptions",
     "TactileSensorNode",
 ]
@@ -86,8 +87,12 @@ def _compute_arc_probes(link, face_axis: str, arc_degrees: float, n_around: int,
     dirs = np.zeros((n_along, n_around, 3))
     dirs[..., axis] = sign * np.cos(angles)
     dirs[..., cross] = np.sin(angles)
-    origins, dirs = origins.reshape(-1, 3), dirs.reshape(-1, 3)
+    return _raycast_surface(mesh, origins.reshape(-1, 3), dirs.reshape(-1, 3))
 
+
+def _raycast_surface(mesh: trimesh.Trimesh, origins: np.ndarray, dirs: np.ndarray):
+    """Outermost hit of each ray on ``mesh`` and its outward normal, (N, 3) each."""
+    lo, hi = np.asarray(mesh.bounds[0]), np.asarray(mesh.bounds[1])
     pos = np.empty((len(origins), 3))
     nrm = np.empty((len(origins), 3))
     hit = np.zeros(len(origins), dtype=bool)
@@ -117,9 +122,35 @@ def _compute_arc_probes(link, face_axis: str, arc_degrees: float, n_around: int,
 
 
 @dataclass(frozen=True)
+class TaxelPatch:
+    """A hand-placed set of taxels on one link, read back as a grid of ``shape``.
+
+    Use this instead of the default band when the taxel pattern is fixed by real hardware.
+    """
+
+    name: str
+    """Observation sub-key."""
+
+    attach: AttachmentProvider
+    """The link the taxels sit on."""
+
+    shape: Tuple[int, ...]
+    """Shape of this patch's reading; cells without a taxel read 0."""
+
+    cells: Sequence[int]
+    """Flat index into ``shape`` for each taxel, in the order ``place`` returns them."""
+
+    place: Callable[[Any], Tuple[np.ndarray, np.ndarray]]
+    """Called with the Genesis link at reload; returns link-frame taxel positions and outward normals, (N, 3) each."""
+
+
+@dataclass(frozen=True)
 class TactileSensorNodeOptions:
-    attaches: Sequence[AttachmentProvider]
-    """One provider per instrumented link; each must resolve a named link, used as the sub-key."""
+    attaches: Sequence[AttachmentProvider] = ()
+    """One provider per link to cover with a band of taxels; each must resolve a named link, used as the sub-key."""
+
+    patches: Sequence[TaxelPatch] = ()
+    """Hand-placed taxel patches, keyed by their own name; several may share a link."""
 
     sensor_type: str = "contact_depth"
     """One of ``"contact_depth"`` or ``"kinematic"`` (see module docstring)."""
@@ -179,15 +210,26 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
             raise ValueError(f"TactileSensorNode '{name}': sensor_type must be one of {_SENSOR_TYPES}; got {option.sensor_type!r}.")
         self.option = option
 
-        self._keys: list[str] = [a.link_name for a in option.attaches]
+        band_keys = [a.link_name for a in option.attaches]
+        self._keys: list[str] = band_keys + [patch.name for patch in option.patches]
         if len(set(self._keys)) != len(self._keys):
-            raise ValueError(f"TactileSensorNode '{name}' has duplicate link names: {self._keys}")
+            raise ValueError(f"TactileSensorNode '{name}' has duplicate sub-keys: {self._keys}")
 
-        unknown = set(option.face_axis_overrides or {}) - set(self._keys)
+        unknown = set(option.face_axis_overrides or {}) - set(band_keys)
         if unknown:
-            raise ValueError(f"TactileSensorNode '{name}': face_axis_overrides names links that are not attached: {sorted(unknown)}. Attached links: {self._keys}.")
+            raise ValueError(f"TactileSensorNode '{name}': face_axis_overrides names links that are not attached: {sorted(unknown)}. Attached links: {band_keys}.")
 
         self.n_taxels: int = option.n_around * option.n_along
+        # Per sub-key reading shape and the flat cell each probe fills; bands fill every cell in order.
+        self._shapes: Dict[str, Tuple[int, ...]] = {key: (self.n_taxels,) for key in band_keys}
+        self._cells: Dict[str, Optional[np.ndarray]] = {key: None for key in band_keys}
+        for patch in option.patches:
+            cells = np.asarray(patch.cells, dtype=np.int64)
+            size = int(np.prod(patch.shape))
+            if cells.ndim != 1 or len(np.unique(cells)) != len(cells) or cells.min(initial=0) < 0 or cells.max(initial=-1) >= size:
+                raise ValueError(f"TactileSensorNode '{name}': patch '{patch.name}' cells must be distinct flat indices into shape {tuple(patch.shape)}.")
+            self._shapes[patch.name] = tuple(patch.shape)
+            self._cells[patch.name] = cells
         self._sensors: Dict[str, Sensor] = {}
         self._positions: Dict[str, np.ndarray] = {}
         self._normals: Dict[str, np.ndarray] = {}
@@ -196,13 +238,21 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
 
     @property
     def probe_positions(self) -> Dict[str, np.ndarray]:
-        """Per-link taxel positions ``(N, 3)`` in link frame. Populated by ``reload``."""
+        """Per sub-key taxel positions ``(N, 3)`` in link frame. Populated by ``reload``."""
         return self._positions
 
     @property
     def probe_normals(self) -> Dict[str, np.ndarray]:
-        """Per-link outward taxel normals ``(N, 3)`` in link frame; ContactDepthProbe has none of its own."""
+        """Per sub-key outward taxel normals ``(N, 3)`` in link frame; ContactDepthProbe has none of its own."""
         return self._normals
+
+    @property
+    def probe_cells(self) -> Dict[str, np.ndarray]:
+        """Per sub-key flat index into the reading for each probe, in probe order."""
+        return {
+            key: cells if cells is not None else np.arange(self.n_taxels)
+            for key, cells in self._cells.items()
+        }
 
     def reload(self, *, priority: int = 0, seed: Optional[int] = None,
                mask: Optional[PyTorchArrayType] = None, **kwargs) -> None:
@@ -215,12 +265,9 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
             else gs.options.sensors.ContactDepthProbe
         )
         overrides = self.option.face_axis_overrides or {}
-        self._sensors, self._positions, self._normals = {}, {}, {}
-        for attach in self.option.attaches:
-            key = attach.link_name
-            entity, link = attach.get_attachment(self.world)
-            link = link if link is not None else entity.base_link
-            probe, normal = _compute_arc_probes(
+
+        def place_band(key):
+            return lambda link: _compute_arc_probes(
                 link,
                 overrides.get(key, self.option.face_axis),
                 self.option.arc_degrees,
@@ -228,6 +275,17 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                 self.option.n_along,
                 self.option.margin,
             )
+
+        layouts = [(a.link_name, a, place_band(a.link_name)) for a in self.option.attaches]
+        layouts += [(patch.name, patch.attach, patch.place) for patch in self.option.patches]
+        self._sensors, self._positions, self._normals = {}, {}, {}
+        for key, attach, place in layouts:
+            entity, link = attach.get_attachment(self.world)
+            link = link if link is not None else entity.base_link
+            probe, normal = place(link)
+            expected = len(self._cells[key]) if self._cells[key] is not None else self.n_taxels
+            if len(probe) != expected:
+                raise ValueError(f"TactileSensorNode '{self.name}': '{key}' placed {len(probe)} probes, expected {expected}.")
             self._positions[key], self._normals[key] = probe, normal
             self._sensors[key] = self.world.scene.add_sensor(
                 cls(
@@ -267,25 +325,36 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
             data = sensor.read()
             if self.option.sensor_type == "kinematic":
                 obs[key] = {
-                    "force": self._to_tensor(data.force),
-                    "torque": self._to_tensor(data.torque),
+                    "force": self._to_grid(key, self._to_tensor(data.force), (3,)),
+                    "torque": self._to_grid(key, self._to_tensor(data.torque), (3,)),
                 }
             else:
-                obs[key] = self._to_tensor(data)
+                obs[key] = self._to_grid(key, self._to_tensor(data), ())
         self._last_observation = obs
+
+    def _to_grid(self, key: str, values: PyTorchArrayType, tail: Tuple[int, ...]) -> PyTorchArrayType:
+        """Scatter per-probe ``values`` (..., N, *tail) into this sub-key's reading shape."""
+        cells = self._cells[key]
+        if cells is None:
+            return values
+        dim = values.ndim - 1 - len(tail)
+        batch = values.shape[:dim]
+        grid = values.new_zeros((*batch, int(np.prod(self._shapes[key])), *tail))
+        grid.index_copy_(dim, torch.as_tensor(cells, device=values.device), values)
+        return grid.reshape(*batch, *self._shapes[key], *tail)
 
     def _get_observation_space(self) -> DictSpace[PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
         B = self.world.batch_size
         dtype = self.world.dtype
         device = self.world.device
 
-        def _create_link_space() -> Space:
+        def _create_link_space(shape: Tuple[int, ...]) -> Space:
             if self.option.sensor_type == "kinematic":
                 vec = BoxSpace(
                     PyTorchComputeBackend,
                     low=-torch.inf,
                     high=torch.inf,
-                    shape=get_batch_aware_shape(B, (self.n_taxels, 3)),
+                    shape=get_batch_aware_shape(B, (*shape, 3)),
                     dtype=dtype,
                     device=device,
                 )
@@ -298,12 +367,12 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                 PyTorchComputeBackend,
                 low=0.0,
                 high=torch.inf,
-                shape=get_batch_aware_shape(B, self.n_taxels),
+                shape=get_batch_aware_shape(B, shape),
                 dtype=dtype,
                 device=device,
             )
 
-        spaces: Dict[str, Space] = {key: _create_link_space() for key in self._keys}
+        spaces: Dict[str, Space] = {key: _create_link_space(self._shapes[key]) for key in self._keys}
         return DictSpace(PyTorchComputeBackend, spaces, device=device)
 
     def get_observation(self) -> Dict[str, PyTorchArrayType]:

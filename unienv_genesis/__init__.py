@@ -21,6 +21,7 @@ from unienv_genesis.nodes.sensors import (
     ContactSensorNodeOptions,
     TactileSensorNode,
     TactileSensorNodeOptions,
+    TaxelPatch,
 )
 
 __version__ = "0.0.1b1"
@@ -61,4 +62,5 @@ __all__ = [
     "ContactSensorNodeOptions",
     "TactileSensorNode",
     "TactileSensorNodeOptions",
+    "TaxelPatch",
 ]

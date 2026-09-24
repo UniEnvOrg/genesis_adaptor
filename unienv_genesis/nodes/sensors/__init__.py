@@ -19,7 +19,7 @@ from .contact_force_node import (
     ContactForceSensorNodeOptions,
 )
 from .contact_node import ContactSensorNode, ContactSensorNodeOptions
-from .tactile_node import TactileSensorNode, TactileSensorNodeOptions
+from .tactile_node import TactileSensorNode, TactileSensorNodeOptions, TaxelPatch
 
 __all__ = [
     "SensorNode",
@@ -41,4 +41,5 @@ __all__ = [
     "ContactSensorNodeOptions",
     "TactileSensorNode",
     "TactileSensorNodeOptions",
+    "TaxelPatch",
 ]

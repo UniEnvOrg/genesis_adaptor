@@ -53,6 +53,8 @@ exclude = ["training*", "tests*", "examples*"]
     "config.yaml",
     "License.pdf",
 ]
+# Tachin glove taxel geometry (vendor v5 files, unmodified) for the glove-pattern hand tactile layout.
+"unienv_genesis_collection.robots" = ["tachin_glove/*.json"]
 
 # NOTE: Collection assets are NOT shipped in the package. They live on Hugging Face
 # (UniEnvOrg/unienv_genesis_collection_assets) and are downloaded on demand at runtime

@@ -1,4 +1,4 @@
-"""Tests for TactileSensorNode (unbatched, CPU) on a box+plane scene: both sensor types."""
+"""Tests for TactileSensorNode (unbatched, CPU) on a box+plane scene: both sensor types, bands and patches."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from unienv_genesis import (
     GenesisWorld,
     TactileSensorNode,
     TactileSensorNodeOptions,
+    TaxelPatch,
 )
 from unienv_genesis.options.attach_option import AttachFromName
 
@@ -191,3 +192,81 @@ def test_rejects_face_axis_override_for_unattached_link():
     world = GenesisWorld()
     with pytest.raises(ValueError, match="not attached"):
         TactileSensorNode(world, "t", _make_options(face_axis_overrides={"nope": "+z"}))
+
+
+PATCH_SHAPE = (2, 3)
+PATCH_CELLS = [0, 2, 4, 5]  # cells 1 and 3 have no taxel
+
+
+def _place_on_bottom(link):
+    """Four probes on the box's bottom face, which rests on the plane."""
+    xy = np.array([[-0.02, -0.02], [0.02, -0.02], [-0.02, 0.02], [0.02, 0.02]])
+    pos = np.column_stack([xy, np.full(len(xy), -BOX_SIZE / 2)])
+    return pos, np.tile([0.0, 0.0, -1.0], (len(xy), 1))
+
+
+def _make_patch(**kw) -> TaxelPatch:
+    kw.setdefault("name", "pad")
+    kw.setdefault("attach", AttachFromName("box", BOX_LINK))
+    kw.setdefault("shape", PATCH_SHAPE)
+    kw.setdefault("cells", PATCH_CELLS)
+    kw.setdefault("place", _place_on_bottom)
+    return TaxelPatch(**kw)
+
+
+def test_patch_reads_back_as_its_grid():
+    world = GenesisWorld()
+    node = TactileSensorNode(world, "t", TactileSensorNodeOptions(patches=[_make_patch()]))
+    env = _make_env(world, node)
+    reading = node.get_observation()["pad"]
+
+    assert reading.shape == PATCH_SHAPE == node.observation_space.spaces["pad"].shape
+    flat = reading.reshape(-1)
+    assert torch.all(flat[PATCH_CELLS] > 0.0)  # every placed taxel is pressed into the plane
+    assert torch.all(flat[[1, 3]] == 0.0)  # cells without a taxel stay empty
+    assert np.array_equal(node.probe_cells["pad"], PATCH_CELLS)
+    env.close()
+
+
+def test_patch_kinematic_grid_shape():
+    world = GenesisWorld()
+    node = TactileSensorNode(
+        world, "t", TactileSensorNodeOptions(patches=[_make_patch()], sensor_type="kinematic")
+    )
+    env = _make_env(world, node)
+    force = node.get_observation()["pad"]["force"]
+    assert force.shape == (*PATCH_SHAPE, 3) == node.observation_space.spaces["pad"].spaces["force"].shape
+    assert float(torch.linalg.norm(force.reshape(-1, 3)[PATCH_CELLS], dim=-1).min()) > 0.0
+    env.close()
+
+
+def test_patch_and_band_share_a_link():
+    world = GenesisWorld()
+    node = TactileSensorNode(world, "t", _make_options(patches=[_make_patch()]))
+    env = _make_env(world, node)
+    obs = node.get_observation()
+    assert obs[BOX_LINK].shape == (N_TAXELS,)
+    assert obs["pad"].shape == PATCH_SHAPE
+    env.close()
+
+
+@pytest.mark.parametrize("cells", [[0, 0, 4, 5], [0, 2, 4, 6], [-1, 2, 4, 5]])
+def test_rejects_bad_patch_cells(cells):
+    world = GenesisWorld()
+    with pytest.raises(ValueError, match="cells"):
+        TactileSensorNode(world, "t", TactileSensorNodeOptions(patches=[_make_patch(cells=cells)]))
+
+
+def test_rejects_patch_named_like_a_band_link():
+    world = GenesisWorld()
+    with pytest.raises(ValueError, match="duplicate"):
+        TactileSensorNode(world, "t", _make_options(patches=[_make_patch(name=BOX_LINK)]))
+
+
+def test_rejects_patch_placing_the_wrong_number_of_probes():
+    world = GenesisWorld()
+    node = TactileSensorNode(
+        world, "t", TactileSensorNodeOptions(patches=[_make_patch(cells=[0, 2, 4])])
+    )
+    with pytest.raises(ValueError, match="placed 4 probes, expected 3"):
+        _make_env(world, node, steps=0)

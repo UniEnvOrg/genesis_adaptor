@@ -60,6 +60,8 @@ class TactileView:
     def __init__(self, node, *, vmax=None, width=560, layout=None, side=None):
         if width < 64:
             raise ValueError(f"width must be at least 64 px, got {width}")
+        if getattr(node.option, "patches", ()):
+            raise ValueError("TactileView draws the per-link band layout only; this node has hand-placed patches")
         self.node = node
         self.kinematic = node.option.sensor_type == "kinematic"
         self.vmax = float(vmax if vmax is not None else (MAX_FORCE if self.kinematic else MAX_DEPTH))
