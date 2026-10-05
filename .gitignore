@@ -10,6 +10,14 @@ unienv_genesis_collection/assets/
 # checkpoint directory. Not committed or packaged.
 unienv_genesis_refpolicy/third_party/contact_graspnet_pytorch/checkpoints/contact_graspnet/checkpoints/model.pt
 
+# Asset-packaging build artifacts — regenerable/intermediate outputs of
+# scripts/prepare_*_assets.py (repackaged objects/, downloaded sources,
+# extraction scratch, sanity renders) plus their logs. The curated objects/
+# tree is hosted on Hugging Face (UniEnvOrg/unienv_genesis_collection_assets);
+# none of this is committed.
+_packaging_out/
+_packaging_logs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
