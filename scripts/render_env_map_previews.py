@@ -410,6 +410,7 @@ def _build_world(
     )
 
     cam_pos, cam_lookat = CAMERA_PRESETS[camera]
+    cam_dist = math.dist(cam_pos, cam_lookat)
     cam_node = CameraSensorNode(
         world,
         name="preview_cam",
@@ -419,6 +420,11 @@ def _build_world(
             quat=CameraSensorNodeOptions.quat_from_lookat(cam_pos, cam_lookat),
             res=res,
             fov=60,
+            # Nyx honours near/far just like the rasterizer path; keep the
+            # clip range explicit so the preview camera never depends on the
+            # library defaults for scene-scale rendering.
+            near=max(0.01, cam_dist * 0.05),
+            far=max(20.0, cam_dist * 10.0),
             spp=spp,
             denoise=True,
         ),

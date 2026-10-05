@@ -145,11 +145,22 @@ def _render_thumbnail(descriptor, object_id: str, render_dir: Path) -> str:
         )
         offset = np.array([1.0, -1.0, 0.6])
         offset = offset / np.linalg.norm(offset) * (2.2 * radius)
+        # Genesis's camera defaults are near=0.1 / far=20.0.  Large props and
+        # assemblies can sit outside that default far plane once framed from a
+        # bbox-derived offset, which makes the thumbnail silently clip them.
+        # Derive a conservative clip range from the actual framing distance so
+        # the render covers the whole placed object with margin on both sides.
+        cam_pos = center + offset
+        distance = float(np.linalg.norm(cam_pos - center))
+        near = max(0.01, distance - 3.0 * radius)
+        far = max(20.0, distance + 3.0 * radius)
         camera = render_scene.add_camera(
             res=(480, 480),
-            pos=tuple(center + offset),
+            pos=tuple(cam_pos),
             lookat=(center[0], center[1], center[2]),
             fov=50,
+            near=near,
+            far=far,
         )
         render_scene.build(n_envs=0)
         rgb = camera.render(rgb=True)

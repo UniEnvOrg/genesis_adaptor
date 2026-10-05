@@ -474,11 +474,20 @@ def sanity_check_item(item, *, tolerance: float = 2e-3, render_dir: Optional[Pat
             # Shallow 3/4 view (mostly horizontal) so tall items stay in frame.
             offset = np.array([1.0, -1.0, 0.6])
             offset = offset / np.linalg.norm(offset) * (2.2 * radius)
+            # Genesis's camera defaults are near=0.1 / far=20.0.  Derive the
+            # clip planes from the actual framing distance so large items are
+            # not silently clipped in the thumbnail.
+            cam_pos = center + offset
+            distance = float(np.linalg.norm(cam_pos - center))
+            near = max(0.01, distance - 3.0 * radius)
+            far = max(20.0, distance + 3.0 * radius)
             camera = render_scene.add_camera(
                 res=(480, 480),
-                pos=tuple(center + offset),
+                pos=tuple(cam_pos),
                 lookat=(center[0], center[1], center[2]),
                 fov=50,
+                near=near,
+                far=far,
             )
             render_scene.build(n_envs=0)
             rgb = camera.render(rgb=True)
