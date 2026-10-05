@@ -55,6 +55,43 @@ context, obs, info = env.reset(seed=0, reload=True)
 
 `WorldEnv` calls each node's lifecycle methods in the correct priority order automatically. You do not manage dependencies by hand.
 
+### Articulated Rooms
+
+Rooms furnished with **fixed articulated furniture** (RoboCasa kitchen cabinets,
+drawers and appliances; ReplicaCAD fridges, cupboards and doors; ArtVIP USD
+appliances; MolmoSpaces Ai2-THOR furniture; Lightwheel SimReady assets; NVIDIA
+SimReady Warehouse rigid props) are built by
+`RoomBuilder` (baked layouts or procedural sampling), and a single named joint of
+one furniture instance can be driven by `OpenArticulatedJointTask` — dense
+fraction-tracking reward, per-env goals, masked resets:
+
+```python
+room = RoomBuilder(world, name="room", layout_yaml="robocasa_kitchen/open_kitchen")
+task = OpenArticulatedJointTask(
+    world, room, furniture_key="cabinet_hinge", joint_name="rightdoorhinge",
+    grasp_link_name="cabinet_hinge_right_door_handle",
+)
+env = WorldEnv(world, [room, franka, task])
+```
+
+Procedural rooms sample from a catalog-backed furniture pool, e.g.
+`make_artvip_pool(tags="kitchen", n=6)` for the ArtVIP USD appliances,
+`make_molmospaces_pool(tags="kitchen", n=6)` for the MolmoSpaces THOR
+furniture, `make_lightwheel_pool(tags="kitchen", n=6)` for the Lightwheel
+SimReady assets or `make_simready_warehouse_pool(tags="prop", n=8)` for the
+Warehouse rigid props (see
+[docs/articulated_rooms.md](docs/articulated_rooms.md)).
+
+See [docs/articulated_rooms.md](docs/articulated_rooms.md) for the API, the
+packaged assets (RoboCasa CC BY 4.0; **ArtVIP is Apache-2.0 per its card with no
+committed LICENSE file — caveat there**; **ReplicaCAD and Lightwheel are
+CC BY-NC 4.0 — non-commercial**, see the license caveats there; MolmoSpaces is
+CC BY 4.0 with attribution; **the SimReady Warehouse card tags CC BY 4.0 but the
+archive commits no LICENSE file — caveat there**) and how to regenerate them,
+plus
+the runnable
+[`examples/room_open_drawer_fr3.py`](examples/room_open_drawer_fr3.py).
+
 ---
 
 ## Installation
