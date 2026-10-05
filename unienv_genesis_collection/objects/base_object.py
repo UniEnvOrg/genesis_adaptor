@@ -15,6 +15,16 @@ bbox tensors follows the source data: tensor inputs preserve their
 floating dtype, while plain Python sequences fall back to
 ``torch.float32`` (see :func:`make_bbox`).
 
+Devices follow the same source-data rule, made explicit so that nothing
+depends on torch's *ambient* default device (``genesis.init`` sets it to the
+compute device): **local-frame** bboxes (``get_local_bounding_box``,
+``get_link_local_bounding_box``) are host-side descriptor data computed
+offline from meshes, while **world-frame** queries (``get_bounding_box``,
+``list_box_gripper_grasping_candidates``) return tensors on the device of the
+entity pose they are derived from.  Callers that want a bbox on the world
+device move it themselves — the idiom used across the collection is
+``descriptor.get_local_bounding_box().to(device=world.device)``.
+
 Grasp candidates are computed in the **object's local frame** (and cached)
 via ``list_box_gripper_grasping_candidates_local``.  The world-frame
 accessor ``list_box_gripper_grasping_candidates`` applies the entity's
@@ -59,6 +69,7 @@ def make_bbox(
     min_point: Union[torch.Tensor, Sequence[float]],
     max_point: Union[torch.Tensor, Sequence[float]],
     dtype: Optional[torch.dtype] = None,
+    device: Optional[Union[torch.device, str]] = None,
 ) -> BoxSpace:
     """Create a ``BoxSpace`` representing an axis-aligned bounding box.
 
@@ -68,12 +79,37 @@ def make_bbox(
         dtype: Optional tensor dtype.  When ``None``, preserves the dtype
             of tensor inputs or falls back to ``torch.float32`` for plain
             Python sequences.
+        device: Optional tensor device.  When ``None``, tensor inputs keep
+            their own device and plain sequences / numpy arrays become
+            **host (CPU)** tensors.
 
     Returns:
         A ``BoxSpace`` with PyTorch backend, shape ``(3,)``.
+
+    Note:
+        The device is deliberately *never* inherited from torch's ambient
+        default device: on genesis ≤1.4.2 ``genesis.init`` installed the
+        compute device as the default (``torch.set_default_device``) and on
+        genesis ≥1.4.3 it no longer does, so a helper that built bboxes with
+        a bare :func:`torch.as_tensor` would follow process-global state
+        (whatever backend the last ``gs.init`` pinned — or plain CPU)
+        instead of an explicit device.  The convention
+        this enforces (see the module docstring): **local-frame** bboxes are
+        host-side descriptor data, **world-frame** bboxes live on the device
+        of the pose they were transformed by.  Pass *device* explicitly when
+        the target device is already known.
     """
     low = torch.as_tensor(min_point)
     high = torch.as_tensor(max_point)
+    if device is None:
+        for corner in (min_point, max_point):
+            if isinstance(corner, torch.Tensor):
+                device = corner.device
+                break
+        else:
+            device = torch.device("cpu")
+    low = low.to(device=device)
+    high = high.to(device=device)
     if dtype is not None:
         low = low.to(dtype=dtype)
         high = high.to(dtype=dtype)
@@ -87,6 +123,7 @@ def make_bbox(
         low=low,
         high=high,
         dtype=low.dtype,
+        device=device,
     )
 
 
@@ -235,6 +272,81 @@ def _local_to_world_candidates(
 
 
 # ---------------------------------------------------------------------------
+# Axis-aligned bbox grasp enumeration (shared by whole-object and part grasps)
+# ---------------------------------------------------------------------------
+
+def _enumerate_bbox_gripper_candidates(
+    bbox: BoxSpace,
+    gripper_width: float,
+    gripper_depth: float,
+) -> GraspCandidates:
+    """Enumerate axis-aligned parallel-jaw grasp candidates from an AABB.
+
+    Deterministic enumeration, in the frame of *bbox*: for every box axis
+    narrower than *gripper_width* the gripper can close along that axis,
+    approaching along either of the two remaining axes from both sides and
+    with both opening directions (16 candidates per eligible axis).  The
+    grasp point depth is clamped so the fingers never reach past the object
+    centre — this prevents overshooting into whatever is behind the object
+    (e.g. a table).
+
+    Shared by :meth:`ManipulatableObject.list_box_gripper_grasping_candidates_local`
+    (whole-object bbox) and the part-aware API on
+    :class:`~unienv_genesis_collection.objects.articulated_object.ArticulatedObject`
+    (per-link bbox), so both use identical candidate semantics.
+
+    Args:
+        bbox: ``BoxSpace`` (shape ``(3,)``) defining min/max corners.
+        gripper_width: Maximum gripper opening in metres.
+        gripper_depth: Depth of the gripper fingers in metres.
+
+    Returns:
+        :class:`GraspCandidates` (positions + directions) in the bbox frame.
+    """
+    center = bbox_center(bbox)
+    dims = bbox_size(bbox)
+    _dt = center.dtype
+    _dev = center.device
+
+    positions: List[torch.Tensor] = []
+    approach_dirs: List[torch.Tensor] = []
+    opening_dirs: List[torch.Tensor] = []
+
+    axes = [
+        torch.tensor([1.0, 0.0, 0.0], dtype=_dt, device=_dev),
+        torch.tensor([0.0, 1.0, 0.0], dtype=_dt, device=_dev),
+        torch.tensor([0.0, 0.0, 1.0], dtype=_dt, device=_dev),
+    ]
+    for i, opening_dir in enumerate(axes):
+        if dims[i] >= gripper_width:
+            continue
+        for j in range(3):
+            if j == i:
+                continue
+            half_ext = dims[j] / 2.0
+            approach_dir = axes[j]
+            # Clamp depth so the grasp point never goes past the
+            # object centre — prevents fingers overshooting into
+            # whatever is behind the object (e.g. a table).
+            effective_depth = min(gripper_depth, half_ext)
+            offset = (half_ext - effective_depth) * axes[j]
+            for sign_a in (+1, -1):       # forward & reverse approach
+                pos = center + sign_a * offset
+                for sign_o in (+1, -1):   # both opening directions
+                    positions.append(pos)
+                    approach_dirs.append(sign_a * approach_dir)
+                    opening_dirs.append(sign_o * opening_dir)
+
+    if not positions:
+        return GraspCandidates.empty(device=_dev, dtype=_dt)
+    return GraspCandidates(
+        position=torch.stack(positions),
+        approach_direction=torch.stack(approach_dirs),
+        opening_direction=torch.stack(opening_dirs),
+    )
+
+
+# ---------------------------------------------------------------------------
 # ManipulatableObject
 # ---------------------------------------------------------------------------
 
@@ -355,7 +467,9 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             entity: The loaded Genesis entity.
 
         Returns:
-            ``BoxSpace`` with ``low`` / ``high`` in world coordinates.
+            ``BoxSpace`` with ``low`` / ``high`` in world coordinates, on
+            the device of *entity*'s pose (``get_pos()``) — the world device
+            for a real Genesis entity.
         """
         from xbarray.transformations.rotation_conversions.pytorch import quaternion_apply
 
@@ -389,7 +503,9 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             world_lo = world_corners.min(dim=0).values             # (3,)
             world_hi = world_corners.max(dim=0).values             # (3,)
 
-        return make_bbox(world_lo, world_hi)
+        # World-frame result → pinned to the pose's device (never the
+        # ambient default; see :func:`make_bbox`).
+        return make_bbox(world_lo, world_hi, device=pos.device)
 
     def get_footprint_radius(self) -> float:
         """Return the 2D footprint radius on the XY plane (metres).
@@ -626,48 +742,9 @@ class ManipulatableObject(ABC, Generic[EntityT]):
             return self._local_grasp_cache[key].clone()
 
         bbox = self.get_local_bounding_box()
-        center = bbox_center(bbox)
-        dims = bbox_size(bbox)
-        _dt = center.dtype
-        _dev = center.device
-
-        positions: List[torch.Tensor] = []
-        approach_dirs: List[torch.Tensor] = []
-        opening_dirs: List[torch.Tensor] = []
-
-        axes = [
-            torch.tensor([1.0, 0.0, 0.0], dtype=_dt, device=_dev),
-            torch.tensor([0.0, 1.0, 0.0], dtype=_dt, device=_dev),
-            torch.tensor([0.0, 0.0, 1.0], dtype=_dt, device=_dev),
-        ]
-        for i, opening_dir in enumerate(axes):
-            if dims[i] >= gripper_width:
-                continue
-            for j in range(3):
-                if j == i:
-                    continue
-                half_ext = dims[j] / 2.0
-                approach_dir = axes[j]
-                # Clamp depth so the grasp point never goes past the
-                # object centre — prevents fingers overshooting into
-                # whatever is behind the object (e.g. a table).
-                effective_depth = min(gripper_depth, half_ext)
-                offset = (half_ext - effective_depth) * axes[j]
-                for sign_a in (+1, -1):       # forward & reverse approach
-                    pos = center + sign_a * offset
-                    for sign_o in (+1, -1):   # both opening directions
-                        positions.append(pos)
-                        approach_dirs.append(sign_a * approach_dir)
-                        opening_dirs.append(sign_o * opening_dir)
-
-        if not positions:
-            result = GraspCandidates.empty(device=_dev, dtype=_dt)
-        else:
-            result = GraspCandidates(
-                position=torch.stack(positions),
-                approach_direction=torch.stack(approach_dirs),
-                opening_direction=torch.stack(opening_dirs),
-            )
+        result = _enumerate_bbox_gripper_candidates(
+            bbox, gripper_width, gripper_depth,
+        )
 
         self._local_grasp_cache[key] = result
         return result.clone()

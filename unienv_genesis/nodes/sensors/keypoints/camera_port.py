@@ -152,7 +152,12 @@ class GenesisCameraKeypointPort:
 
     def validate_segmentation_level(self) -> str:
         """Validate and return the scene's segmentation level."""
-        seg_level = self._world.scene.vis_options.segmentation_level
+        # Genesis 1.4+ keeps the vis options on ``scene.options.vis``
+        # (``scene.vis_options`` existed only in older builds).
+        vis_options = getattr(
+            self._world.scene, "vis_options", None
+        ) or self._world.scene.options.vis
+        seg_level = vis_options.segmentation_level
         if seg_level == "entity":
             raise ValueError(
                 f"KeypointTrackerNode does not support segmentation_level='entity'. "

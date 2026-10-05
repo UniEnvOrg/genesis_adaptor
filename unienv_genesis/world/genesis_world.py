@@ -124,15 +124,25 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
     def build_scene(self, scene : gs.Scene, n_envs : Optional[int] = None) -> None:
         """Build the Genesis scene."""
         if not scene.is_built:
-            # Handle lights
-            if isinstance(self.scene.renderer_options, gs.options.renderers.BatchRenderer):
+            # Handle lights — the scene's renderer is read from the kwargs the
+            # scene was created with (same source as ``create_scene``): Genesis
+            # 1.4+ does not expose a ``scene.renderer_options`` attribute; the
+            # absent ``renderer=`` kwarg means the default (Rasterizer), which
+            # is not a BatchRenderer.
+            renderer = self.scene_init_kwargs.get("renderer")
+            if isinstance(renderer, gs.options.renderers.BatchRenderer):
                 for light in self.lights.values():
                     if not light.light_type in ["directional", "spot"]:
                         logger.warning(f"Light {light} of type {light.light_type} is not supported by BatchRenderer and will be ignored.")
                         continue
                     scene.add_light(
-                        pos=light.pos,
-                        dir=light.direction,
+                        # Genesis's BatchRenderer light records require a
+                        # concrete pos/dir tensor row (``_make_tensor`` chokes
+                        # on None) even for directional lights (whose pos is
+                        # ignored by the shading) — default the missing
+                        # endpoint to the world origin.
+                        pos=(0.0, 0.0, 0.0) if light.pos is None else light.pos,
+                        dir=(0.0, 0.0, -1.0) if light.direction is None else light.direction,
                         color=light.color,
                         intensity=light.intensity,
                         directional=(light.light_type == "directional"),

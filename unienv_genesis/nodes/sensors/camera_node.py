@@ -1,6 +1,7 @@
 """Camera sensor node for Genesis."""
 
 from typing import Optional, Dict, Any, List, Tuple, Union, Literal, Sequence, TYPE_CHECKING
+import sys
 import torch
 import numpy as np
 from dataclasses import dataclass, field
@@ -10,14 +11,69 @@ from genesis.options.options import Options
 from genesis.vis.camera import Camera
 from genesis.vis.batch_renderer import BatchRenderer
 
+# DSO note: ``gs_nyx`` bundles its own monolithic OpenUSD runtime
+# (``gs_nyx/libusd_ms.so``), which conflicts with the ``usd-core`` one the
+# ``pxr`` python modules load — importing both in one process corrupts the
+# Tf notice registry and segfaults at the next Usd stage open (both import
+# orders; the ArtVIP/USD geometry helpers open pxr stages at call time).
+# The Nyx symbols are therefore imported **lazily** on first use of a Nyx
+# render path (``_ensure_nyx``); camera_node stays importable next to
+# USD-using code when Nyx is never actually rendered from.
+
+_NYX_STATE = {"available": None, "npr": None, "nps": None,
+              "NyxCameraOptions": None, "NyxCameraSensor": None}
+
+
+def _ensure_nyx():
+    """Lazily import the gs_nyx renderer symbols; ``False`` when unavailable.
+
+    Refuses when ``pxr`` is already imported: gs_nyx bundles its own
+    monolithic OpenUSD runtime (``libusd_ms.so``), and the two runtimes
+    corrupt each other's Tf notice registry in one process (segfault/abort
+    at the next stage open — *both* import orders).  Callers that opened a
+    USD stage get an explicit Nyx-unavailable error instead of a crash.
+    """
+    if _NYX_STATE["available"] is None:
+        if "pxr" in sys.modules:
+            _NYX_STATE["available"] = False
+            return False
+        try:
+            import gs_nyx.nyx_py_renderer as npr
+            import gs_nyx.nyx_py_sdk as nps
+            from gs_nyx_plugin.nyx_camera_options import NyxCameraOptions
+            from gs_nyx_plugin.nyx_camera_sensor import NyxCameraSensor
+            _NYX_STATE.update(
+                available=True, npr=npr, nps=nps,
+                NyxCameraOptions=NyxCameraOptions, NyxCameraSensor=NyxCameraSensor,
+            )
+        except Exception:
+            _NYX_STATE["available"] = False
+    return _NYX_STATE["available"]
+
+
 try:
-    import gs_nyx.nyx_py_renderer as npr
-    import gs_nyx.nyx_py_sdk as nps
-    from gs_nyx_plugin.nyx_camera_options import NyxCameraOptions
-    from gs_nyx_plugin.nyx_camera_sensor import NyxCameraSensor
-    NYX_AVAILABLE = True
-except Exception:
+    NYX_AVAILABLE: bool = None  # replaced at function scope; see _ensure_nyx
+except Exception:  # pragma: no cover
     NYX_AVAILABLE = False
+
+
+def __getattr__(name):
+    """Module-level lazy attributes (``NYX_AVAILABLE`` and the Nyx classes)."""
+    global NYX_AVAILABLE
+    if name in ("NYX_AVAILABLE", "npr", "nps", "NyxCameraOptions", "NyxCameraSensor"):
+        state = _ensure_nyx()
+        if not state:
+            if name in ("npr", "nps", "NyxCameraOptions", "NyxCameraSensor"):
+                raise ImportError(
+                    "gs_nyx is unavailable (not installed, or its import "
+                    "failed); Nyx camera options/remotes are disabled."
+                )
+        value = _NYX_STATE.get(name if name != "NYX_AVAILABLE" else "available")
+        if name == "NYX_AVAILABLE":
+            NYX_AVAILABLE = bool(_NYX_STATE["available"])
+            return NYX_AVAILABLE
+        return _NYX_STATE[name]
+    raise AttributeError(name)
 
 from xbarray.transformations.rotation_conversions import (
     quaternion_to_matrix,
@@ -238,7 +294,7 @@ class CameraSensorNode(SensorNode[
             "At least one of render_rgb, render_depth, render_seg, render_normal, or render_position must be True"
         )
         if option.backend == "nyx":
-            if not NYX_AVAILABLE:
+            if not _ensure_nyx():
                 raise ImportError(
                     "NYX backend requires gs-nyx-plugin to be installed. "
                     "Install it according to https://genesis-world.readthedocs.io/en/latest/user_guide/getting_started/nyx_renderer.html"
@@ -411,7 +467,8 @@ class CameraSensorNode(SensorNode[
         if self.option.debug_view is not None:
             nyx_kwargs["debug_view"] = self.option.debug_view
 
-        camera = self.world.scene.add_sensor(NyxCameraOptions(**nyx_kwargs))
+        assert _ensure_nyx(), "the Nyx path requires gs_nyx (was unresolvable)"
+        camera = self.world.scene.add_sensor(_NYX_STATE["NyxCameraOptions"](**nyx_kwargs))
         return camera
 
     def reload(
@@ -840,7 +897,9 @@ class CameraSensorNode(SensorNode[
         secondary genesis camera (``self._genesis_sensor``).
         """
         # NYX handles move_to_attach() internally during read().
-        assert isinstance(self.sensor, NyxCameraSensor), "Expected sensor to be a NyxCameraSensor"
+        assert _ensure_nyx() and isinstance(
+            self.sensor, _NYX_STATE["NyxCameraSensor"]
+        ), "Expected sensor to be a NyxCameraSensor"
         data = self.sensor.read()
         
         rgb_tensor = torch.as_tensor(data.rgb, dtype=torch.uint8, device=device)
