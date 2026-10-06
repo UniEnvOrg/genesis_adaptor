@@ -57,6 +57,19 @@ MAX_JOINT_POS_VEL = 1.0  # rad/s — sim controller cap; real arms use SDK vel_r
 # the sim arm drifts down under gravity instead of holding the commanded EEF
 # pose. Set conservatively: only lifts the effective rate when dt is small.
 MIN_JOINT_POS_DELTA_PER_STEP = 0.1
+
+
+def min_joint_pos_delta_per_step(dt: float) -> float:
+    """The floor above for control period ``dt``: 2 rad/s worth of step, kept in [0.05, 0.1] rad.
+
+    It can't just scale with dt, since it is what lets the PD hold the arm up:
+    0.1 at 20 Hz and slower (as before), 0.05 at 80 Hz. At 80 Hz, 0.1 let the
+    arm reach ~2 rad/s (vs ~1.2 at 20 Hz) and 0.025 sagged 44 mm and failed a
+    15 cm lift; 0.05 matched 20 Hz on both.
+    """
+    return min(MIN_JOINT_POS_DELTA_PER_STEP, max(0.05, 2.0 * dt))
+
+
 # Sim arm PD gains. The URDF defaults (Kp=[100,100,80,80,40,40,40],
 # Kv=[10,10,8,8,4,4,4]) are too weak to hold the arm against gravity: a
 # hold-home command sagged ~0.18 m and the rate-limit clip then tracked the
@@ -307,7 +320,11 @@ class TianjiMarvinWuji(RobotDescriptionNode):
         **controller_kwargs,
     ):
         if controller_type == "combined" and "sub_controllers" not in controller_kwargs:
-            controller_kwargs["sub_controllers"] = _DEFAULT_SUB_CONTROLLERS
+            floor = min_joint_pos_delta_per_step(world.world_timestep)
+            controller_kwargs["sub_controllers"] = {
+                name: {**cfg, "min_joint_pos_delta_per_step": floor} if "min_joint_pos_delta_per_step" in cfg else cfg
+                for name, cfg in _DEFAULT_SUB_CONTROLLERS.items()
+            }
         if controller_type == "eef_pose" and "target_link" not in controller_kwargs:
             controller_kwargs["target_link"] = LinkAttachment(link_name=LEFT_EE_LINK_NAME)
 

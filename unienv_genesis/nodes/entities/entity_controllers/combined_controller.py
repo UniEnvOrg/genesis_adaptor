@@ -5,7 +5,17 @@ from unienv_interface.space import DictSpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
-from .base import EntityController
+from .base import EntityController, DiscreteEntityController, read_entity_state
+
+
+def _chain_dofs(link) -> set:
+    """Local DOF indexes of every joint between ``link`` and its entity's root."""
+    entity, dofs = link.entity, set()
+    while link is not None:
+        for joint in link.joints:
+            dofs.update(joint.dofs_idx_local)
+        link = entity.links[link.parent_idx - entity.link_start] if link.parent_idx >= entity.link_start else None
+    return dofs
 
 
 class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
@@ -93,6 +103,8 @@ class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
         )
 
         super().__init__(world, entity, observation_space, action_space)
+        # Sub-controllers solved in one IK call; resolved on first use (see _shared_ik_controllers).
+        self._shared_ik: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # Public rate-limit / velocity clipping accessors
@@ -173,16 +185,64 @@ class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
         return self._sub_controllers[name]
 
     def get_observation(self) -> Optional[dict]:
+        # Read every joint once; each sub-controller slices out its own.
+        entity_state = read_entity_state(self.entity)
         result = {}
         for name, ctrl in self._sub_controllers.items():
-            obs = ctrl.get_observation()
+            if isinstance(ctrl, DiscreteEntityController):
+                obs = ctrl.get_observation(entity_state)
+            else:
+                obs = ctrl.get_observation()
             if obs is not None:
                 result[name] = obs
         return result if result else None
 
+    def _shared_ik_controllers(self) -> dict:
+        """End-effector-pose sub-controllers to solve together in one IK call.
+
+        Solving several links at once matches solving each alone when no link
+        moves with another controller's joints and the IK settings agree: the
+        damped update then splits per link. The one difference is that a link
+        that converges first keeps refining, inside the IK tolerance, until the
+        others converge too.
+        """
+        if self._shared_ik is None:
+            from .end_effector_pose import EndEffectorPoseController
+            ctrls = {n: c for n, c in self._sub_controllers.items() if isinstance(c, EndEffectorPoseController)}
+            first = next(iter(ctrls.values()), None)
+            shareable = (
+                1 < len(ctrls) <= self.entity._IK_n_tgts
+                and all(c.joint_indexes is not None for c in ctrls.values())
+                and all(c._ik_call_kwargs() == first._ik_call_kwargs() for c in ctrls.values())
+                and all(
+                    _chain_dofs(c.target_link).isdisjoint(
+                        i for m, other in ctrls.items() if m != n for i in other.joint_indexes
+                    )
+                    for n, c in ctrls.items()
+                )
+            )
+            self._shared_ik = ctrls if shareable else {}
+        return self._shared_ik
+
     def apply_action(self, action: dict, dt: Optional[float] = None) -> None:
+        shared = self._shared_ik_controllers()
+        if shared:
+            targets = {name: ctrl._ik_target(action[name]) for name, ctrl in shared.items()}
+            full_joint_positions, link_errors = self.entity.inverse_kinematics_multilink(
+                [ctrl.target_link for ctrl in shared.values()],
+                poss=[target[2] for target in targets.values()],
+                quats=[target[3] for target in targets.values()],
+                dofs_idx_local=[i for ctrl in shared.values() for i in ctrl.joint_indexes],
+                return_error=True,
+                **next(iter(shared.values()))._ik_call_kwargs(),
+            )
+            for i, (name, ctrl) in enumerate(shared.items()):
+                ctrl._apply_ik_solution(
+                    targets[name], ctrl._own_joints(full_joint_positions), link_errors[..., i, :], dt,
+                )
         for name, ctrl in self._sub_controllers.items():
-            ctrl.apply_action(action[name], dt=dt)
+            if name not in shared:
+                ctrl.apply_action(action[name], dt=dt)
 
     def get_action_dict(self, action: dict, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return a nested structured action dict by recursing into sub-controllers.
@@ -213,6 +273,7 @@ class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
         )
 
     def reload(self) -> None:
+        self._shared_ik = None  # target links are re-resolved below
         for ctrl in self._sub_controllers.values():
             ctrl.reload()
 

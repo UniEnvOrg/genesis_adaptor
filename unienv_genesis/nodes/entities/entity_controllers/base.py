@@ -23,6 +23,23 @@ from unienv_genesis.utils.batch_dim_utils import (
 )
 from ..base import EntityNode, EntityType, ContextType, ObsType, ActType
 
+_JOINT_STATE_KEYS = ('joint_position', 'joint_velocity', 'joint_torque', 'joint_motor_torque')
+
+
+def read_entity_state(
+    entity: gs_entities.RigidEntity,
+    dofs_idx_local: Optional[Sequence[int]] = None,
+) -> Dict[str, PyTorchArrayType]:
+    """Joint readings for ``dofs_idx_local`` (all DOFs when None) plus the root pose."""
+    return {
+        'joint_position': entity.get_dofs_position(dofs_idx_local=dofs_idx_local),
+        'joint_velocity': entity.get_dofs_velocity(dofs_idx_local=dofs_idx_local),
+        'joint_torque': entity.get_dofs_force(dofs_idx_local=dofs_idx_local),
+        'joint_motor_torque': entity.get_dofs_control_force(dofs_idx_local=dofs_idx_local),
+        'root_pos': entity.get_pos(),
+        'root_quat': entity.get_quat(),
+    }
+
 
 def resolve_joint_indexes(
     entity: gs_entities.RigidEntity,
@@ -728,21 +745,17 @@ class DiscreteEntityController(
         """
         return super().get_action_dict_space()
 
-    def get_observation(self):
-        qpos = self.entity.get_dofs_position(dofs_idx_local=self.joint_indexes)
-        qvel = self.entity.get_dofs_velocity(dofs_idx_local=self.joint_indexes)
-        joint_torque = self.entity.get_dofs_force(dofs_idx_local=self.joint_indexes)
-        joint_motor_torque = self.entity.get_dofs_control_force(dofs_idx_local=self.joint_indexes)
-        root_pos = self.entity.get_pos()
-        root_quat = self.entity.get_quat()
-        obs = {
-            'joint_position': qpos,
-            'joint_velocity': qvel,
-            'joint_torque': joint_torque,
-            'joint_motor_torque': joint_motor_torque,
-            'root_pos': root_pos,
-            'root_quat': root_quat,
-        }
+    def get_observation(self, entity_state: Optional[Dict[str, PyTorchArrayType]] = None):
+        """``entity_state`` is an all-DOF :func:`read_entity_state` result to slice
+        instead of reading the entity again (a combined controller reads it once
+        for all its sub-controllers)."""
+        if entity_state is None:
+            obs = read_entity_state(self.entity, self.joint_indexes)
+        else:
+            obs = dict(entity_state)
+            if self.joint_indexes is not None:
+                for key in _JOINT_STATE_KEYS:
+                    obs[key] = obs[key][..., self.joint_indexes]
         if self._has_eef:
             eef_pos_base, eef_quat_base = self.get_eef_pose_base()
             obs['eef_position'] = eef_pos_base

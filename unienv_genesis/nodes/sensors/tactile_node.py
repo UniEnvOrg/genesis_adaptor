@@ -318,11 +318,30 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
             data, dtype=self.world.dtype, device=self.world.device
         )
 
+    def _read_all(self) -> Dict[str, Any]:
+        """Every link's probe reading, from one batched read of the scene's sensors.
+
+        Same values as ``sensor.read()`` per link, which formats one probe set at
+        a time and dominated this node's cost.
+        """
+        if not self._sensors:
+            return {}
+        options_cls = type(next(iter(self._sensors.values()))._options)
+        block = self.world.scene.read_sensors()[getattr(gs.options.sensors.types, options_cls.__name__)]
+        out = {}
+        for key, sensor in self._sensors.items():
+            data = block[..., sensor._cache_offset:sensor._cache_offset + sensor._cache_size]
+            fields = [
+                data[..., sl].reshape(*data.shape[:-1], *shape)
+                for sl, shape in zip(sensor._read_flat_slices, sensor._return_shapes)
+            ]
+            out[key] = fields[0] if len(fields) == 1 else sensor._return_data_class(*fields)
+        return out
+
     def update_observation(self) -> None:
         """Read every link's probe and cache the observation."""
         obs: Dict[str, PyTorchArrayType] = {}
-        for key, sensor in self._sensors.items():
-            data = sensor.read()
+        for key, data in self._read_all().items():
             if self.option.sensor_type == "kinematic":
                 obs[key] = {
                     "force": self._to_grid(key, self._to_tensor(data.force), (3,)),

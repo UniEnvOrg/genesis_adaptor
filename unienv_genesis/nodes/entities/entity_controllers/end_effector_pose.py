@@ -5,6 +5,7 @@ from genesis.engine.entities.rigid_entity import RigidEntity, RigidLink
 import torch
 
 from xbarray.transformations.rotation_conversions.pytorch import (
+    axis_angle_to_quaternion,
     euler_angles_to_matrix,
     rotation_6d_to_matrix,
     matrix_to_quaternion,
@@ -304,20 +305,35 @@ class EndEffectorPoseController(
         producing smooth, continuous behaviour even when the target is out of
         reach.  Both defaults can be overridden via ``ik_kwargs``.
         """
-        # Build IK kwargs: seed with current joint positions and default to
-        # max_samples=1 (no random restarts) unless the caller overrides.
-        ik_call_kwargs = {"max_samples": 1}
-        ik_call_kwargs.update(self.ik_kwargs)
-
         # Transform virtual EEF target to physical target_link frame.
         link_position, link_quaternion = self._virtual_to_link(
             target_position, target_quaternion,
         )
+        return self._solve_ik_link(link_position, link_quaternion, envs_idx)
 
+    def _ik_call_kwargs(self) -> dict:
+        """Genesis IK kwargs: max_samples=1 (no random restarts) unless ``ik_kwargs`` overrides it."""
+        return {"max_samples": 1, **self.ik_kwargs}
+
+    def _own_joints(self, full_joint_positions: PyTorchArrayType) -> PyTorchArrayType:
+        """This controller's joints out of a full-entity IK solution."""
+        if self.joint_indexes is None:
+            return full_joint_positions
+        return index_batch_dimension(
+            full_joint_positions, self.joint_indexes, batch_size=self.world.batch_size,
+        )
+
+    def _solve_ik_link(
+        self,
+        link_position: PyTorchArrayType,
+        link_quaternion: PyTorchArrayType,
+        envs_idx: Optional[PyTorchArrayType] = None,
+    ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
+        """IK for a world-frame ``target_link`` pose; returns this controller's joints and Genesis's error."""
+        ik_call_kwargs = self._ik_call_kwargs()
         if envs_idx is not None:
             ik_call_kwargs["envs_idx"] = envs_idx
-
-        full_target_joint_positions, achieved_error = self.entity.inverse_kinematics(
+        full_target_joint_positions, link_error = self.entity.inverse_kinematics(
             self.target_link,
             link_position,
             link_quaternion,
@@ -325,18 +341,37 @@ class EndEffectorPoseController(
             dofs_idx_local=self.joint_indexes,
             **ik_call_kwargs,
         )
+        return self._own_joints(full_target_joint_positions), link_error
 
-        if self.joint_indexes is not None:
-            target_joint_positions = index_batch_dimension(
-                full_target_joint_positions,
-                self.joint_indexes,
-                batch_size=self.world.batch_size,
-            )
+    def _achieved_error(
+        self,
+        target_position: PyTorchArrayType,
+        target_quaternion: PyTorchArrayType,
+        link_position: PyTorchArrayType,
+        link_quaternion: PyTorchArrayType,
+        target_joint_positions: PyTorchArrayType,
+        link_error: PyTorchArrayType,
+    ) -> PyTorchArrayType:
+        """Error of an IK solution at the virtual EEF (see :func:`se3_pose_error`).
+
+        Genesis reports the error at the physical link origin, as
+        ``target - reached`` (world frame) and ``log(q_target @ inv(q_reached))``.
+        Undoing that gives the reached link pose without another FK pass; masked
+        axes are zeroed in that error, so masked IK falls back to FK.
+        """
+        if "pos_mask" in self.ik_kwargs or "rot_mask" in self.ik_kwargs:
+            achieved_position, achieved_quaternion = self._target_qpos_to_eef(target_joint_positions)
         else:
-            target_joint_positions = full_target_joint_positions
-        
-        
-        return target_joint_positions, achieved_error
+            reached_link_position = link_position - link_error[..., :3]
+            reached_link_quaternion = quaternion_multiply(
+                quaternion_invert(axis_angle_to_quaternion(link_error[..., 3:])), link_quaternion,
+            )
+            achieved_position, achieved_quaternion = self.convert_absolute_to_base(
+                *self._link_to_virtual(reached_link_position, reached_link_quaternion)
+            )
+        return se3_pose_error(
+            achieved_position, achieved_quaternion, target_position, target_quaternion,
+        )
 
     def solve_ik_base(self, target_position : Optional[PyTorchArrayType], target_quaternion : Optional[PyTorchArrayType]) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
         """
@@ -350,19 +385,18 @@ class EndEffectorPoseController(
                 virtual EEF pose reached by the IK solution (see :func:`se3_pose_error`; same
                 convention as the real arm's mink IK error).
         """
-        target_position_absolute, target_quaternion_absolute = self.convert_base_to_absolute(target_position, target_quaternion)
-        target_joint_positions, _ = self.solve_ik_absolute(target_position_absolute, target_quaternion_absolute)
-
-        # Genesis reports its error at the physical link origin in mixed
-        # frames; recompute it at the virtual EEF from the solution via FK.
-        achieved_position, achieved_quaternion = self._target_qpos_to_eef(target_joint_positions)
-        achieved_error = se3_pose_error(
-            achieved_position, achieved_quaternion, target_position, target_quaternion,
+        link_position, link_quaternion = self._virtual_to_link(
+            *self.convert_base_to_absolute(target_position, target_quaternion)
+        )
+        target_joint_positions, link_error = self._solve_ik_link(link_position, link_quaternion)
+        achieved_error = self._achieved_error(
+            target_position, target_quaternion, link_position, link_quaternion,
+            target_joint_positions, link_error,
         )
         return target_joint_positions, achieved_error
 
-    def get_observation(self):
-        obs = super().get_observation()
+    def get_observation(self, entity_state: Optional[Dict[str, PyTorchArrayType]] = None):
+        obs = super().get_observation(entity_state)
         # eef_position and eef_quaternion are provided by the base class.
         # This controller only adds last_ik_solved_error.
         if 'achieved_error' in self._last_ik_result:
@@ -407,7 +441,9 @@ class EndEffectorPoseController(
             )
         return torch.cat([pos_base, rot], dim=-1)
 
-    def apply_action(self, action, dt: Optional[float] = None):
+    def _ik_target(self, action) -> Tuple[PyTorchArrayType, ...]:
+        """Parse an applied action into ``(pos, quat)`` in the base frame and the
+        world-frame ``(link_pos, link_quat)`` the IK must reach."""
         target_pos = action[..., :3]
         target_rot = action[..., 3:]
         if self.normalize_rotation_action:
@@ -418,10 +454,11 @@ class EndEffectorPoseController(
         self._last_target_pose_absolute = self.convert_base_to_absolute(
             target_pos, target_rot_quat,
         )
-        target_joint_positions, achieved_error = self.solve_ik_base(
-            target_pos, target_rot_quat
-        ) # (batch_size, n_dof), (batch_size, 3), (batch_size, 4), (batch_size, 6)
-        
+        return (target_pos, target_rot_quat, *self._virtual_to_link(*self._last_target_pose_absolute))
+
+    def _apply_ik_solution(self, target, target_joint_positions, link_error, dt: Optional[float] = None):
+        """Send an IK solution for ``target`` (from :meth:`_ik_target`) to the joints."""
+        achieved_error = self._achieved_error(*target, target_joint_positions, link_error)
         # Delegate rate-limit clipping (max_joint_pos_vel) to the parent
         # JointPositionController.apply_action, which handles dt-aware
         # clipping internally.
@@ -430,6 +467,11 @@ class EndEffectorPoseController(
             'target_joint_positions': target_joint_positions,
             'achieved_error': achieved_error,
         }
+
+    def apply_action(self, action, dt: Optional[float] = None):
+        target = self._ik_target(action)
+        target_joint_positions, link_error = self._solve_ik_link(*target[2:])
+        self._apply_ik_solution(target, target_joint_positions, link_error, dt)
 
     def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict for EEF pose control.
