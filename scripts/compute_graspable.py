@@ -17,6 +17,9 @@ each dataset's ``catalog.json``:
   ``scripts/data/ycb_catalog.json``.
 * GSO — written as a list of graspable object ids to
   ``scripts/data/gso_graspable.json`` (consumed by ``prepare_gso_assets.py``).
+* ABO — written as a list of graspable object ids to
+  ``scripts/data/abo_graspable.json`` (consumed by ``prepare_abo_assets.py``,
+  which also extends it inline on every packaging run).
 
 Usage::
 
@@ -26,6 +29,9 @@ Usage::
 
     # GSO meshes from a prepared tree (see prepare_gso_assets.py)
     python scripts/compute_graspable.py gso --assets-dir /tmp/gso_assets/objects/gso
+
+    # ABO meshes from a prepared tree (see prepare_abo_assets.py)
+    python scripts/compute_graspable.py abo --assets-dir /tmp/abo_assets/objects/abo
 """
 
 from __future__ import annotations
@@ -43,9 +49,10 @@ TAG = "box_gripper_graspable"
 _DATA_DIR = Path(__file__).parent / "data"
 _YCB_CATALOG = _DATA_DIR / "ycb_catalog.json"
 _GSO_GRASPABLE = _DATA_DIR / "gso_graspable.json"
+_ABO_GRASPABLE = _DATA_DIR / "abo_graspable.json"
 
 # Visual-mesh filename per dataset.
-_MESH_NAME = {"ycb": "textured.obj", "gso": "model.obj"}
+_MESH_NAME = {"ycb": "textured.obj", "gso": "model.obj", "abo": "model.obj"}
 
 
 def mesh_min_extent(mesh_file: Path) -> float:
@@ -83,7 +90,7 @@ def compute(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("dataset", choices=("ycb", "gso"))
+    parser.add_argument("dataset", choices=("ycb", "gso", "abo"))
     parser.add_argument(
         "--assets-dir", type=Path, required=True,
         help="Directory of per-object subdirectories holding the visual meshes.",
@@ -108,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.dataset == "gso":
         _GSO_GRASPABLE.write_text(json.dumps(graspable, indent=1) + "\n")
         print(f"Wrote {_GSO_GRASPABLE} ({len(graspable)} ids).")
+    elif args.dataset == "abo":
+        _ABO_GRASPABLE.write_text(json.dumps(graspable, indent=1) + "\n")
+        print(f"Wrote {_ABO_GRASPABLE} ({len(graspable)} ids).")
     else:
         catalog = json.loads(_YCB_CATALOG.read_text())
         graspable_set = set(graspable)

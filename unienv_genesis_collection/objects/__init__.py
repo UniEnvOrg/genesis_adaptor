@@ -22,6 +22,10 @@ This package provides:
 * :class:`GSOObject` — Google Scanned Objects entry (MJCF with V-HACD
   collision pieces), plus :func:`get_gso_catalog` and pool helpers
   :func:`list_gso_objects` / :func:`make_gso_pool`.
+* :class:`ABOObject` — Amazon Berkeley Objects entry (CC BY 4.0; Z-up OBJ
+  converted from the dataset's Y-up GLB, texture bound explicitly, collision
+  from Genesis's own convex decomposition), plus :func:`get_abo_catalog` and
+  pool helpers :func:`list_abo_objects` / :func:`make_abo_pool`.
 * Hub-backed articulated furniture
   (:class:`~unienv_genesis_collection.objects.hub_objects.articulated.HubAssetArticulatedObject`
   base): :class:`RoboCasaFixture` (RoboCasa kitchen fixtures via
@@ -85,6 +89,10 @@ from unienv_genesis_collection.objects.hub_objects import (
     get_gso_catalog,
     list_gso_objects,
     make_gso_pool,
+    ABOObject,
+    get_abo_catalog,
+    list_abo_objects,
+    make_abo_pool,
     HubAssetArticulatedObject,
     RoboCasaFixture,
     get_robocasa_catalog,
@@ -158,6 +166,11 @@ __all__ = [
     "get_gso_catalog",
     "list_gso_objects",
     "make_gso_pool",
+    # Amazon Berkeley Objects
+    "ABOObject",
+    "get_abo_catalog",
+    "list_abo_objects",
+    "make_abo_pool",
     # Articulated furniture (Hub-backed)
     "HubAssetArticulatedObject",
     # RoboCasa kitchen fixtures (MJCF)

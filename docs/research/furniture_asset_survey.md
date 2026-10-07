@@ -111,3 +111,14 @@
 4. **Objaverse articulated subset** — none verified; ODC-By covers metadata, objects carry their own licence.
 5. **AKB-48** — no live project page, GitHub repo or HF dataset verified.
 6. **Genesis USD support** — `genesis/utils/mjcf.py`, `urdf.py`, `usd/` exist; I did not verify completeness of USD→Genesis conversion, so USD-only sources (ArtVIP, Lightwheel) should assume a conversion step.
+
+## 13. Amazon Berkeley Objects (ABO) — *added to the repo (rigid objects)*
+
+**Status: implemented** — `objects/abo/<3dmodel_id>/` on the assets repo, descriptor `ABOObject` / `make_abo_pool` (`unienv_genesis_collection/objects/hub_objects/abo_object.py`), packager `scripts/prepare_abo_assets.py`, catalog + `box_gripper_graspable` bake (`scripts/data/abo_graspable.json`, `scripts/compute_graspable.py abo`).
+
+- **Contents:** **7,953 modelled household products** (full ABO 3D coverage, no category filter) with embedded PBR materials — furniture, lighting, appliances, decor, toys, kitchenware. Single mesh, non-watertight scans (~24k verts / ~42k faces average, 2k–4k textures).
+- **Access:** public S3 `https://amazon-berkeley-objects.s3.amazonaws.com/` — models at `3dmodels/original/<path>` (the `path` column of `3dmodels/metadata/3dmodels.csv.gz`; the shard letter is **not** derivable from the id), listings at `listings/metadata/listings_{0..9,a..f}.json.gz` (16 shards, ~85 MB; join key `3dmodel_id`, prefer the first `en_US` listing).
+- **Format:** glTF 2.0 binary (GLB), **Y-up**, metric (metres), products standing on the `Y=0` plane. The packager bakes the Y-up → Z-up rotation into `model.obj` (the same `(X, Y, Z) → (X, -Z, Y)` mapping Genesis applies to Y-up formats) so the trimesh bbox path, the mesh frame and the placed frame agree; the OBJ keeps the base-colour texture as `texture.png` and drops the normal / metallic-roughness maps.
+- **Collision:** no decomposition ships with the dataset → Genesis's own `convexify` (CoACD) builds it at load time from the mesh (`gs.morphs.Mesh`). A V-HACD/CoACD precompute step is deliberately deferred.
+- **Licence: ✅ CC BY 4.0** — ABO was **relicensed by Amazon.com from CC BY-NC 4.0 to CC BY 4.0 in mid-2023**; the older CC BY-NC file is no longer served (404) and any note listing ABO as non-commercial (e.g. through third-party mirrors or older dataset cards) is stale. `objects/abo/LICENSE` is the bucket's verbatim `LICENSE-CC-BY-4.0.txt`; attribution = Amazon.com (data/images/models) plus the dataset builders (Guillaumin, Dideriksen, Deng, Arora, Collins, Malik — arXiv:2110.06199), recorded in `objects/abo/README.md`.
+- **Size:** ~154 GB of GLBs at source; the prepared tree ships OBJ + one texture per object (~110 GB estimated) and is downloaded **lazily per object** through the existing `asset_path` machinery.

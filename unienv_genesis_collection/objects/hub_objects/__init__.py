@@ -15,6 +15,9 @@ the local assets folder.  This subpackage provides:
 * :class:`GSOObject` — Google Scanned Objects entry (MJCF + V-HACD
   collision), with :func:`get_gso_catalog`, :func:`list_gso_objects`,
   :func:`make_gso_pool`.
+* :class:`ABOObject` — Amazon Berkeley Objects entry (Z-up OBJ + texture,
+  collision from Genesis's own convex decomposition), with
+  :func:`get_abo_catalog`, :func:`list_abo_objects`, :func:`make_abo_pool`.
 * The :mod:`~unienv_genesis_collection.objects.hub_objects.articulated`
   subpackage — Hub-backed *articulated* furniture:
   :class:`~...articulated.HubAssetArticulatedObject` base plus
@@ -55,6 +58,14 @@ from unienv_genesis_collection.objects.hub_objects.gso_object import (
     get_gso_catalog,
     list_gso_objects,
     make_gso_pool,
+)
+from unienv_genesis_collection.objects.hub_objects.abo_object import (
+    ABOObject,
+    ABO_ASSETS_ROOT,
+    ABO_CATALOG_PATH,
+    get_abo_catalog,
+    list_abo_objects,
+    make_abo_pool,
 )
 from unienv_genesis_collection.objects.hub_objects.articulated import (
     HubAssetArticulatedObject,
@@ -124,6 +135,13 @@ __all__ = [
     "get_gso_catalog",
     "list_gso_objects",
     "make_gso_pool",
+    # Amazon Berkeley Objects
+    "ABOObject",
+    "ABO_ASSETS_ROOT",
+    "ABO_CATALOG_PATH",
+    "get_abo_catalog",
+    "list_abo_objects",
+    "make_abo_pool",
     # Articulated furniture (RoboCasa MJCF / ReplicaCAD URDF)
     "HubAssetArticulatedObject",
     "RoboCasaFixture",
