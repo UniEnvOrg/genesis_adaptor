@@ -57,6 +57,16 @@ Usage::
     # metallic-roughness maps but rewrites the base-colour image)
     python scripts/prepare_abo_assets.py --output-dir /tmp/abo_assets --workers 8
 
+``--workers`` sizes a pool of short-lived worker **processes** (not threads):
+the per-object trimesh load/convert allocates hundreds of MB transiently —
+the largest ABO OBJs are ~1 GB — and neither trimesh/numpy nor glibc's
+per-thread arenas return it reliably, so a long run inside one process
+ratchets RSS by a few MB per object until the kernel OOM-kills it (observed:
+the resume scan over ~4,900 existing objects climbed to >12 GB).  Each batch
+of objects is therefore handled by a fresh pool whose exit returns *all*
+retained memory to the OS, whatever trimesh/numpy kept alive; the parent
+process only handles small metadata and the catalog.
+
 Then upload to the Hub (needs write access to the org)::
 
     hf upload UniEnvOrg/unienv_genesis_collection_assets \\
@@ -81,7 +91,7 @@ import shutil
 import sys
 import tempfile
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import BrokenExecutor, ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -650,6 +660,19 @@ def convert_glb_to_zup_obj(glb_bytes: bytes, obj_dir: Path) -> List[float]:
     return [float(extent) for extent in mesh.extents]
 
 
+def mesh_extents_from_obj(obj_file: Path) -> List[float]:
+    """Return the (x, y, z) extents of an already-converted ``model.obj``.
+
+    Used for resume support: the mesh on disk is already Z-up, so a plain
+    trimesh load yields the same extents the conversion reported originally —
+    no GLB re-download and no extra transform.
+    """
+    import trimesh
+
+    mesh = _single_mesh(trimesh.load(str(obj_file), file_type="obj"))
+    return [float(extent) for extent in mesh.extents]
+
+
 def _relative_extent_error(row: Mapping[str, str], extents: Sequence[float]) -> float:
     """Max relative deviation between the mesh extents and the CSV's (metres)."""
     try:
@@ -718,6 +741,13 @@ def package_object(
     tmp_dir = out_root / f".{object_id}.tmp"
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
+    if obj_dir.exists():
+        # Resume support: a completed object dir from an earlier (interrupted)
+        # run is reused as-is.  Graspability is recomputed from the converted
+        # mesh on disk (the GLB is not re-downloaded) so the label merge and
+        # the catalog stay correct.
+        extents = mesh_extents_from_obj(obj_dir / "model.obj")
+        return min(extents) < GRIPPER_WIDTH, extents, 0.0
     tmp_dir.mkdir(parents=True)
     try:
         glb_file = _download(
@@ -753,6 +783,32 @@ def merge_graspable(ids: Iterable[str], path: Path = _GRASPABLE_CACHE) -> Set[st
     return merged
 
 
+# Objects handed to each worker process before its pool is recycled (i.e. the
+# workers exit and fresh ones take over).  Bounds how much memory even a buggy
+# retainer — allocator arenas, trimesh/PIL caches, reference cycles awaiting
+# the generational GC — can accumulate in a worker before an exit wipes it.
+_TASKS_PER_WORKER_EPOCH = 32
+
+
+def _package_task(
+    task: Tuple[str, Mapping[str, str], str, bool],
+) -> Tuple[str, Optional[Tuple[bool, List[float], float]], Optional[str]]:
+    """Worker-process entry point for :func:`package_object` (picklable).
+
+    Returns ``(object_id, result, error)`` with exactly one of the last two
+    set.  The error is flattened to a string here so an unpicklable exception
+    cannot take the parent's failure reporting down with it.
+    """
+    object_id, model_row, out_root, keep_glb = task
+    try:
+        result = package_object(
+            object_id, model_row, Path(out_root), keep_glb=keep_glb,
+        )
+        return object_id, result, None
+    except Exception as error:  # noqa: BLE001 — reported per object
+        return object_id, None, f"{type(error).__name__}: {error}"
+
+
 def _package_all(
     out_root: Path,
     model_index: Mapping[str, Mapping[str, str]],
@@ -761,27 +817,67 @@ def _package_all(
     keep_glb: bool,
     workers: int,
 ) -> Tuple[Dict[str, Tuple[bool, List[float], float]], Dict[str, str]]:
-    """Package every id, collecting per-object failures instead of aborting."""
+    """Package every id, collecting per-object failures instead of aborting.
+
+    The work runs in worker *processes*, in batches: each batch gets a fresh
+    :class:`ProcessPoolExecutor` and the pool is shut down (which joins — i.e.
+    exits — its workers) before the next batch starts.  That is the memory
+    guarantee: the trimesh load/convert transiently allocates hundreds of MB
+    per object and neither trimesh/numpy nor the C allocator's per-thread
+    arenas give all of it back, so a long-lived worker (or, as before, a
+    thread pool) ratchets RSS by a few MB per object until the kernel
+    OOM-kills the run — the observed failure was the resume scan over the
+    ~4,900 existing objects climbing past 12 GB (a re-run of the same phase
+    peaked at 9.7 GB after 3,200 objects, still climbing).  A process exit
+    returns every byte, so the parent stays small regardless of how many
+    objects are processed.
+
+    A batch size of ``workers * _TASKS_PER_WORKER_EPOCH`` keeps the respawn
+    cost (fork: milliseconds; spawn platforms: a module import) amortized
+    while bounding what one worker can accumulate between exits.
+    """
     results: Dict[str, Tuple[bool, List[float], float]] = {}
     failures: Dict[str, str] = {}
 
-    def _package(object_id: str) -> Tuple[str, Any]:
-        try:
-            return object_id, package_object(
-                object_id, model_index[object_id], out_root, keep_glb=keep_glb,
-            )
-        except Exception as error:  # noqa: BLE001 — reported per object
-            return object_id, error
+    worker_count = max(1, workers)
+    batch_size = worker_count * _TASKS_PER_WORKER_EPOCH
+    done = 0
 
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        for index, (object_id, outcome) in enumerate(executor.map(_package, model_ids)):
-            if isinstance(outcome, Exception):
-                failures[object_id] = f"{type(outcome).__name__}: {outcome}"
-                print(f"WARNING: failed to package {object_id}: {failures[object_id]}")
-            else:
-                results[object_id] = outcome
-            if (index + 1) % 25 == 0 or index + 1 == len(model_ids):
-                print(f"  ... packaged {index + 1}/{len(model_ids)}")
+    def _record(
+        object_id: str,
+        outcome: Optional[Tuple[bool, List[float], float]],
+        error: Optional[str],
+    ) -> None:
+        nonlocal done
+        done += 1
+        if error is not None:
+            failures[object_id] = error
+            print(f"WARNING: failed to package {object_id}: {error}")
+        else:
+            results[object_id] = outcome  # type: ignore[assignment]
+        if done % 25 == 0 or done == len(model_ids):
+            print(f"  ... packaged {done}/{len(model_ids)}")
+
+    for start in range(0, len(model_ids), batch_size):
+        batch = model_ids[start:start + batch_size]
+        tasks = [
+            (object_id, model_index[object_id], str(out_root), keep_glb)
+            for object_id in batch
+        ]
+        consumed = 0
+        try:
+            # `with` shuts the pool down and joins the workers, so the next
+            # batch starts from fresh processes (memory handed back to the OS).
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                for object_id, outcome, error in executor.map(_package_task, tasks):
+                    consumed += 1
+                    _record(object_id, outcome, error)
+        except BrokenExecutor as error:
+            # A worker died (e.g. the kernel killed it on a huge model); the
+            # objects it swallowed are failures, the rest of the run continues
+            # in a fresh pool (the thread-based code lost the whole run here).
+            for object_id in batch[consumed:]:
+                _record(object_id, None, f"worker process died: {error}")
     return results, failures
 
 

@@ -23,6 +23,8 @@ Covers:
 import gzip
 import importlib.util
 import json
+import multiprocessing
+import os
 import sys
 from pathlib import Path
 
@@ -101,6 +103,10 @@ def _load_prepare_script():
         "prepare_abo_assets", _SCRIPTS_DIR / "prepare_abo_assets.py",
     )
     module = importlib.util.module_from_spec(spec)
+    # Register before exec: the packaging worker processes pickle
+    # `_package_task` by reference, which requires the module to live under
+    # its own name in sys.modules (spec loading alone skips that).
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -505,6 +511,113 @@ def test_merge_graspable_accumulates(tmp_path):
     assert script.merge_graspable(["B1", "B2"], path) == {"B1", "B2"}
     assert script.merge_graspable(["B2", "B0"], path) == {"B0", "B1", "B2"}
     assert json.loads(path.read_text()) == ["B0", "B1", "B2"]
+
+
+# ------------------------------------------------------------------
+# prepare_abo_assets.py: process-isolated packaging (OOM regression)
+# ------------------------------------------------------------------
+
+def test_package_all_runs_in_recycled_worker_processes(tmp_path, monkeypatch):
+    """The per-object trimesh work runs in short-lived worker *processes*.
+
+    It used to run on a thread pool, i.e. inside the packing process itself:
+    each object's transient trimesh allocations ratcheted that process's RSS
+    by a few MB (observed: >12 GB during the resume scan of the ~4,900
+    already-prepared objects) until the kernel OOM-killed the run.  The fix
+    isolates the work in worker processes and recycles the pool, so a process
+    exit hands every retained byte back to the OS.
+    """
+    script = _load_prepare_script()
+    ids = [f"B{i:09d}" for i in range(5)]
+    for object_id in ids:
+        _make_fake_object_dir(tmp_path, object_id)
+    out_root = tmp_path / ABO_ASSETS_ROOT
+
+    pools, worker_pids = [], set()
+    real_pool = script.ProcessPoolExecutor
+
+    class _RecordingPool(real_pool):  # noqa: N801
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            pools.append(self)
+
+        def shutdown(self, *args, **kwargs):
+            # Capture the worker pids before the pool clears them.
+            worker_pids.update(p.pid for p in (self._processes or {}).values())
+            return super().shutdown(*args, **kwargs)
+
+    monkeypatch.setattr(script, "ProcessPoolExecutor", _RecordingPool)
+    # One task per epoch: every object must get a fresh pool (workers exit).
+    monkeypatch.setattr(script, "_TASKS_PER_WORKER_EPOCH", 1)
+
+    results, failures = script._package_all(
+        out_root, {object_id: {} for object_id in ids}, ids,
+        keep_glb=False, workers=1,
+    )
+
+    assert failures == {}
+    assert list(results) == ids
+    for graspable, extents, deviation in results.values():
+        # The fake mesh is a unit cube: not graspable, no deviation on resume.
+        assert graspable is False
+        assert extents == pytest.approx([1.0, 1.0, 1.0], abs=1e-6)
+        assert deviation == 0.0
+    assert len(pools) == len(ids)
+    # The work really ran in child processes, never in the parent.
+    assert worker_pids and os.getpid() not in worker_pids
+
+
+def test_package_all_reports_broken_objects_and_continues(tmp_path):
+    """One unreadable object is a per-object failure, not the end of the run."""
+    script = _load_prepare_script()
+    ids = [f"B{i:09d}" for i in range(3)]
+    for object_id in ids:
+        _make_fake_object_dir(tmp_path, object_id)
+    out_root = tmp_path / ABO_ASSETS_ROOT
+    (out_root / ids[1] / "model.obj").unlink()  # resume path cannot read it
+
+    results, failures = script._package_all(
+        out_root, {object_id: {} for object_id in ids}, ids,
+        keep_glb=False, workers=2,
+    )
+
+    assert set(results) == {ids[0], ids[2]}
+    assert list(failures) == [ids[1]]
+    assert failures[ids[1]]  # non-empty "ExceptionType: message" report
+
+
+def test_package_all_survives_a_worker_that_dies(tmp_path, monkeypatch):
+    """A worker killed mid-object (e.g. kernel OOM on a huge model) only fails
+    the objects it swallowed; the run continues in a fresh pool.
+
+    The worker is killed via a ``package_object`` patched in the test process,
+    which is inherited by forked workers — hence the fork requirement.
+    """
+    if multiprocessing.get_start_method() != "fork":
+        pytest.skip("needs the fork start method to inject a dying worker")
+    script = _load_prepare_script()
+    ids = [f"B{i:09d}" for i in range(4)]
+    for object_id in ids:
+        _make_fake_object_dir(tmp_path, object_id)
+    out_root = tmp_path / ABO_ASSETS_ROOT
+    real_package_object = script.package_object
+
+    def _dying_package_object(object_id, *args, **kwargs):
+        if object_id == ids[1]:
+            os._exit(17)  # simulate a killed worker: no Python exception
+        return real_package_object(object_id, *args, **kwargs)
+
+    monkeypatch.setattr(script, "package_object", _dying_package_object)
+    monkeypatch.setattr(script, "_TASKS_PER_WORKER_EPOCH", 1)  # one object per pool
+
+    results, failures = script._package_all(
+        out_root, {object_id: {} for object_id in ids}, ids,
+        keep_glb=False, workers=1,
+    )
+
+    assert set(results) == {ids[0], ids[2], ids[3]}
+    assert list(failures) == [ids[1]]
+    assert "worker process died" in failures[ids[1]]
 
 
 def test_select_object_ids():
