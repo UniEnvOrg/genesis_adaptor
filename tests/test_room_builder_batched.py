@@ -11,6 +11,9 @@ downloads) exercising the batched behaviour plan §3.2 / §7 risk #2 pin:
     including masked resets that leave unmasked envs untouched.
   - ``batch_fixed_verts=True`` enables the per-env base-pose path via
     :meth:`RoomBuilder.set_furniture_pose_3d` (full batch + masked subset).
+  - Scene offset (``pos``/``yaw``) is applied once at morph load: batched
+    envs share the offset world pose, masked ``initial_open`` resets are
+    unaffected and ``set_furniture_pose_3d`` stays world-frame.
 
 The CPU backend batched path runs wherever Genesis supports it; the
 GPU-only checks (device placement) are skipped when CUDA is unavailable.
@@ -143,8 +146,13 @@ def drawer_urdf(tmp_path_factory) -> Path:
 
 
 def _room(world, drawer, *, batch_fixed_verts, initial_open=0.5,
-          room_size=(4.0, 3.0, 2.6), pos=(1.0, -0.5, 0.0), yaw=math.pi / 2):
-    """A one-drawer RoomBuilder wired through a WorldEnv (not yet reset)."""
+          room_size=(4.0, 3.0, 2.6), pos=(1.0, -0.5, 0.0), yaw=math.pi / 2,
+          room_pos=(0.0, 0.0, 0.0), room_yaw=0.0):
+    """A one-drawer RoomBuilder wired through a WorldEnv (not yet reset).
+
+    ``pos``/``yaw`` are the *placement* (room frame); ``room_pos``/
+    ``room_yaw`` are the scene offset of the room itself.
+    """
     room = RoomBuilder(
         world,
         name="room",
@@ -161,6 +169,8 @@ def _room(world, drawer, *, batch_fixed_verts, initial_open=0.5,
         ),
         furniture_pool=[drawer],
         batch_fixed_verts=batch_fixed_verts,
+        pos=room_pos,
+        yaw=room_yaw,
     )
     return room
 
@@ -340,6 +350,123 @@ def test_batched_fixed_verts_false_blocks_per_env_poses(drawer_urdf):
     positions = torch.zeros(_BATCH_SIZE, 3, dtype=world.dtype)
     with pytest.raises(RuntimeError, match="batch_fixed_verts"):
         room.set_furniture_pose_3d("unit_drawer", positions)
+    env.close()
+
+
+# ------------------------------------------------------------------
+# Scene offset (pos + yaw) in batched worlds
+# ------------------------------------------------------------------
+
+_OFFSET_ROOM_POS = (2.0, -1.0, 0.5)
+_OFFSET_ROOM_YAW = math.pi / 2
+
+
+def test_batched_offset_shared_layout_base_pose_identical(drawer_urdf):
+    _ensure_genesis_backend("cpu")
+    world = GenesisWorld(batch_size=_BATCH_SIZE)
+    drawer = _URDFDrawer(drawer_urdf)
+    room = _room(
+        world,
+        drawer,
+        batch_fixed_verts=None,
+        room_pos=_OFFSET_ROOM_POS,
+        room_yaw=_OFFSET_ROOM_YAW,
+    )
+    env = WorldEnv(world, [room], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    entity = room.furniture_entities["unit_drawer"]
+    pos = torch.as_tensor(entity.get_pos())
+    assert pos.shape == (_BATCH_SIZE, 3)
+    # Shared layout in an offset room: every env sits at the same world pose.
+    assert torch.allclose(pos, pos[:1].expand(_BATCH_SIZE, 3))
+    # World pose = room offset ∘ placement: R(90°) · (1.0, -0.5) = (0.5, 1.0).
+    expected = torch.tensor(
+        [_OFFSET_ROOM_POS[0] + 0.5, _OFFSET_ROOM_POS[1] + 1.0, _OFFSET_ROOM_POS[2]],
+        dtype=pos.dtype,
+    )
+    assert torch.allclose(pos[0], expected, atol=1e-4)
+
+    # Orientation composes room yaw ⊗ placement yaw: 90° + 90° = 180° about Z
+    # (q and -q are the same rotation, so compare magnitudes).
+    quat = torch.as_tensor(entity.get_quat())
+    assert torch.allclose(
+        quat.abs(), torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=quat.dtype), atol=1e-4
+    )
+
+    # The joint initial_open still applies to every env.
+    fraction = drawer.get_open_fraction(entity, "drawer_slide")
+    assert torch.allclose(fraction, torch.full_like(fraction, 0.5), atol=1e-5)
+    env.close()
+
+
+def test_batched_offset_masked_reset_preserves_unmasked_envs(drawer_urdf):
+    _ensure_genesis_backend("cpu")
+    world = GenesisWorld(batch_size=_BATCH_SIZE)
+    drawer = _URDFDrawer(drawer_urdf)
+    room = _room(
+        world,
+        drawer,
+        batch_fixed_verts=False,
+        room_pos=_OFFSET_ROOM_POS,
+        room_yaw=_OFFSET_ROOM_YAW,
+    )
+    env = WorldEnv(world, [room], render_mode=None)
+    env.reset(seed=2, reload=True)
+    entity = room.furniture_entities["unit_drawer"]
+
+    # Randomise every env individually, then reset only env 2.
+    custom = torch.tensor([1.0, 0.0, 0.75, 0.25])
+    for env_idx, frac in enumerate(custom.tolist()):
+        env_mask = torch.zeros(_BATCH_SIZE, dtype=torch.bool)
+        env_mask[env_idx] = True
+        drawer.set_open_fraction(entity, "drawer_slide", frac, envs_idx=env_mask)
+    room.reset(priority=min(room.reset_priorities),
+               mask=torch.tensor([False, False, True, False]))
+
+    fractions = drawer.get_open_fraction(entity, "drawer_slide")
+    expected = torch.tensor([1.0, 0.0, 0.5, 0.25])
+    assert torch.allclose(fractions[:, 0], expected, atol=1e-5)
+    env.close()
+
+
+def test_batched_offset_set_furniture_pose_3d_stays_world_frame(drawer_urdf):
+    _ensure_genesis_backend("cpu")
+    world = GenesisWorld(batch_size=_BATCH_SIZE)
+    drawer = _URDFDrawer(drawer_urdf)
+    room = _room(
+        world,
+        drawer,
+        batch_fixed_verts=True,
+        room_pos=_OFFSET_ROOM_POS,
+        room_yaw=_OFFSET_ROOM_YAW,
+    )
+    env = WorldEnv(world, [room], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    entity = room.furniture_entities["unit_drawer"]
+    # The per-env override contract is world-frame: the positions are applied
+    # verbatim (the room offset was already baked into the load-time morph).
+    positions = torch.tensor(
+        [[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [2.0, 3.0, 0.0], [3.0, 4.0, 0.0]],
+        dtype=world.dtype,
+        device=world.device,
+    )
+    room.set_furniture_pose_3d("unit_drawer", positions)
+    pos = torch.as_tensor(entity.get_pos())
+    assert pos.shape == (_BATCH_SIZE, 3)
+    assert torch.allclose(pos, positions, atol=1e-4)
+
+    # Masked subset update stays world-frame too.
+    env_mask = torch.tensor([True, False, False, False])
+    room.set_furniture_pose_3d(
+        "unit_drawer",
+        torch.tensor([[9.0, 9.0, 0.0]], dtype=world.dtype, device=world.device),
+        envs_idx=env_mask,
+    )
+    pos = torch.as_tensor(entity.get_pos())
+    assert torch.allclose(pos[0], torch.tensor([9.0, 9.0, 0.0]), atol=1e-4)
+    assert torch.allclose(pos[1], positions[1], atol=1e-4)
     env.close()
 
 

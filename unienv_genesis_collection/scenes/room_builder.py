@@ -23,7 +23,14 @@ Room frame convention (mirrors :class:`TableBuilder`): the **origin is the
 room floor centre** — ``local (0, 0, 0)`` is the centre of the floor, ``z``
 is up, the X axis runs along the room *width* and the Y axis along its
 *depth*.  Furniture placements are expressed in this frame; the shell is
-built around it, so the frame coincides with the world frame.
+built around it.  With the default constructor arguments the room frame
+coincides with the world frame; ``pos``/``yaw`` place it in the world
+(``world = R_yaw(room) + pos``).  Everything internal — the layout spec and
+baked JSON, procedural placement, ``_occupied`` and overlap rejection —
+stays room-frame (frame-invariant), and the conversion to world coordinates
+happens **once**, at the two scene-load call sites (the shell morphs and the
+furniture morphs), mirroring :meth:`TableBuilder.create_table`.  Baked
+layouts therefore never carry world offsets.
 
 Conventions shared with ``table_builder.py``: ``WorldNode`` with a static
 ``reload_priorities`` set, a seedable :class:`random.Random` reseeded in
@@ -70,8 +77,10 @@ stage that converts ReplicaCAD/RoboCasa layouts — plan §3.4)::
 ``shell_id`` resolves against ``scenes/rooms/<shell_id>``: either a mesh /
 MJCF *file* (``.glb`` / ``.obj`` / ``.ply`` / ``.xml``) or a *directory*
 containing one recognised shell file (``shell.glb`` / ``shell.obj`` /
-``model.xml``).  A baked shell's origin must coincide with the room frame
-(floor centre at the origin).  A baked shell whose asset origin is *not*
+``model.xml``).  A baked shell's origin must coincide with the **room
+frame** (floor centre at the room-frame origin); the scene offset
+``pos``/``yaw`` is applied to the morph pose at load time, exactly like the
+procedural primitives.  A baked shell whose asset origin is *not*
 the centre of its own floor rectangle (e.g. the ReplicaCAD stage GLBs)
 therefore gets the largest ``room_size`` rectangle centred on the shell
 origin that still lies inside the shell's bounding box, so
@@ -514,10 +523,15 @@ class RoomBuilder(WorldNode):
     """Builds a room: shell (walls/floor) + fixed articulated furniture.
 
     The room frame origin is the **floor centre** (mirroring
-    :class:`TableBuilder`'s anchor convention): :meth:`xy_to_world` and
-    :meth:`placement_world_pose` map room-local coordinates to world
-    coordinates (identity here, but the composition math is kept so a future
-    room origin/yaw stays correct).
+    :class:`TableBuilder`'s anchor convention) and its world pose is
+    ``pos``/``yaw``: :meth:`xy_to_world` and :meth:`placement_world_pose` map
+    room-local coordinates to world coordinates (the identity map when both
+    take their defaults).  The offset is per-scene and captured at
+    construction (:attr:`pos` / :attr:`yaw` are read-only); every internal
+    quantity stays room-frame and is converted **once**, at the scene-load
+    call sites (shell morphs and furniture morphs), so batched worlds share
+    one offset, procedural placement is frame-invariant and
+    :meth:`set_furniture_pose_3d` keeps its world-frame contract.
 
     Modes (mutually exclusive — pass exactly one):
 
@@ -552,6 +566,12 @@ class RoomBuilder(WorldNode):
         procedural: Sample the layout from ``furniture_pool`` (plan §3.3).
         room_size: ``(width, depth, wall_height)`` in metres (procedural /
             shell-only mode; an explicit spec carries its own).
+        pos: World position ``(x, y, z)`` of the room-frame origin (the floor
+            centre).  The default ``(0, 0, 0)`` keeps the room at the world
+            origin.
+        yaw: World rotation of the room frame around the Z axis, in radians.
+            ``0.0`` (default) keeps the room frame axis-aligned with the
+            world.  The offset is identical across batched envs.
         furniture_pool: Furniture descriptors.  In procedural mode this is
             the sampling pool; in the other modes it doubles as an explicit
             id → descriptor registry (matched by ``name`` or ``object_id``)
@@ -593,6 +613,8 @@ class RoomBuilder(WorldNode):
         layout_yaml: Optional[str] = None,
         procedural: bool = False,
         room_size: Tuple[float, float, float] = DEFAULT_ROOM_SIZE,
+        pos: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        yaw: float = 0.0,
         furniture_pool: Optional[Sequence[ArticulatedObject]] = None,
         n_furniture: Tuple[int, int] = DEFAULT_N_FURNITURE,
         wall_clearance: float = DEFAULT_WALL_CLEARANCE,
@@ -623,6 +645,24 @@ class RoomBuilder(WorldNode):
         self._procedural = bool(procedural)
 
         self.default_room_size = _validate_room_size(room_size)
+        try:
+            pos_tuple = tuple(float(v) for v in pos)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"pos must be numeric (x, y, z): {pos!r}") from exc
+        if len(pos_tuple) != 3:
+            raise ValueError(f"pos must be (x, y, z), got {pos_tuple!r}")
+
+        # Scene offset: room-local coordinates are world coordinates
+        # translated by `pos` and rotated by `yaw` about Z (see xy_to_world /
+        # placement_world_pose).  Captured once at construction — read-only
+        # properties below — and identical across envs.  The internals stay
+        # room-frame; the offset is applied exactly once, at morph load.
+        self._pos = pos_tuple
+        self._yaw = float(yaw)
+        self._room_origin_xy = (self._pos[0], self._pos[1])
+        self._room_origin_z = self._pos[2]
+        self._room_yaw = self._yaw
+
         if wall_clearance < 0.0:
             raise ValueError(f"wall_clearance must be non-negative, got {wall_clearance!r}")
         self.wall_clearance = float(wall_clearance)
@@ -669,6 +709,16 @@ class RoomBuilder(WorldNode):
         return self._name
 
     @property
+    def pos(self) -> Tuple[float, float, float]:
+        """World position of the room-frame origin (the floor centre)."""
+        return self._pos
+
+    @property
+    def yaw(self) -> float:
+        """World yaw of the room frame around Z, in radians."""
+        return self._yaw
+
+    @property
     def layout(self) -> Optional[RoomLayoutSpec]:
         """The resolved :class:`RoomLayoutSpec` (set by :meth:`reload`)."""
         return self._spec
@@ -708,9 +758,10 @@ class RoomBuilder(WorldNode):
     def xy_to_world(self, local_xy) -> torch.Tensor:
         """Convert room-local XY coordinates to world-frame XY.
 
-        The room frame origin is the floor centre; the room carries no yaw
-        of its own, so this is an affine map with the room origin offset
-        (identity for the default placement).
+        The room frame origin is the floor centre and the room carries the
+        scene offset ``pos``/``yaw``, so this is the affine map
+        ``world_xy = pos[:2] + R(yaw) @ local_xy`` (the identity map for the
+        default placement).
 
         Args:
             local_xy: ``(..., 2)`` local XY coordinates (tensor or sequence).
@@ -743,10 +794,12 @@ class RoomBuilder(WorldNode):
 
         Args:
             local_pos: ``(..., 3)`` or ``(..., 2)`` position in the room
-                frame.  A 2-D position gets ``z`` of the room origin (the
-                floor, ``0.0``).
+                frame.  A 2-D position gets ``z`` of the room origin (its
+                floor height, ``pos[2]``).
             local_quat: ``(..., 4)`` quaternion ``(w, x, y, z)`` in the room
-                frame; ``None`` uses the room's own orientation (identity).
+                frame; ``None`` uses the room's own orientation
+                (``yaw_to_quat(self.yaw)``).  Non-``None`` values compose as
+                ``room_quat ⊗ local_quat``.
 
         Returns:
             ``(world_pos, world_quat)`` tensors — on ``local_pos``'s device
@@ -768,8 +821,6 @@ class RoomBuilder(WorldNode):
             world_z = room_z + local_pos[..., 2]
         world_pos = torch.cat([world_xy, world_z.unsqueeze(-1)], dim=-1)
 
-        c = math.cos(self._room_yaw)
-        s = math.sin(self._room_yaw)
         room_quat = torch.tensor(
             (math.cos(self._room_yaw / 2.0), 0.0, 0.0, math.sin(self._room_yaw / 2.0)),
             dtype=world_pos.dtype,
@@ -785,11 +836,9 @@ class RoomBuilder(WorldNode):
             world_quat = world_quat.expand(world_pos.shape[:-1] + (4,))
         return world_pos, world_quat
 
-    # Internal room-frame constants (the room is anchored at the world
-    # origin, floor centre; mirroring TableBuilder's `pos`/`yaw` fields).
-    _room_origin_xy: Tuple[float, float] = (0.0, 0.0)
-    _room_origin_z: float = 0.0
-    _room_yaw: float = 0.0
+    # Internal room-frame constants: per-instance (``pos``/``yaw`` from
+    # ``__init__``) — the room origin defaults to the world origin (floor
+    # centre), mirroring TableBuilder's `pos`/`yaw` fields.
 
     # ------------------------------------------------------------------
     # Spec resolution
@@ -1141,13 +1190,21 @@ class RoomBuilder(WorldNode):
         primitives around ``room_size``; otherwise the baked shell asset is
         loaded as ``gs.morphs.Mesh(fixed=True)`` (GLB/OBJ/PLY) or
         ``gs.morphs.MJCF`` (``.xml`` — fixed via its jointless root).
+
+        The morph poses carry the **world** pose of each member (computed
+        through the room's :class:`EntityGroup`, mirroring
+        :meth:`TableBuilder.create_table`), so the room offset is applied in
+        the morph itself and never as a post-build ``set_pose`` — batched
+        worlds therefore stay correct.  The group's members keep their
+        room-frame ``local_pos`` and the internal ``room_size`` math is
+        untouched.
         """
         import genesis as gs
 
         from unienv_genesis.utils.entity_group import EntityGroup
 
         world = self.world
-        group = EntityGroup(pos=(0.0, 0.0, 0.0), quat=yaw_to_quat(0.0), dtype=world.dtype)
+        group = EntityGroup(pos=self.pos, quat=yaw_to_quat(self.yaw), dtype=world.dtype)
 
         if spec.shell_id is None:
             width, depth, height = spec.room_size
@@ -1156,10 +1213,12 @@ class RoomBuilder(WorldNode):
             wall_surface = gs.surfaces.Plastic(color=(0.85, 0.85, 0.82, 1.0))
 
             floor_local = (0.0, 0.0, -thickness / 2.0)
+            floor_world_pos, floor_world_quat = group.world_pose(floor_local)
             floor = world.scene.add_entity(
                 gs.morphs.Box(
                     size=(width + 2.0 * thickness, depth + 2.0 * thickness, thickness),
-                    pos=floor_local,
+                    pos=floor_world_pos.tolist(),
+                    quat=floor_world_quat.tolist(),
                     fixed=True,
                     batch_fixed_verts=batch_fixed_verts,
                 ),
@@ -1181,10 +1240,12 @@ class RoomBuilder(WorldNode):
             ]
             entities = [floor]
             for wall_name, wall_size, wall_local in wall_specs:
+                wall_world_pos, wall_world_quat = group.world_pose(wall_local)
                 wall = world.scene.add_entity(
                     gs.morphs.Box(
                         size=wall_size,
-                        pos=wall_local,
+                        pos=wall_world_pos.tolist(),
+                        quat=wall_world_quat.tolist(),
                         fixed=True,
                         batch_fixed_verts=batch_fixed_verts,
                     ),
@@ -1196,12 +1257,15 @@ class RoomBuilder(WorldNode):
         else:
             shell_file = self._resolve_shell_file(spec.shell_id)
             suffix = shell_file.suffix.lower()
+            # The baked shell's origin is the room-frame origin (module
+            # docstring); its world pose is the room pose itself.
+            shell_world_pos, shell_world_quat = group.world_pose((0.0, 0.0, 0.0))
             if suffix == ".xml":
                 # MJCF shells are fixed through their jointless root body.
                 morph = gs.morphs.MJCF(
                     file=str(shell_file),
-                    pos=(0.0, 0.0, 0.0),
-                    quat=yaw_to_quat(0.0),
+                    pos=shell_world_pos.tolist(),
+                    quat=shell_world_quat.tolist(),
                     align=False,
                     batch_fixed_verts=batch_fixed_verts,
                     requires_jac_and_IK=False,
@@ -1210,8 +1274,8 @@ class RoomBuilder(WorldNode):
                 morph = gs.morphs.Mesh(
                     file=str(shell_file),
                     scale=1.0,
-                    pos=(0.0, 0.0, 0.0),
-                    quat=yaw_to_quat(0.0),
+                    pos=shell_world_pos.tolist(),
+                    quat=shell_world_quat.tolist(),
                     fixed=True,
                     decimate=False,
                     batch_fixed_verts=batch_fixed_verts,
@@ -1257,12 +1321,18 @@ class RoomBuilder(WorldNode):
             # descriptor's standing orientation (the catalog's upright
             # placement convention, e.g. the ReplicaCAD URDF base-link frames)
             # on top of it so the furniture stands upright (see
-            # placement_load_quat).
+            # placement_load_quat).  `placement.pos`/`yaw` stay room-frame:
+            # the morph pose carries the room_quat ⊗ (yaw ⊗ standing) world
+            # composition (the single conversion to world frame).
             standing = getattr(descriptor, "standing_quaternion", None)
+            world_pos, world_quat = self.placement_world_pose(
+                placement.pos,
+                local_quat=placement_load_quat(placement.yaw, standing),
+            )
             entity = descriptor.load_into_scene(
                 world=self.world,
-                pos=placement.pos,
-                quat=placement_load_quat(placement.yaw, standing),
+                pos=world_pos.tolist(),
+                quat=world_quat.tolist(),
                 name_override=f"{self._name}_{key}",
                 batch_fixed_verts=self._batch_fixed_verts,
             )
@@ -1392,21 +1462,20 @@ class RoomBuilder(WorldNode):
                 interior = self._shrink_bbox(link_bbox, interior_margin)
                 # The interior region is derived from the placement pose (the
                 # shared layout); broadcast it to the batch dimension so the
-                # region matches the batched world bbox above.
+                # region matches the batched world bbox above.  The placement
+                # is room-frame: route it through the room's world-pose map
+                # (room origin offset + yaw) instead of assuming origin=0.
                 descriptor = self.furniture[key]
-                pos_t = torch.tensor(
-                    self.placements[key].pos,
-                    dtype=dtype,
-                    device=device,
-                )
-                quat_t = torch.tensor(
-                    placement_load_quat(
-                        self.placements[key].yaw,
+                placement = self.placements[key]
+                pos_t, quat_t = self.placement_world_pose(
+                    placement.pos,
+                    local_quat=placement_load_quat(
+                        placement.yaw,
                         getattr(descriptor, "standing_quaternion", None),
                     ),
-                    dtype=dtype,
-                    device=device,
                 )
+                pos_t = pos_t.to(dtype=dtype, device=device)
+                quat_t = quat_t.to(dtype=dtype, device=device)
                 if world_bbox.low.ndim > 1:
                     n_envs = world_bbox.low.shape[0]
                     pos_t = pos_t.unsqueeze(0).expand(n_envs, 3)
@@ -1537,8 +1606,10 @@ class RoomBuilder(WorldNode):
 
         Uniformly samples inside the room rect (shrunk by *margin*), rejecting
         candidates whose footprint circle overlaps any furniture footprint
-        (the same padded circular check the procedural placer uses).  For
-        robot spawn / clutter placement.
+        (the same padded circular check the procedural placer uses).  The
+        sampling and the overlap check are room-frame; the accepted samples
+        are mapped to the world frame at the end (:meth:`xy_to_world` plus the
+        room origin's height).  For robot spawn / clutter placement.
 
         Args:
             n: Number of positions.
@@ -1549,7 +1620,8 @@ class RoomBuilder(WorldNode):
             margin: Keep-out distance from the walls (metres).
 
         Returns:
-            ``(n, 3)`` world-frame positions on the floor (``z = 0``), on
+            ``(n, 3)`` world-frame positions on the floor
+            (``z = pos[2]``, the room origin's floor height), on
             **``world.device`` / ``world.dtype``** (see the module docstring's
             device convention).  The sampling itself is host-side: each
             candidate is compared against the furniture footprints in Python
@@ -1591,6 +1663,10 @@ class RoomBuilder(WorldNode):
                 f"{attempts} attempts — the room is too crowded "
                 f"({len(occupied)} furniture footprints)."
             )
+        # The accepted samples are room-frame; map them to the world frame
+        # (room origin offset + yaw, floor at the room origin's height).
+        samples[:, :2] = self.xy_to_world(samples[:, :2])
+        samples[:, 2] = self._room_origin_z
         return samples
 
     # ------------------------------------------------------------------
@@ -1610,6 +1686,10 @@ class RoomBuilder(WorldNode):
         fixed entities otherwise share one layout and Genesis raises.
         Orientation is kept (``random_quaternion=False`` — furniture keeps
         its authored yaw; see plan §3.2).
+
+        The positions are **world-frame**: the room's ``pos``/``yaw`` offset
+        is already baked into the load-time morph pose and is *not* applied
+        again here.
 
         Args:
             furniture_key: Key into :attr:`furniture` / :attr:`furniture_entities`.

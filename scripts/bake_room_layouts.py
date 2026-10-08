@@ -41,15 +41,15 @@ need different conversions:
     by a yaw-only spec, so it is reported and *skipped*.
   - Stage → room mapping (a proper rotation, M = R_x(+90°)):
     ``pos_room = (t_stage_x, −t_stage_z, t_stage_y − floor_y)`` with
-    ``floor_y = 0`` — the shell is loaded at the world origin
-    (``RoomBuilder._build_shell`` passes ``pos=(0, 0, 0)``), so the room
-    origin *is* the shell origin and the baked ``z`` is the base-link origin's
-    height above the shell floor.  The baked ``yaw`` is the item's *upright*
-    yaw; :meth:`RoomBuilder.reload` composes the descriptor's catalog
-    ``standing_quaternion`` on top of it, which makes the furniture stand
-    upright in the built room (verified: the fridge entity's AABB stands
-    1.92 m tall with its bottom ~2 cm above the floor, matching the authored
-    float).
+    ``floor_y = 0`` — the baked coordinates are room-frame (the shell origin
+    coincides with the room-frame origin; baked specs never carry the
+    runtime scene offset ``pos``/``yaw``), so the baked ``z`` is the
+    base-link origin's height above the shell floor.  The baked ``yaw`` is
+    the item's *upright* yaw; :meth:`RoomBuilder.reload` composes the
+    descriptor's catalog ``standing_quaternion`` on top of it, which makes
+    the furniture stand upright in the built room (verified: the fridge
+    entity's AABB stands 1.92 m tall, its bottom ~2 cm above the floor,
+    matching the authored float).
   - **``uniform_scale``**: ``FurniturePlacement`` has no scale field and
     ``RoomBuilder._resolve_descriptor`` constructs catalog descriptors at
     their default scale, so a non-unit-scale instance cannot be baked

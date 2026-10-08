@@ -26,7 +26,11 @@ Covers:
     pairwise footprint-overlap rejection, crowded-room ValueError,
     interior-grid fallback (walls rejected), wall-flush + inward-yaw math,
     off-centre footprint compensation, oversized-furniture rejection
-  - xy_to_world / placement_world_pose math (unbatched + batched shapes)
+  - xy_to_world / placement_world_pose math (unbatched + batched shapes,
+    including nonzero pos/yaw scene offsets)
+  - scene offset: shell / baked-shell / furniture morphs carry the world
+    pose at load (converted exactly once), get_receptacles interiors and
+    sample_free_floor_positions map to the world frame under an offset
   - get_receptacles shape (top slab + shrunk link interiors, world frame)
   - get_interaction_points shape + link aliases + gripper width forwarding
   - sample_free_floor_positions: bounds, footprint avoidance, determinism,
@@ -442,6 +446,34 @@ def test_parameter_validation():
         RoomBuilder(world, procedural=True, furniture_pool=[])
 
 
+def test_pos_yaw_validation_and_readonly_properties():
+    world = _FakeWorld()
+    # Defaults keep the historical behaviour (room frame == world frame).
+    default = RoomBuilder(world)
+    assert default.pos == (0.0, 0.0, 0.0)
+    assert default.yaw == 0.0
+
+    room = RoomBuilder(world, pos=(1.0, -2.0, 0.75), yaw=0.5)
+    assert room.pos == (1.0, -2.0, 0.75)
+    assert room.yaw == 0.5
+
+    # Captured at construction; read-only properties (no mid-run mutation).
+    with pytest.raises(AttributeError):
+        room.pos = (9.0, 9.0, 9.0)
+    with pytest.raises(AttributeError):
+        room.yaw = 1.0
+
+    for bad in ((1.0, 2.0), (1.0, 2.0, 3.0, 4.0), ("a", 0.0, 0.0), (None, 0.0, 0.0)):
+        with pytest.raises(ValueError, match="pos"):
+            RoomBuilder(world, pos=bad)
+
+    # Mode mutual-exclusion still fires with pos/yaw present.
+    spec = RoomLayoutSpec(room_size=(4.0, 4.0, 2.7), furniture=())
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        RoomBuilder(world, layout=spec, procedural=True,
+                    pos=(1.0, 0.0, 0.0), yaw=0.25)
+
+
 def test_batch_fixed_verts_defaults_from_world_batch_size():
     assert RoomBuilder(_FakeWorld()).batch_fixed_verts is False
     assert RoomBuilder(_FakeWorld(batch_size=4)).batch_fixed_verts is True
@@ -503,11 +535,13 @@ def test_explicit_layout_resolution_and_duplicate_keys():
         "kitchen_wall_west",
     ]
 
-    # Descriptor load: room-frame pose, yaw quaternion, namespaced name and
-    # batch_fixed_verts defaulted False (fake world is unbatched).
+    # Descriptor load: world pose (the default room offset maps room-frame
+    # placements to themselves, to morph float precision), yaw quaternion,
+    # namespaced name and batch_fixed_verts defaulted False (fake world is
+    # unbatched).
     assert chair.load_calls[0]["world"] is world
-    assert chair.load_calls[0]["pos"] == (0.5, 0.5, 0.0)
-    assert chair.load_calls[0]["quat"] == rb.yaw_to_quat(0.3)
+    assert chair.load_calls[0]["pos"] == pytest.approx((0.5, 0.5, 0.0))
+    assert chair.load_calls[0]["quat"] == pytest.approx(rb.yaw_to_quat(0.3), abs=1e-6)
     assert chair.load_calls[0]["name_override"] == "kitchen_chair"
     assert chair.load_calls[0]["batch_fixed_verts"] is False
     assert room.furniture_entities["chair"].name == "kitchen_chair"
@@ -895,6 +929,326 @@ def test_placement_world_pose_math():
 
 
 # ------------------------------------------------------------------
+# Scene offset (pos + yaw): frame math (plan: convert-once at morph load)
+# ------------------------------------------------------------------
+
+_OFFSET_POS = (10.0, -4.0, 1.5)
+_OFFSET_YAW = 0.7
+
+
+def _rotate_xy(x: float, y: float, yaw: float):
+    """Hand-rolled R(yaw) @ (x, y) — independent of the builder's math."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    return (x * c - y * s, x * s + y * c)
+
+
+def _hamilton(q1, q2):
+    """Hand-rolled Hamilton product ``q1 ⊗ q2`` (w, x, y, z quaternions)."""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return (
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    )
+
+
+def _offset_room(**kwargs):
+    return RoomBuilder(_FakeWorld(), pos=_OFFSET_POS, yaw=_OFFSET_YAW, **kwargs)
+
+
+def test_xy_to_world_offset_and_yaw():
+    # Translation only.
+    moved = RoomBuilder(_FakeWorld(), pos=(3.0, -5.0, 2.0))
+    assert torch.allclose(moved.xy_to_world(_host([4.0, 6.0])), _host([7.0, 1.0]))
+
+    # Yaw only: R(90°) maps local +x → world +y.
+    turned = RoomBuilder(_FakeWorld(), yaw=math.pi / 2)
+    assert torch.allclose(
+        turned.xy_to_world(_host([1.0, 0.0])), _host([0.0, 1.0]), atol=1e-6
+    )
+
+    # Offset + yaw: world = pos[:2] + R(yaw) @ local (hand-computed).
+    room = _offset_room()
+    local = _host([[1.0, 2.0], [-0.5, 0.25]])
+    got = room.xy_to_world(local)
+    expected = _host([
+        [_OFFSET_POS[0] + _rotate_xy(1.0, 2.0, _OFFSET_YAW)[0],
+         _OFFSET_POS[1] + _rotate_xy(1.0, 2.0, _OFFSET_YAW)[1]],
+        [_OFFSET_POS[0] + _rotate_xy(-0.5, 0.25, _OFFSET_YAW)[0],
+         _OFFSET_POS[1] + _rotate_xy(-0.5, 0.25, _OFFSET_YAW)[1]],
+    ])
+    assert got.shape == (2, 2)
+    assert torch.allclose(got, expected, atol=1e-6)
+
+    # Sequence input lands on the world device (default offset keeps identity).
+    assert torch.allclose(RoomBuilder(_FakeWorld()).xy_to_world([0.5, 0.5]), _host([0.5, 0.5]))
+
+
+def test_placement_world_pose_offset_and_yaw():
+    room = _offset_room()
+    c, s = math.cos(_OFFSET_YAW), math.sin(_OFFSET_YAW)
+
+    # 3-D room-frame position (hand-computed rotation + translation).
+    got, quat = room.placement_world_pose([1.0, 2.0, 3.0])
+    expected = _host(
+        [_OFFSET_POS[0] + (1.0 * c - 2.0 * s),
+         _OFFSET_POS[1] + (1.0 * s + 2.0 * c),
+         _OFFSET_POS[2] + 3.0]
+    )
+    assert torch.allclose(got, expected, atol=1e-6)
+    # No local quaternion → the room's own orientation.
+    room_quat = rb.yaw_to_quat(_OFFSET_YAW)
+    assert torch.allclose(quat, _host(room_quat), atol=1e-6)
+
+    # 2-D input gets z of the room origin (pos[2]), not the world floor 0.
+    pos2, _ = room.placement_world_pose([0.0, 0.0])
+    assert torch.allclose(pos2, _host(_OFFSET_POS), atol=1e-6)
+
+    # A local quaternion composes as room_quat ⊗ local_quat (hand-computed
+    # Hamilton product — no library call on the expected side).
+    local_quat = (0.5, 0.5, 0.5, 0.5)
+    _, quat2 = room.placement_world_pose([0.0, 0.0, 0.0], local_quat)
+    expected_quat = _hamilton(rb.yaw_to_quat(_OFFSET_YAW), local_quat)
+    assert torch.allclose(quat2, _host(expected_quat), atol=1e-6)
+
+    # Batched inputs keep their batch shapes.
+    batch = _host([[1.0, 2.0, 0.5], [-1.0, 0.0, 0.25]])
+    posb, quatb = room.placement_world_pose(batch, local_quat)
+    assert posb.shape == (2, 3) and quatb.shape == (2, 4)
+    assert torch.allclose(quatb, _host(expected_quat).expand(2, 4), atol=1e-6)
+
+
+# ------------------------------------------------------------------
+# Scene offset (pos + yaw): scene-level load sites (offline fakes)
+# ------------------------------------------------------------------
+
+
+def test_offset_procedural_shell_morph_world_poses():
+    world = _FakeWorld()
+    room = RoomBuilder(
+        world, pos=_OFFSET_POS, yaw=_OFFSET_YAW, room_size=(4.0, 3.0, 2.6)
+    )
+    room.reload(priority=110)
+    assert room._mode == "shell_only"
+
+    calls = world.scene.add_entity_calls
+    assert [name for _, name, _ in calls] == [
+        "room_floor",
+        "room_wall_north",
+        "room_wall_south",
+        "room_wall_east",
+        "room_wall_west",
+    ]
+
+    # Local (room-frame) morph placements, exactly the builder's values.
+    thickness = rb.DEFAULT_WALL_THICKNESS
+    width, depth, height = 4.0, 3.0, 2.6
+    locals_ = {
+        "room_floor": (0.0, 0.0, -thickness / 2.0),
+        "room_wall_north": (0.0, depth / 2.0 + thickness / 2.0, height / 2.0),
+        "room_wall_south": (0.0, -(depth / 2.0 + thickness / 2.0), height / 2.0),
+        "room_wall_east": (width / 2.0 + thickness / 2.0, 0.0, height / 2.0),
+        "room_wall_west": (-(width / 2.0 + thickness / 2.0), 0.0, height / 2.0),
+    }
+    for morph, name, _ in calls:
+        local = locals_[name]
+        # World pose = room offset applied to the local morph pose.  The
+        # morph itself carries the offset (no post-build set_pose), so a
+        # batched build stays correct.
+        rx, ry = _rotate_xy(local[0], local[1], _OFFSET_YAW)
+        assert morph.pos == pytest.approx(
+            (_OFFSET_POS[0] + rx, _OFFSET_POS[1] + ry, _OFFSET_POS[2] + local[2]),
+            abs=1e-5,
+        )
+        assert morph.quat == pytest.approx(rb.yaw_to_quat(_OFFSET_YAW), abs=1e-6)
+
+
+def test_offset_baked_shell_morph_pose(tmp_path, monkeypatch):
+    import trimesh
+
+    monkeypatch.setattr(asset_path, "ASSETS_DIR", tmp_path)
+    shell_obj = tmp_path / "scenes" / "rooms" / "tests" / "shell.obj"
+    shell_obj.parent.mkdir(parents=True, exist_ok=True)
+    trimesh.creation.box(extents=(3.0, 3.0, 2.5)).export(shell_obj)
+
+    world = _FakeWorld()
+    room = RoomBuilder(
+        world,
+        pos=_OFFSET_POS,
+        yaw=_OFFSET_YAW,
+        layout=RoomLayoutSpec(
+            shell_id="tests/shell.obj", room_size=(3.0, 3.0, 2.5), furniture=()
+        ),
+    )
+    room.reload(priority=110)
+
+    assert len(world.scene.add_entity_calls) == 1
+    morph, name, _ = world.scene.add_entity_calls[0]
+    assert name == "room_shell"
+    assert isinstance(morph, gs.morphs.Mesh)
+    # The baked shell's asset origin is the room-frame origin; its morph pose
+    # is the room pose.  Baked specs never carry world offsets themselves.
+    assert morph.pos == pytest.approx(_OFFSET_POS, abs=1e-5)
+    assert morph.quat == pytest.approx(rb.yaw_to_quat(_OFFSET_YAW), abs=1e-6)
+
+
+def test_offset_furniture_load_world_pose_compose_order():
+    descriptor = _counter()
+    standing = (0.5, 0.5, 0.5, 0.5)  # non-identity upright orientation
+    descriptor.standing_quaternion = standing
+    placement = FurniturePlacement(
+        object_id="counter", source="procedural", pos=(1.0, 2.0, 0.0), yaw=0.4,
+    )
+    world = _FakeWorld()
+    room = RoomBuilder(
+        world,
+        pos=_OFFSET_POS,
+        yaw=_OFFSET_YAW,
+        layout=RoomLayoutSpec(
+            shell_id=None, room_size=(6.0, 5.0, 2.7), furniture=(placement,)
+        ),
+        furniture_pool=[descriptor],
+    )
+    room.reload(priority=110)
+
+    call = descriptor.load_calls[0]
+    rx, ry = _rotate_xy(placement.pos[0], placement.pos[1], _OFFSET_YAW)
+    assert call["pos"] == pytest.approx(
+        (_OFFSET_POS[0] + rx, _OFFSET_POS[1] + ry, _OFFSET_POS[2]), abs=1e-5
+    )
+    # Orientation: room_quat ⊗ (placement_yaw ⊗ standing) — the room yaw is
+    # the outermost composition (hand-computed Hamilton product).
+    expected = _hamilton(
+        rb.yaw_to_quat(_OFFSET_YAW), rb.placement_load_quat(placement.yaw, standing)
+    )
+    assert call["quat"] == pytest.approx(expected, abs=1e-5)
+    # Internal state stays room-frame (the spec is frame-invariant): the
+    # occupied footprint is inside the room rect, not shifted by the offset.
+    assert room.placements["counter"] == placement
+    ox, oy, _ = room._occupied[0]
+    assert -3.0 <= ox <= 3.0 and -2.5 <= oy <= 2.5
+
+
+def test_offset_get_receptacles_world_frame():
+    # Translation-only offset: the link interior/top corners are the local
+    # corners offset by pos — deliberately far from the world origin.
+    world = _FakeWorld()
+    counter = _counter()
+    placement = FurniturePlacement(
+        object_id="counter", source="procedural", pos=(1.0, 2.0, 0.0), yaw=0.0,
+    )
+    room = RoomBuilder(
+        world,
+        pos=_OFFSET_POS,
+        yaw=0.0,
+        layout=RoomLayoutSpec(
+            shell_id=None, room_size=(6.0, 5.0, 2.7), furniture=(placement,)
+        ),
+        furniture_pool=[counter],
+    )
+    room.reload(priority=110)
+    regions = room.get_receptacles()["counter"]
+    margin = rb.DEFAULT_INTERIOR_MARGIN
+
+    low, high = _corners(regions["drawer"])
+    assert low[0] == pytest.approx(_OFFSET_POS[0] + 1.0 + (-0.5 + margin))
+    assert high[0] == pytest.approx(_OFFSET_POS[0] + 1.0 + (0.5 - margin))
+    assert low[1] == pytest.approx(_OFFSET_POS[1] + 2.0 + (-0.28 + margin))
+    assert high[1] == pytest.approx(_OFFSET_POS[1] + 2.0 + (0.28 - margin))
+    assert low[2] == pytest.approx(_OFFSET_POS[2] + 0.5 + margin)
+    assert high[2] == pytest.approx(_OFFSET_POS[2] + 0.75 - margin)
+    # The region lives near the offset furniture, not around the world origin.
+    assert math.hypot(float(low[0]), float(low[1])) > 5.0
+
+    top_low, top_high = _corners(regions["top"])
+    assert top_low[0] == pytest.approx(_OFFSET_POS[0] + 1.0 - 0.6)
+    assert top_high[0] == pytest.approx(_OFFSET_POS[0] + 1.0 + 0.6)
+    assert top_high[1] == pytest.approx(_OFFSET_POS[1] + 2.0 + 0.3)
+    assert top_high[2] == pytest.approx(_OFFSET_POS[2] + 0.9)
+
+    # Yaw 90° room + yaw-0 placement: the interior's world AABB axes swap.
+    room_yaw = RoomBuilder(
+        world,
+        pos=_OFFSET_POS,
+        yaw=math.pi / 2,
+        layout=RoomLayoutSpec(
+            shell_id=None, room_size=(6.0, 5.0, 2.7), furniture=(placement,)
+        ),
+        furniture_pool=[_counter()],
+    )
+    room_yaw.reload(priority=110)
+    low, high = _corners(room_yaw.get_receptacles()["counter"]["drawer"])
+    centre = (
+        _OFFSET_POS[0] - 2.0,
+        _OFFSET_POS[1] + 1.0,
+        _OFFSET_POS[2] + 0.625,
+    )
+    half = (
+        (0.56 - 2.0 * margin) / 2.0,
+        (1.0 - 2.0 * margin) / 2.0,
+        (0.25 - 2.0 * margin) / 2.0,
+    )
+    for axis in range(3):
+        assert low[axis] == pytest.approx(centre[axis] - half[axis], abs=1e-5)
+        assert high[axis] == pytest.approx(centre[axis] + half[axis], abs=1e-5)
+
+
+def test_offset_sample_free_floor_positions_world_frame():
+    world = _FakeWorld()
+    counter = _counter()
+    placement = FurniturePlacement(
+        object_id="counter", source="procedural", pos=(1.0, 2.0, 0.0), yaw=0.5,
+    )
+    room = RoomBuilder(
+        world,
+        pos=_OFFSET_POS,
+        yaw=_OFFSET_YAW,
+        layout=RoomLayoutSpec(
+            shell_id=None, room_size=(6.0, 5.0, 2.7), furniture=(placement,)
+        ),
+        furniture_pool=[counter],
+    )
+    room.reload(priority=110)
+    samples = room.sample_free_floor_positions(
+        64, torch.Generator().manual_seed(3)
+    )
+    assert samples.shape == (64, 3)
+    assert samples.device == world.device
+
+    # z is the room origin's floor height, not the world origin.
+    assert torch.allclose(
+        samples[:, 2],
+        torch.full_like(samples[:, 2], _OFFSET_POS[2]),
+    )
+    # Samples are far from the world origin: the room really moved.
+    assert float(samples[:, :2].norm(dim=-1).min()) > 5.0
+
+    # Map world → room frame (inverse rotation) and check the translated,
+    # rotated room rect bounds (room_size/2 - margin).
+    c, s = math.cos(_OFFSET_YAW), math.sin(_OFFSET_YAW)
+    rel = samples[:, :2] - torch.tensor(
+        _OFFSET_POS[:2], dtype=samples.dtype, device=samples.device
+    )
+    back = torch.stack(
+        (rel[:, 0] * c + rel[:, 1] * s, -rel[:, 0] * s + rel[:, 1] * c), dim=-1
+    )
+    assert (back[:, 0].abs() <= 3.0 - rb.DEFAULT_WALL_CLEARANCE + 1e-5).all()
+    assert (back[:, 1].abs() <= 2.5 - rb.DEFAULT_WALL_CLEARANCE + 1e-5).all()
+
+    # Furniture avoidance still holds in the world frame (footprint-overlap
+    # rejection itself stays room-frame).
+    (cx, cy), _, _ = room._rotated_aabb_of(counter, placement.pos, placement.yaw)
+    wx, wy = _rotate_xy(cx, cy, _OFFSET_YAW)
+    radius = counter.get_footprint_radius() + rb.PLACEMENT_PADDING
+    dist = torch.hypot(
+        samples[:, 0] - (_OFFSET_POS[0] + wx), samples[:, 1] - (_OFFSET_POS[1] + wy)
+    )
+    assert (dist > radius - 1e-5).all()
+
+
+# ------------------------------------------------------------------
 # Task-facing API
 # ------------------------------------------------------------------
 
@@ -1171,11 +1525,14 @@ def test_procedural_shell_reload_minimal_scene():
     # Every placement key must have produced exactly one namespaced load call.
     name_overrides = [call["name_override"] for call in all_load_calls]
     assert sorted(name_overrides) == sorted(f"room_{key}" for key in room.furniture)
-    # Each placement was loaded at its sampled pose (pos + inward yaw).
+    # Each placement was loaded at its world pose (the default room offset
+    # maps the sampled room-frame pose to itself, to morph float precision).
     for placement in room.placements.values():
-        matches = [call for call in all_load_calls
-                   if call["pos"] == placement.pos
-                   and call["quat"] == rb.yaw_to_quat(placement.yaw)]
+        matches = [
+            call for call in all_load_calls
+            if call["pos"] == pytest.approx(placement.pos, abs=1e-6)
+            and call["quat"] == pytest.approx(rb.yaw_to_quat(placement.yaw), abs=1e-6)
+        ]
         assert matches, f"no load call matches placement {placement}"
     env.close()
 
