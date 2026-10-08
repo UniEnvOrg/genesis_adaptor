@@ -96,7 +96,13 @@ the runnable
 
 ## Installation
 
-You can install the adaptor locally (not published on PyPI yet):
+Install from PyPI:
+
+```bash
+pip install unienv_genesis
+```
+
+Or install the adaptor locally from source:
 
 ```bash
 git clone https://github.com/UniEnvOrg/genesis_adaptor/

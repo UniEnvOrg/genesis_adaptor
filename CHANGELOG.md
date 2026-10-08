@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.0.2a1 (2026-10-08)
+
 ### Added
 
 - **`RoomBuilder` scene offset** (`pos`/`yaw`, `TableBuilder` convention): the room frame (floor centre) can be placed at any world position and rotated about Z. The offset is captured at construction as read-only `pos`/`yaw` properties, identical across batched envs. Everything internal — the layout spec and baked JSON, procedural placement, `_occupied` overlap rejection, `set_furniture_pose_3d` — stays room-frame, and the world conversion happens exactly once at morph load: shell morphs (procedural primitives and baked shells, via `EntityGroup.world_pose`) and furniture morphs (`placement_world_pose`, composed as `room_quat ⊗ (yaw ⊗ standing_quaternion)`), so no post-build `set_pose` is needed and `batch_fixed_verts` batched worlds stay correct. Defaults (`(0, 0, 0)` / `0.0`) preserve the previous behaviour.
