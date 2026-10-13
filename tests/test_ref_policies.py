@@ -25,6 +25,7 @@ Covers:
 """
 
 import math
+import numpy as np
 import torch
 import genesis as gs
 import pytest
@@ -52,6 +53,7 @@ from unienv_genesis_refpolicy.implementations.graph_policy import GraphRefPolicy
 from unienv_genesis_refpolicy.implementations.grasp_policy import (
     BoxGripperGraspPolicy,
     GraspPhase,
+    filter_fn_clean_top_down,
 )
 from unienv_genesis_refpolicy.implementations.repeat_action_policy import RepeatActionRefPolicy
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
@@ -869,6 +871,130 @@ def test_box_gripper_grasp_policy_uses_candidate_provider(monkeypatch):
     assert torch.allclose(policy._target_grasp_pos, torch.tensor([0.3, 0.1, 0.7]))
 
 
+@pytest.mark.parametrize(
+    "cost, expected_x",
+    [
+        (None, 0.30),               # lowest IK error wins
+        ([0.5, 0.1, 0.0], 0.31),    # cheapest *reachable* candidate wins
+    ],
+)
+def test_box_gripper_grasp_policy_cost_ranks_only_reachable_candidates(
+    monkeypatch, cost, expected_x,
+):
+    world = GenesisWorld()
+
+    class _Provider(GraspCandidateProvider):
+        def propose(self, *, mask=None, seed=None):
+            del mask, seed
+            return GraspCandidates(
+                position=torch.tensor(
+                    [[0.30, 0.0, 0.7], [0.31, 0.0, 0.7], [0.50, 0.0, 0.7]],
+                    dtype=torch.float32,
+                ),
+                approach_direction=torch.tensor([[0.0, 0.0, -1.0]] * 3),
+                opening_direction=torch.tensor([[0.0, 1.0, 0.0]] * 3),
+            )
+
+    def _fake_reachable(_eef_ctrl, target_pos, target_quat, envs_idx=None):
+        # IK error grows with x: 0, 0.01 and 0.2 (beyond the 0.05 threshold).
+        del _eef_ctrl, target_quat, envs_idx
+        errors = torch.zeros(target_pos.shape[:-1] + (6,), dtype=torch.float32)
+        errors[..., 0] = target_pos[..., 0] - 0.30
+        return errors
+
+    monkeypatch.setattr(GoToRefPolicy, "check_reachable_error", staticmethod(_fake_reachable))
+
+    policy = BoxGripperGraspPolicy(
+        world=world,
+        eef_controller=_MockEEFController(world, pos=(0.0, 0.0, 0.8)),
+        gripper_controller=_MockGripperController(),
+        target_object=object(),
+        target_entity=object(),
+        candidate_provider=_Provider(),
+        candidate_cost_fn=None if cost is None else (lambda _c: torch.tensor(cost)),
+    )
+    policy.reset()
+
+    assert not policy.get_failure()
+    assert float(policy._target_grasp_pos[0]) == pytest.approx(expected_x)
+
+
+# ------------------------------------------------------------------
+# Restrictive top-down candidate filter
+# ------------------------------------------------------------------
+
+def _candidates(approach, opening, position=None):
+    approach = torch.as_tensor(approach, dtype=torch.float32)
+    opening = torch.as_tensor(opening, dtype=torch.float32)
+    if position is None:
+        position = torch.zeros(approach.shape)
+    return GraspCandidates(
+        position=torch.as_tensor(position, dtype=torch.float32),
+        approach_direction=approach,
+        opening_direction=opening,
+    )
+
+
+def test_filter_fn_clean_top_down_keeps_only_clean_top_downs():
+    """Clean top-down kept; shallow, degenerate-frame, and side grasps rejected."""
+    # (a) Clean top-down: approach straight down, opening orthogonal to it.
+    keep = filter_fn_clean_top_down(
+        _candidates([[0.0, 0.0, -1.0]], [[1.0, 0.0, 0.0]])
+    )
+    assert keep.shape == (1,) and keep.dtype == torch.bool
+    assert bool(keep[0]), "clean top-down candidate must be kept"
+
+    # (b) Near-horizontal approach (approach_z = -0.04 > -0.5) → rejected.
+    keep = filter_fn_clean_top_down(
+        _candidates([[0.0, 0.9992, -0.04]], [[1.0, 0.0, 0.0]])
+    )
+    assert not bool(keep[0]), "near-horizontal candidate must be rejected"
+
+    # (c) Degenerate frame: approach points down-ish (z = -0.8) but is almost
+    #     collinear with the opening (|dot| ≈ 0.99 > 0.5) → rejected.
+    approach = torch.tensor([[0.0, -0.6, -0.8]])
+    opening = approach + 0.14 * torch.tensor([[1.0, 0.0, 0.0]])
+    opening = opening / opening.norm(dim=-1, keepdim=True)
+    assert abs(float((approach * opening).sum())) > 0.5  # sanity: degenerate
+    keep = filter_fn_clean_top_down(
+        _candidates(approach, opening)
+    )
+    assert not bool(keep[0]), "degenerate-frame candidate must be rejected"
+
+    # (d) Side grasp (approach horizontal) → rejected.
+    keep = filter_fn_clean_top_down(
+        _candidates([[1.0, 0.0, 0.0]], [[0.0, 1.0, 0.0]])
+    )
+    assert not bool(keep[0]), "side grasp must be rejected"
+
+    # Relaxed threshold sanity check: the shallow one passes with min_down_cos=0.
+    keep = filter_fn_clean_top_down(
+        _candidates([[0.0, 0.9992, -0.04]], [[1.0, 0.0, 0.0]]),
+        min_down_cos=0.0,
+    )
+    assert bool(keep[0])
+
+
+def test_filter_fn_clean_top_down_batched_per_row_fallback():
+    """Batched rows with no clean candidate fall back to keeping all of them."""
+    # Row 0: one clean top-down + one side grasp → keep only the clean one.
+    # Row 1: only dirty candidates → keep all (per-row fallback).
+    candidates = _candidates(
+        approach=[
+            [[0.0, 0.0, -1.0], [1.0, 0.0, 0.0]],
+            [[0.0, 1.0, 0.0], [0.0, 0.9992, -0.04]],
+        ],
+        opening=[
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+        ],
+    )
+    keep = filter_fn_clean_top_down(candidates)
+    assert keep.shape == (2, 2)
+    assert keep[0].tolist() == [True, False]
+    assert keep[1].tolist() == [True, True], "zero-clean row keeps all candidates"
+
+
 # ------------------------------------------------------------------
 # Explicit-dt timing semantics
 # ------------------------------------------------------------------
@@ -908,6 +1034,86 @@ class _RecordingPolicy(BaseRefPolicy):
 
     def get_timeout(self):
         return self._false()
+
+
+def test_graph_policy_visited_nodes_unbatched():
+    """``get_visited_node_names`` tracks only the nodes actually entered."""
+    world = GenesisWorld()
+
+    class _SucceedAfter(_RecordingPolicy):
+        def __init__(self, world, steps):
+            super().__init__(world)
+            self._steps = steps
+            self._count = 0
+
+        def reset(self, *, mask=None, seed=None):
+            self._count = 0
+
+        def get_success(self):
+            self._count += 1
+            return self._count >= self._steps
+
+    a = _SucceedAfter(world, steps=2)  # succeeds on the 2nd get_success call
+    b = _RecordingPolicy(world)
+    c = _RecordingPolicy(world)
+    graph = GraphRefPolicy(
+        world,
+        nodes={"a": a, "b": b, "c": c},
+        success_edges=[("a", "b"), ("b", "c")],
+        fail_edges=[],
+        initial="a",
+    )
+    # Initial node is visited from the start.
+    assert graph.get_visited_node_names() == ["a"]
+
+    graph.step(dt=0.1)  # a: count 1 (<2), no transition
+    assert graph.get_visited_node_names() == ["a"]
+    graph.step(dt=0.1)  # a: count 2 -> success -> transition to b
+    assert set(graph.get_visited_node_names()) == {"a", "b"}
+    # c is never entered.
+    assert "c" not in graph.get_visited_node_names()
+
+    # Reset returns to the initial node and clears the visit history.
+    graph.reset()
+    assert graph.get_visited_node_names() == ["a"]
+
+    print("  PASS: graph policy visited nodes (unbatched)")
+
+
+def test_graph_policy_visited_nodes_batched():
+    """Per-env visit tracking: only the env that transitions visits the node."""
+    world = GenesisWorld(batch_size=2)
+
+    class _SelectiveSuccess(_RecordingPolicy):
+        # Env 0 succeeds immediately; env 1 never does.
+        def get_success(self):
+            return torch.tensor([True, False], device=world.device)
+
+    a = _SelectiveSuccess(world)
+    b = _RecordingPolicy(world)
+    graph = GraphRefPolicy(
+        world,
+        nodes={"a": a, "b": b},
+        success_edges=[("a", "b")],
+        fail_edges=[],
+        initial="a",
+    )
+    visited = graph.get_visited_node_names()
+    assert visited == [["a"], ["a"]]
+
+    graph.step(dt=0.1)
+    visited = graph.get_visited_node_names()
+    assert set(visited[0]) == {"a", "b"}  # env 0 transitioned to b
+    assert visited[1] == ["a"]            # env 1 never left a
+
+    # A masked reset of env 0 clears only env 0's history.
+    mask = torch.tensor([True, False], device=world.device)
+    graph.reset(mask=mask)
+    visited = graph.get_visited_node_names()
+    assert visited[0] == ["a"]
+    assert visited[1] == ["a"]
+
+    print("  PASS: graph policy visited nodes (batched)")
 
 
 def test_goto_explicit_dt_controls_timeout():
@@ -1588,3 +1794,193 @@ if __name__ == "__main__":
     test_goto_lambda_action_follows_base_frame_change()
     print()
     print("All tests passed!")
+
+
+# ------------------------------------------------------------------
+# BboxGraspCandidateProvider
+# ------------------------------------------------------------------
+
+
+class _FakeBoxMesh:
+    """Minimal trimesh stand-in reporting a volume equal to its bbox.
+
+    ``extents``/``volume`` are numpy (as real trimesh returns them) so the
+    provider's fill-ratio gate is exercised against the real dtypes.
+    """
+
+    def __init__(self, extents, volume):
+        self.extents = np.asarray(extents, dtype=np.float64)
+        self.volume = volume
+
+
+class _FakeBboxObject:
+    """Minimal object descriptor for BboxGraspCandidateProvider tests."""
+
+    def __init__(self, low, high, fill_ratio):
+        self._low = torch.as_tensor(low, dtype=torch.float32)
+        self._high = torch.as_tensor(high, dtype=torch.float32)
+        extents = (self._high - self._low)
+        bbox_volume = float(torch.prod(extents).item())
+        self._mesh = _FakeBoxMesh(extents.tolist(), volume=fill_ratio * bbox_volume)
+
+    def _load_trimesh(self):
+        return self._mesh
+
+    def get_local_bounding_box(self):
+        from unienv_genesis_collection.objects.base_object import make_bbox
+
+        return make_bbox(self._low, self._high)
+
+
+class _FakeEntity:
+    """Entity returning a fixed identity world pose."""
+
+    def get_pos(self):
+        return torch.zeros(3)
+
+    def get_quat(self):
+        return torch.tensor([1.0, 0.0, 0.0, 0.0])
+
+
+class _FakeBaseProvider:
+    """Returns a fixed set of base candidates (mimics the antipodal provider)."""
+
+    def __init__(self, n, device="cpu"):
+        from unienv_genesis_collection.objects.base_object import GraspCandidates
+
+        self._candidates = GraspCandidates(
+            position=torch.zeros(n, 3, device=device),
+            approach_direction=torch.zeros(n, 3, device=device),
+            opening_direction=torch.zeros(n, 3, device=device),
+        )
+
+    def propose(self, *, mask=None, seed=None):
+        return self._candidates
+
+
+def test_bbox_provider_supplements_box_like_object():
+    """A box-like object gets bbox-face grasps appended to the base candidates."""
+    from unienv_genesis_refpolicy.grasp_providers.bbox import (
+        BboxGraspCandidateProvider,
+    )
+
+    # Box: 0.05 (x) x 0.06 (y) x 0.11 (z), fully filled (fill ratio 1.0).
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.06, 0.11], fill_ratio=1.0)
+    provider = BboxGraspCandidateProvider(
+        target_object=obj,
+        target_entity=_FakeEntity(),
+        gripper_width=0.085,
+        gripper_depth=0.01,
+        base_provider=_FakeBaseProvider(n=7),
+    )
+    assert provider.is_box_like()
+
+    out = provider.propose()
+    n_base = 7
+    # x (0.05) and y (0.06) fit the 0.085 opening (with its 1 cm slack); z
+    # (0.11) does not -> 2
+    # eligible axes x 8 candidates each (2 approach axes x 2 approach signs x
+    # 2 opening signs) = 16.
+    n_bbox = int(out.position.shape[-2]) - n_base
+    assert n_bbox == 16
+
+    bbox_apr = out.approach_direction[n_base:]
+    bbox_opn = out.opening_direction[n_base:]
+    # Some candidates are genuine top-down (approach straight down).
+    n_top_down = int((bbox_apr[:, 2] < -0.9).sum())
+    assert n_top_down == 4  # closing along x, approaching down (+-z)
+    # approach ⟂ opening for every bbox candidate.
+    dots = (bbox_apr * bbox_opn).sum(-1).abs()
+    assert float(dots.max()) < 1e-4
+
+
+def test_bbox_provider_silent_for_non_convex_object():
+    """A non-convex object (low fill ratio) yields only the base candidates."""
+    from unienv_genesis_refpolicy.grasp_providers.bbox import (
+        BboxGraspCandidateProvider,
+    )
+
+    # Toy-plane-like: bbox is large but the mesh fills a small fraction.
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.2, 0.2, 0.05], fill_ratio=0.15)
+    provider = BboxGraspCandidateProvider(
+        target_object=obj,
+        target_entity=_FakeEntity(),
+        gripper_width=0.085,
+        gripper_depth=0.01,
+        base_provider=_FakeBaseProvider(n=5),
+    )
+    assert not provider.is_box_like()
+    out = provider.propose()
+    assert int(out.position.shape[-2]) == 5  # unchanged (base only)
+
+
+def test_bbox_provider_respects_gripper_width():
+    """Axes wider than the gripper opening produce no grasp on that axis."""
+    from unienv_genesis_refpolicy.grasp_providers.bbox import (
+        BboxGraspCandidateProvider,
+    )
+
+    # Box with one axis (y=0.20) wider than the 0.085 gripper opening.
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.20, 0.06], fill_ratio=1.0)
+    provider = BboxGraspCandidateProvider(
+        target_object=obj,
+        target_entity=_FakeEntity(),
+        gripper_width=0.085,
+        gripper_depth=0.01,
+        base_provider=_FakeBaseProvider(n=0),
+    )
+    out = provider.propose()
+    # No candidate may open along the too-wide y axis.
+    opn = out.opening_direction
+    assert int((opn[:, 1].abs() > 0.5).sum()) == 0
+    # x (0.05) and z (0.06) fit; y (0.20) does not -> 2 eligible axes x 8 = 16.
+    assert int(out.position.shape[-2]) == 16
+
+
+@pytest.mark.parametrize("width_margin, n_axes", [(0.0, 3), (0.01, 2)])
+def test_bbox_provider_leaves_width_slack(width_margin, n_axes):
+    """An axis within ``width_margin`` of the gripper opening is not grasped across."""
+    from unienv_genesis_refpolicy.grasp_providers.bbox import (
+        BboxGraspCandidateProvider,
+    )
+
+    # y (0.08) fits the 0.085 opening but not with 1 cm of slack.
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.08, 0.06], fill_ratio=1.0)
+    provider = BboxGraspCandidateProvider(
+        target_object=obj,
+        target_entity=_FakeEntity(),
+        gripper_width=0.085,
+        gripper_depth=0.01,
+        base_provider=_FakeBaseProvider(n=0),
+        width_margin=width_margin,
+    )
+    out = provider.propose()
+    assert int(out.position.shape[-2]) == 8 * n_axes
+
+
+def test_bbox_provider_topdown_grasps_high_on_tall_box():
+    """Downward-approach bbox grasps sit near the TOP face, not the bottom."""
+    from unienv_genesis_refpolicy.grasp_providers.bbox import (
+        BboxGraspCandidateProvider,
+    )
+
+    # Tall box: 0.05 (x) x 0.05 (y) footprint, 0.27 tall (z).  x and y fit the
+    # 0.085 gripper; the downward approach must grasp near the top face.
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.05, 0.27], fill_ratio=1.0)
+    provider = BboxGraspCandidateProvider(
+        target_object=obj,
+        target_entity=_FakeEntity(),  # identity pose at world origin
+        gripper_width=0.085,
+        gripper_depth=0.035,
+        base_provider=_FakeBaseProvider(n=0),
+    )
+    assert provider.is_box_like()
+    out = provider.propose()
+    # Downward-approach candidates (approach straight down).
+    down = out.approach_direction[:, 2] < -0.9
+    assert int(down.sum()) > 0
+    down_z = out.position[down][:, 2]
+    # All downward grasps sit a finger-depth below the top face (0.27 - 0.035),
+    # NOT a finger-depth above the bottom (0.035).
+    assert float(down_z.min()) > 0.20, f"downward grasps too low: {down_z}"
+    assert float(down_z.max()) <= 0.27

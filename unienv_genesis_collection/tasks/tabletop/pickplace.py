@@ -155,6 +155,10 @@ class ObjectRelocateTask(WorldNode):
     def after_reload(self, *, priority=0, mask=None):
         if priority not in self.after_reload_priorities:
             return
+        # The scene is built by now, so the target can receive its realistic
+        # mass (``GSOObject`` overrides the geometry-derived one; a no-op for
+        # every other descriptor) before it is placed and simulated.
+        self.target_object.apply_mass(self.target_object_entity)
         # Initialise placement for the first time.
         self.reset(priority=min(self.reset_priorities), seed=None, mask=None)
 

@@ -10,6 +10,8 @@ Covers:
   - list_gso_objects tag / substring filtering
   - make_gso_pool selection / sampling / validation
   - GSOObject construction, path resolution, fixed variant
+  - Realistic mass resolution (curated table / density fallback / override)
+  - Texture binding forwarded to the scene (explicit diffuse texture surface)
   - Lazy asset completeness check incl. partial-download repair
   - Freejoint injection and catalog helpers in scripts/prepare_gso_assets.py
 """
@@ -18,18 +20,25 @@ import importlib.util
 import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 import torch
 
 from unienv_genesis_collection import asset_path
+from unienv_genesis_collection.objects.hub_objects import gso_object as gso_module
 from unienv_genesis_collection.objects.hub_objects.gso_object import (
     GSO_ASSETS_ROOT,
+    GSO_MASSES,
+    GSO_MASS_BOUNDS,
+    GSO_MASS_DENSITY,
     GSOObject,
     get_gso_catalog,
     list_gso_objects,
     make_gso_pool,
 )
+from unienv_genesis_collection.objects.mesh_object import MeshObject
 
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 _FUEL_METADATA = _SCRIPTS_DIR / "data" / "gso_fuel_metadata.json"
@@ -94,7 +103,15 @@ def _make_fake_object_dir(assets_dir: Path, object_id: str) -> Path:
     )
     for name in _OBJECT_FILES:
         (obj_dir / name).write_text("placeholder")
+    _write_png(obj_dir / "texture.png")
     return obj_dir
+
+
+def _write_png(path: Path, size=(2, 2)) -> None:
+    """Write a real (tiny) PNG — ``gs.textures.ImageTexture`` decodes eagerly."""
+    from PIL import Image
+
+    Image.new("RGB", size, (255, 0, 0)).save(path)
 
 
 @pytest.fixture
@@ -424,3 +441,162 @@ def test_build_catalog_injects_graspable_tag():
     assert "box_gripper_graspable" not in catalog["Toy_B"]["tags"]
     # Graspability is a tag only, never a language annotation.
     assert "box_gripper_graspable" not in catalog["Toy_A"]["language_annotations"]
+
+
+# ------------------------------------------------------------------
+# Realistic masses
+# ------------------------------------------------------------------
+
+def test_mass_argument_overrides(assets_dir, no_download):
+    obj = GSOObject(_SAMPLE_ID, mass=0.42)
+    assert obj.mass == 0.42
+    # No asset access needed: the override wins outright.
+    assert obj.resolve_mass() == 0.42
+    assert not no_download
+
+
+def test_mass_argument_must_be_positive(assets_dir):
+    with pytest.raises(ValueError, match="positive"):
+        GSOObject(_SAMPLE_ID, mass=0.0)
+    with pytest.raises(ValueError, match="positive"):
+        GSOObject(_SAMPLE_ID, mass=-1.0)
+
+
+def test_mass_defaults_to_none_on_mesh_object(assets_dir):
+    assert MeshObject(mesh_file="whatever.obj").mass is None
+
+
+def test_curated_masses_are_known_objects_with_plausible_weights(assets_dir):
+    catalog = get_gso_catalog()
+    assert GSO_MASSES, "the curated mass table must not be empty"
+    for object_id, mass in GSO_MASSES.items():
+        assert object_id in catalog, object_id
+        assert 0.0 < mass <= GSO_MASS_BOUNDS[1], (object_id, mass)
+
+
+def test_curated_mass_is_used_without_asset_access(assets_dir, no_download):
+    """A curated entry resolves offline — no hull volume needed."""
+    assert _SAMPLE_ID in GSO_MASSES
+    obj = GSOObject(_SAMPLE_ID)
+    assert obj.mass is None
+    assert obj.resolve_mass() == GSO_MASSES[_SAMPLE_ID]
+    assert not no_download
+
+
+def test_density_fallback_scales_with_hull_volume(assets_dir, no_download, monkeypatch):
+    """Uncurated objects fall back to hull volume x density, clamped."""
+    monkeypatch.setattr(gso_module, "GSO_MASSES", {})
+    obj = GSOObject(_SAMPLE_ID)
+
+    def _volume(value):
+        return lambda: SimpleNamespace(volume=value)
+
+    monkeypatch.setattr(obj, "_load_collision_trimesh", _volume(0.002))
+    assert obj.resolve_mass() == pytest.approx(0.002 * GSO_MASS_DENSITY)
+
+    low, high = GSO_MASS_BOUNDS
+    monkeypatch.setattr(obj, "_load_collision_trimesh", _volume(1e-9))
+    assert obj.resolve_mass() == pytest.approx(low)
+    monkeypatch.setattr(obj, "_load_collision_trimesh", _volume(10.0))
+    assert obj.resolve_mass() == pytest.approx(high)
+
+    # The fallback density is a plausible household-object density, far below
+    # the ~1000-2000 kg/m^3 the geometry-derived mass implies.
+    assert 50.0 <= GSO_MASS_DENSITY <= 400.0
+
+
+def test_apply_mass_sets_the_entity_mass(assets_dir, no_download):
+    class _Entity:
+        def __init__(self):
+            self.masses = []
+
+        def set_mass(self, mass):
+            self.masses.append(mass)
+
+    entity = _Entity()
+    GSOObject(_SAMPLE_ID, mass=0.25).apply_mass(entity)
+    GSOObject(_SAMPLE_ID).apply_mass(entity)  # curated table
+    assert entity.masses == [0.25, GSO_MASSES[_SAMPLE_ID]]
+
+
+def test_apply_mass_skips_fixed_objects(assets_dir, no_download):
+    class _Entity:
+        def set_mass(self, mass):  # pragma: no cover - must not be called
+            raise AssertionError("set_mass must not be called for fixed objects")
+
+    GSOObject(_SAMPLE_ID, fixed=True, mass=0.25).apply_mass(_Entity())
+
+
+def test_apply_mass_is_a_noop_without_a_mass(assets_dir):
+    class _Entity:
+        def set_mass(self, mass):  # pragma: no cover - must not be called
+            raise AssertionError("set_mass must not be called without a mass")
+
+    MeshObject(mesh_file="whatever.obj").apply_mass(_Entity())
+
+
+def test_cluttered_table_manager_applies_descriptor_masses():
+    """The manager finalises every loaded entity's mass after the build."""
+    from unienv_genesis_collection.scenes.cluttered_table_manager import (
+        ClutteredTableManager,
+    )
+
+    applied = []
+    descriptors = [
+        SimpleNamespace(apply_mass=lambda entity: applied.append((0, entity))),
+        SimpleNamespace(apply_mass=lambda entity: applied.append((1, entity))),
+    ]
+    manager = object.__new__(ClutteredTableManager)
+    manager._loaded_objects = descriptors
+    manager._loaded_entities = ["entity_0", "entity_1"]
+
+    manager._apply_object_masses()
+    assert applied == [(0, "entity_0"), (1, "entity_1")]
+
+
+# ------------------------------------------------------------------
+# Texture binding
+# ------------------------------------------------------------------
+
+class _FakeScene:
+    def __init__(self):
+        self.added = []
+
+    def add_entity(self, morph, surface=None, name=None):
+        self.added.append(SimpleNamespace(morph=morph, surface=surface, name=name))
+        return self.added[-1]
+
+
+def test_load_into_scene_binds_the_mjcf_texture_explicitly(fake_object, no_download):
+    """The morph is added with an explicit diffuse-texture surface.
+
+    A renderer that re-exports the scene (Nyx) otherwise serialises every
+    MJCF mesh's texture to the same generic material file, so a scene's GSO
+    objects would all share one texture; the explicit ``ImageTexture`` is
+    exported per instance instead.
+    """
+    import genesis as gs
+
+    captured = []
+
+    class _MJCFSpy:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+            self.kwargs = kwargs
+
+    scene = _FakeScene()
+    world = SimpleNamespace(scene=scene)
+    obj = GSOObject(_SAMPLE_ID)
+
+    with mock.patch.object(gs, "morphs", SimpleNamespace(MJCF=_MJCFSpy)):
+        entity = obj.load_into_scene(world, pos=(0.1, 0.2, 0.3))
+
+    assert len(captured) == 1, captured
+    assert captured[0]["file"] == str(obj.mjcf_file)
+    assert entity.name == _SAMPLE_ID
+
+    surface = entity.surface
+    assert isinstance(surface, gs.surfaces.Plastic), surface
+    assert isinstance(surface.diffuse_texture, gs.textures.ImageTexture), surface
+    assert Path(surface.diffuse_texture.image_path) == Path(obj.visual_texture_path)
+    assert Path(obj.visual_texture_path) == obj.asset_dir / "texture.png"

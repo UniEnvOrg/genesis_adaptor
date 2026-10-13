@@ -59,7 +59,7 @@ Example::
             break
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 
@@ -70,6 +70,7 @@ from unienv_genesis.nodes.entities.entity_controllers.end_effector_pose import (
 from unienv_genesis.nodes.entities.entity_controllers.base import EntityController
 from unienv_genesis_collection.objects.base_object import ManipulatableObject
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
+from unienv_genesis_refpolicy.grasp_providers.base import GraspCandidateProvider
 from unienv_genesis_refpolicy.implementations.goto_lambda_policy import GoToLambdaRefPolicy
 from unienv_genesis_refpolicy.implementations.grasp_policy import BoxGripperGraspPolicy
 from unienv_genesis_refpolicy.implementations.move_object_lambda_policy import (
@@ -95,7 +96,14 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         target_object: :class:`ManipulatableObject` descriptor for the
             object to grasp.
         target_entity: The loaded Genesis entity for *target_object*
-            (typically ``task.target_object_entity``).
+            (typically ``task.target_object_entity``).  May be ``None`` when
+            ``target_entity_fn`` is given.
+        target_entity_fn: Optional zero-argument callable returning the current
+            (single, batched) entity.  Propagated to the grasp phase, which
+            re-reads it at every :meth:`reset`, so a phase graph built once can
+            be re-targeted at a newly-loaded entity after a scene reload
+            instead of being rebuilt.  Takes precedence over
+            ``target_entity``.
         eef_name: Key for the arm action in the returned dict.
         gripper_name: Key for the gripper action in the returned dict.
         lift_height: Height (m) to lift the object above its initial
@@ -156,6 +164,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         release_kwargs: Optional[Dict[str, Any]] = None,
         retreat_kwargs: Optional[Dict[str, Any]] = None,
         transport_slip_detection: bool = True,
+        target_entity_fn: Optional[Callable[[], Any]] = None,
     ) -> None:
         super().__init__(world)
         self.controller = eef_controller
@@ -163,6 +172,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self.task = task
         self.target_object = target_object
         self.target_entity = target_entity
+        self.target_entity_fn = target_entity_fn
         self._eef_name = eef_name
         self._gripper_name = gripper_name
         self.lift_height = lift_height
@@ -206,6 +216,10 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         nodes: Dict[str, Any] = {}
 
         def _get_target_entity():
+            # Read lazily so a scene reload (new entity id) is picked up at the
+            # next reset of any node that binds to the target object.
+            if target_entity_fn is not None:
+                return target_entity_fn()
             return target_entity if target_entity is not None else task.target_object_entity
 
         def _require_target_entity():
@@ -220,12 +234,24 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
 
         # 1. Grasp (factory — target_entity may be None until env.reset loads it)
         def make_grasp():
+            # A ``candidate_provider`` passed as a zero-arg callable is resolved
+            # here (lazily, on node construction) so callers can defer building
+            # it until the task's target object exists.  Non-callable providers
+            # are used as-is.
+            candidate_provider = grasp_kwargs.get("candidate_provider")
+            if callable(candidate_provider) and not isinstance(
+                candidate_provider, GraspCandidateProvider
+            ):
+                grasp_kwargs["candidate_provider"] = candidate_provider()
             return BoxGripperGraspPolicy(
                 world=world,
                 eef_controller=eef_controller,
                 gripper_controller=gripper_controller,
                 target_object=target_object,
                 target_entity=_require_target_entity(),
+                # Propagated so the grasp policy re-resolves the entity on every
+                # reset (rebindable graph; see the class docstring).
+                target_entity_fn=target_entity_fn,
                 eef_name=eef_name,
                 gripper_name=gripper_name,
                 **grasp_kwargs,

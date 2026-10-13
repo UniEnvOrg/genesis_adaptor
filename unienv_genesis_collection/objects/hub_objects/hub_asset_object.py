@@ -66,6 +66,9 @@ class HubAssetMeshObject(MeshObject):
             against ``asset_dir`` and forwarded to
             :class:`MeshObject` as ``visual_texture_path``.  ``None``
             (the default) leaves the surface untextured.
+        mass: Optional total mass in **kg**, forwarded to
+            :class:`MeshObject` (see there).  ``None`` keeps the mass
+            Genesis derives from the asset geometry.
     """
 
     def __init__(
@@ -78,6 +81,7 @@ class HubAssetMeshObject(MeshObject):
         language_annotations: Optional[Sequence[str]] = None,
         visual_texture_file_name: Optional[str] = None,
         standing_quaternion: Optional[Sequence[float]] = None,
+        mass: Optional[float] = None,
     ):
         self.asset_relative_dir = asset_relative_dir
         # ASSETS_DIR is read via the module (and frozen here) so tests and
@@ -96,6 +100,7 @@ class HubAssetMeshObject(MeshObject):
             language_annotations=language_annotations,
             visual_texture_path=visual_texture_path,
             standing_quaternion=standing_quaternion,
+            mass=mass,
         )
         self._assets_ready = False
 

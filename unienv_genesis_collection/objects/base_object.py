@@ -449,6 +449,25 @@ class ManipulatableObject(ABC, Generic[EntityT]):
         ...
 
     # ------------------------------------------------------------------
+    # Post-build entity setup
+    # ------------------------------------------------------------------
+
+    def apply_mass(self, entity: EntityT) -> None:
+        """Force the loaded entity's total mass, if this descriptor has one.
+
+        Called by scene-assembly nodes (``ClutteredTableManager``,
+        ``ObjectRelocateTask``) **after** the Genesis scene is built: the
+        physics override ``entity.set_mass()`` is a built-scene operation, so
+        it cannot run inside :meth:`load_into_scene`.  The default is a no-op —
+        only descriptors that model a mass (e.g. :class:`MeshObject` with
+        ``mass=``, every :class:`GSOObject`) override it.
+
+        Args:
+            entity: The entity returned by :meth:`load_into_scene`.
+        """
+        return None
+
+    # ------------------------------------------------------------------
     # Concrete geometry helpers
     # ------------------------------------------------------------------
 

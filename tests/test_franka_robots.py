@@ -43,14 +43,24 @@ _HARDWARE_LIMITS = [2.075, 2.075, 2.075, 2.075, 2.51, 2.51, 2.51]
 # Velocity-limit configuration
 # ---------------------------------------------------------------------------
 
+# The FR3 + Robotiq arm runs at 0.4 rad/s in simulation (the 0.2 rad/s DROID
+# teleop limit was too slow to track transport waypoints); the others keep 0.2.
+_ARM_IK_VEL_LIMITS = {
+    franka_emika_panda: 0.2,
+    franka_fr3_hand: 0.2,
+    franka_fr3_robotiq_2f85: 0.4,
+}
+
+
 @pytest.mark.parametrize("mod", _VARIANT_MODULES, ids=lambda m: m.__name__.rsplit(".", 1)[-1])
 def test_arm_max_joint_pos_vel_is_droid_limit(mod):
-    """Active arm rate limit must be the DROID 0.2 rad/s scalar."""
-    assert mod.DROID_FRANKA_ARM_IK_VEL_LIMIT == 0.2
+    """Active arm rate limit is the variant's scalar IK velocity limit."""
+    expected = _ARM_IK_VEL_LIMITS[mod]
+    assert mod.DROID_FRANKA_ARM_IK_VEL_LIMIT == expected
     limit = mod._DEFAULT_SUB_CONTROLLERS["arm"]["max_joint_pos_vel"]
-    assert isinstance(limit, float) and limit == 0.2, (
-        f"{mod.__name__}: arm max_joint_pos_vel should be the scalar 0.2 rad/s "
-        f"(DROID limit), got {limit!r}"
+    assert isinstance(limit, float) and limit == expected, (
+        f"{mod.__name__}: arm max_joint_pos_vel should be the scalar "
+        f"{expected} rad/s, got {limit!r}"
     )
 
 

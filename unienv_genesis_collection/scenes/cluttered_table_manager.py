@@ -294,6 +294,14 @@ class ClutteredTableManager(WorldNode):
             centres, shaped `([n_envs], n_zones, 2 or 3)`
             radii, shaped `([n_envs], n_zones)`.
         The `n_envs` depends on the number of environments in the world, it's not optional if the world is batched
+
+        On a *masked* reset the leading dimension may either cover the whole
+        batch (``world.batch_size`` rows — the canonical layout; the manager
+        itself selects the reset rows with the global environment indices) or
+        already be restricted to the reset scope (``n_reset`` rows).  Both are
+        accepted by :meth:`_select_reset_scope_avoid_spaces`; any other leading
+        dimension raises a :class:`ValueError` instead of indexing out of
+        bounds.
         """
         self._pending_avoid_spaces = (
             centres,
@@ -455,8 +463,23 @@ class ClutteredTableManager(WorldNode):
     def after_reload(self, *, priority=0, mask=None, **kwargs):
         if priority != 25:
             return
+        # The scene is built by now (``world.after_reload`` runs before the
+        # nodes'), so entity-level physics overrides — e.g. a GSO object's
+        # realistic mass, which Genesis only accepts on a built scene — land
+        # before the first placement and the first physics step.
+        self._apply_object_masses()
         # After a fresh reload every environment needs placement.
         self.reset(priority=25, seed=None, mask=None, **kwargs)
+
+    def _apply_object_masses(self):
+        """Let every loaded descriptor finalise its entity's mass.
+
+        ``ManipulatableObject.apply_mass`` is a no-op for descriptors that
+        model no mass; :class:`GSOObject` uses it to replace the
+        geometry-derived mass with a realistic one.
+        """
+        for obj_desc, entity in zip(self._loaded_objects, self._loaded_entities):
+            obj_desc.apply_mass(entity)
 
     def reset(self, *, priority=0, seed=None, mask=None, **kwargs):
         if priority != 25:
@@ -593,7 +616,7 @@ class ClutteredTableManager(WorldNode):
 
         # Per-env avoid spaces from kwargs (expected in world frame).
         if extra is not None:
-            ext_xy, ext_r = extra  # (n_envs_full, n_extra, 2|3), (n_envs_full, n_extra)
+            ext_xy, ext_r = extra  # ([n_scope], n_extra, 2|3), ([n_scope], n_extra)
             # Move dynamic avoid spaces onto the world's device so that the
             # local index slicing and downstream math stay device-local.
             ext_xy = ext_xy.to(self.world.device)
@@ -603,8 +626,9 @@ class ClutteredTableManager(WorldNode):
                 ext_xy = ext_xy[..., :2]
             # Index by reset_idx if partial reset.
             if reset_idx is not None:
-                ext_xy = ext_xy[reset_idx]
-                ext_r = ext_r[reset_idx]
+                ext_xy, ext_r = self._select_reset_scope_avoid_spaces(
+                    ext_xy, ext_r, reset_idx, n_reset,
+                )
             # Inverse-rotate world → local table frame.
             tp = torch.tensor(
                 [self.table_pos[0], self.table_pos[1]],
@@ -624,6 +648,53 @@ class ClutteredTableManager(WorldNode):
         return (
             torch.empty(n_reset, 0, 2, dtype=self.world.dtype, device=self.world.device),
             torch.empty(n_reset, 0, dtype=self.world.dtype, device=self.world.device),
+        )
+
+    def _select_reset_scope_avoid_spaces(
+        self,
+        ext_xy: torch.Tensor,
+        ext_r: torch.Tensor,
+        reset_idx: torch.Tensor,
+        n_reset: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Select the avoid-space rows that belong to the reset scope.
+
+        Callers hand over the *per-environment* avoid spaces queued via
+        :meth:`set_next_reset_avoid_spaces` in one of two layouts:
+
+        * **full batch** — one row per environment of the world
+          (``world.batch_size`` rows, the documented layout).  The reset scope
+          is selected with the **global** environment indices, i.e.
+          ``ext_xy[reset_idx]``.
+        * **reset scope** — one row per *reset* environment (``n_reset`` rows),
+          i.e. the caller already applied the mask.  Such rows are in ascending
+          environment order, exactly matching ``torch.where(mask)[0]``, and are
+          therefore used as-is.
+
+        Both layouts are unambiguous unless the lengths coincide (in which case
+        the full-batch selection is the identity, so the result is the same).
+
+        This used to index unconditionally, with ``reset_idx`` computed from the
+        mask.  For a pre-sliced ``(n_reset, ...)`` tensor and a mask that
+        excludes env 0 (``reset_idx == [1]``) that is an **out-of-bounds device
+        access**: on CUDA it aborts the whole context with a device-side assert
+        (``IndexKernel`` "index out of bounds") reported far from this call
+        site, while for ``reset_idx == [0]`` it silently — but correctly — read
+        row 0.  Any other row count is now rejected with a descriptive error.
+        """
+        n_rows = int(ext_xy.shape[0])
+        n_envs = self.world.batch_size
+        if n_rows == n_envs:
+            # Full-batch layout: pick the reset environments by global index.
+            return ext_xy[reset_idx], ext_r[reset_idx]
+        if n_rows == n_reset:
+            # Already reset-scoped by the caller.
+            return ext_xy, ext_r
+        raise ValueError(
+            f"{self._name}: avoid spaces have {n_rows} row(s), but the batched "
+            f"world has {n_envs} envs and the reset scope covers {n_reset}; "
+            f"expected either a full-batch ({n_envs}, ...) or a reset-scope "
+            f"({n_reset}, ...) tensor"
         )
 
     # ------------------------------------------------------------------
@@ -916,12 +987,34 @@ class ClutteredTableManager(WorldNode):
                 inactive_quats = park_quat.unsqueeze(0).expand(
                     n_inactive, 4,
                 )
-                cur_pos = entity.get_pos().clone()
-                cur_quat = entity.get_quat().clone()
-                cur_pos[global_inactive_idx] = inactive_positions
-                cur_quat[global_inactive_idx] = inactive_quats
-                entity.set_pos(cur_pos)
-                entity.set_quat(cur_quat)
+                if envs_idx is None:
+                    # Full write (all environments).  The read-modify-write
+                    # leaves the active environments' freshly written pose
+                    # untouched; the inactive ones receive the park pose.
+                    cur_pos = entity.get_pos().clone()
+                    cur_quat = entity.get_quat().clone()
+                    cur_pos[global_inactive_idx] = inactive_positions
+                    cur_quat[global_inactive_idx] = inactive_quats
+                    entity.set_pos(cur_pos)
+                    entity.set_quat(cur_quat)
+                else:
+                    # Masked reset: write *only* the inactive environments of
+                    # the reset scope.  A full-batch read-modify-write would
+                    # round the pose of the environments *outside* the mask
+                    # through Genesis again (ulp drift on CUDA — a masked reset
+                    # must leave them bit-for-bit untouched) and, on Genesis
+                    # versions where teleports zero the velocities of the
+                    # selected envs, also clear their velocities.
+                    inactive_mask = torch.zeros(
+                        self.world.batch_size, dtype=torch.bool, device=device,
+                    )
+                    inactive_mask[global_inactive_idx] = True
+                    entity.set_pos(
+                        inactive_positions.contiguous(), envs_idx=inactive_mask,
+                    )
+                    entity.set_quat(
+                        inactive_quats.contiguous(), envs_idx=inactive_mask,
+                    )
 
     # ------------------------------------------------------------------
     # Introspection

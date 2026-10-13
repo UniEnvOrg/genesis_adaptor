@@ -91,6 +91,17 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         self._terminal_success = torch.zeros(scalar_shape, dtype=torch.bool, device=device)
         self._terminal_failure = torch.zeros(scalar_shape, dtype=torch.bool, device=device)
 
+        # Per-env bitmask of the graph nodes visited in the *current* episode
+        # (bit i set => env entered node ``self._node_names[i]``).  Leaf phase
+        # nodes keep sticky flags across episodes (the graph only resets the
+        # node being entered), so a diagnostic that dumps every node's flags
+        # would attribute an episode to phases it never ran.  This mask records
+        # actual visits so such diagnostics can report only entered nodes.
+        self._visited_node_mask = torch.zeros(
+            scalar_shape + (len(self._node_names),), dtype=torch.bool, device=device,
+        )
+        self._visited_node_mask[..., self._name_to_idx[initial]] = True
+
         # CPU-side mirror of the set of node indices currently occupied by at
         # least one env.  Kept as a (possibly slightly stale superset) list so
         # that get_action/get_action_dict don't need a GPU→CPU sync
@@ -140,6 +151,8 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
             self._current_idx[mask] = initial_idx
             self._terminal_success[mask] = False
             self._terminal_failure[mask] = False
+            self._visited_node_mask[mask] = False
+            self._visited_node_mask[mask, initial_idx] = True
             # Exact refresh of the active-node mirror (single sync; resets
             # are infrequent).  Keeping it exact here avoids spuriously
             # instantiating factory nodes that are no longer occupied.
@@ -149,6 +162,8 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
             self._current_idx.fill_(initial_idx)
             self._terminal_success.zero_()
             self._terminal_failure.zero_()
+            self._visited_node_mask.zero_()
+            self._visited_node_mask[..., initial_idx] = True
             self._active_node_indices = [initial_idx]
 
         initial_policy = self._get_or_create_node(self._initial)
@@ -291,6 +306,25 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
             return torch.zeros_like(self._terminal_success)
         return False
 
+    def get_visited_node_names(self) -> Union[List[str], List[List[str]]]:
+        """Names of the graph nodes each env has entered in the current episode.
+
+        Returns a flat list of names for an unbatched world, or a per-env list
+        of name-lists for a batched world.  Diagnostics should use this to
+        report only the phases an episode actually ran (leaf nodes keep sticky
+        flags across episodes, so unvisited nodes carry stale state).
+        """
+        mask = self._visited_node_mask
+        names = self._node_names
+        if is_batched(self.world.batch_size):
+            mask2 = mask.detach().cpu()
+            return [
+                [names[i] for i in range(len(names)) if bool(mask2[e, i])]
+                for e in range(mask2.shape[0])
+            ]
+        flat = mask.reshape(-1).detach().cpu()
+        return [names[i] for i in range(len(names)) if bool(flat[i])]
+
     # ------------------------------------------------------------------
     # Unbatched implementation
     # ------------------------------------------------------------------
@@ -327,6 +361,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
         next_idx = self._name_to_idx[next_name]
         self._current_idx.fill_(next_idx)
         self._active_node_indices = [next_idx]
+        self._visited_node_mask[..., next_idx] = True
         next_policy = self._get_or_create_node(next_name)
         next_policy.reset()
     
@@ -386,6 +421,7 @@ class GraphRefPolicy(BaseRefPolicy[ActT]):
     def _transition_to_batched(self, next_name: str, env_mask: torch.Tensor) -> None:
         next_idx = self._name_to_idx[next_name]
         self._current_idx.masked_fill_(env_mask, next_idx)
+        self._visited_node_mask[..., next_idx] |= env_mask
         if next_idx not in self._active_node_indices:
             self._active_node_indices.append(next_idx)
         next_policy = self._get_or_create_node(next_name)

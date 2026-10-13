@@ -31,11 +31,14 @@ GRIPPER_DRIVER_NAMES = ["g_left_driver_joint", "g_right_driver_joint"]
 # Pad link names for grasp contact detection
 GRIPPER_PAD_LINK_NAMES = ["g_left_pad", "g_right_pad"]
 
-# DROID IK/controller velocity limit for the Franka arm (rad/s).
-# This is the max joint velocity used by the DROID IK controller, not the
-# per-joint hardware limits from franka_hardware.yaml.
+# Max joint velocity used by the arm's IK controller (rad/s).  This
+# rate-limits the per-step IK joint-position targets.  Originally the DROID
+# real-robot teleop limit (0.2 rad/s —
 # Ref: https://github.com/droid-dataset/droid/blob/main/droid/robot_ik/robot_ik_solver.py#L10
-DROID_FRANKA_ARM_IK_VEL_LIMIT = 0.2
+# ); raised to 0.4 rad/s for simulation, where the conservative teleop limit
+# made the arm too slow to track transport waypoints (the Kp/Kd gains below are
+# the MuJoCo-menagerie values, which tolerate this).
+DROID_FRANKA_ARM_IK_VEL_LIMIT = 0.4
 
 # Franka hardware per-joint velocity limits (rad/s) from franka_hardware.yaml.
 # Intentionally retained as hardware/reference documentation for future

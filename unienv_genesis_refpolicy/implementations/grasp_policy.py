@@ -66,7 +66,13 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         gripper_controller: Controller for the gripper (any
             :class:`EntityController`).
         target_object: The object descriptor to grasp.
-        target_entity: The loaded Genesis entity for *target_object*.
+        target_entity: The loaded Genesis entity for *target_object*.  May be
+            ``None`` when ``target_entity_fn`` is given.
+        target_entity_fn: Optional zero-argument callable returning the current
+            (single, batched) entity.  When given it is re-read at every
+            :meth:`reset`, so the same policy instance can be re-targeted at a
+            newly-loaded entity after a scene reload instead of being rebuilt.
+            Takes precedence over ``target_entity``.
         gripper_width: Maximum gripper opening in metres.
         gripper_depth: Depth of the gripper fingers in metres.
         gripper_open_action: Gripper action value for fully open.
@@ -95,6 +101,14 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             candidate dimension (``True`` = keep).  Applied in world
             coordinates before IK evaluation.  Useful to restrict grasps
             to top-down only, avoid certain orientations, etc.
+        candidate_cost_fn: Optional callable
+            ``(GraspCandidates) -> FloatTensor`` returning a per-candidate
+            grasp-quality cost (lower = better) over the candidate dimension,
+            in world coordinates.  It only orders the *reachable* candidates
+            (IK error within ``ik_error_threshold``), which are then ranked by
+            IK error + cost; it never makes an unreachable candidate win, and
+            the IK gate still sees the IK error alone.  Without it the
+            reachable candidate with the lowest IK error is chosen.
 
     Notes:
         Time accounting (``open_gripper_seconds``, ``close_gripper_seconds``,
@@ -128,6 +142,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         ik_error_threshold: float = 0.05,
         filter_candidate_fn : Optional[Callable[[GraspCandidates], torch.Tensor]] = None,
         candidate_provider: Optional[GraspCandidateProvider] = None,
+        target_entity_fn: Optional[Callable[[], Any]] = None,
+        candidate_cost_fn: Optional[Callable[[GraspCandidates], torch.Tensor]] = None,
     ) -> None:
         super().__init__(world)
 
@@ -136,6 +152,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._gripper_ctrl = gripper_controller
         self.target_object = target_object
         self.target_entity = target_entity
+        self.target_entity_fn = target_entity_fn
         self.approach_distance = approach_distance
         self.position_threshold = position_threshold
         self.orientation_threshold = orientation_threshold
@@ -147,6 +164,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._gripper_name = gripper_name
         self.ik_error_threshold = ik_error_threshold
         self._filter_candidate_fn = filter_candidate_fn
+        self._candidate_cost_fn = candidate_cost_fn
 
         # Resolve optional parameters from gripper controller attributes.
         if gripper_width is None:
@@ -166,9 +184,13 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self.gripper_depth = gripper_depth
         self.gripper_open_action = gripper_open_action
         self.gripper_close_action = gripper_close_action
+        # The default provider shares the policy's entity source, so a
+        # rebindable policy also re-resolves the entity inside propose().  A
+        # caller-supplied provider is responsible for its own binding.
         self._candidate_provider = candidate_provider or ObjectGeometryGraspCandidateProvider(
             target_object=target_object,
             target_entity=target_entity,
+            target_entity_fn=target_entity_fn,
             gripper_width=gripper_width,
             gripper_depth=gripper_depth,
         )
@@ -250,6 +272,16 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         # envs, not the full batch.
         use_sub = batched and mask is not None
 
+        # 0. Re-resolve the target entity from its (possibly rebindable) source.
+        #    A scene reload swaps the entity id, so reading the callable here
+        #    re-targets the policy — and step()'s ``is_grasping(...)`` check
+        #    below — without rebuilding the policy.
+        self.target_entity = (
+            self.target_entity_fn()
+            if self.target_entity_fn is not None
+            else self.target_entity
+        )
+
         # 1. Query grasp candidates (world coordinates).
         candidates = self._candidate_provider.propose(
             mask=mask,
@@ -303,12 +335,20 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 self._failed.fill_(True)
             return
 
+        # 1c. Optional grasp-quality cost over the (filtered) candidates.
+        cost: Optional[torch.Tensor] = None
+        if self._candidate_cost_fn is not None:
+            cost = self._candidate_cost_fn(candidates)
+            self._debug_last["candidate_cost"] = cost.clone()
+
         if use_sub:
             cand_pos = candidates.position[mask]                # (M, N, 3)
             cand_approach = candidates.approach_direction[mask]  # (M, N, 3)
             cand_opening = candidates.opening_direction[mask]    # (M, N, 3)
             if keep is not None:
                 keep = keep[mask]                                # (M, N)
+            if cost is not None:
+                cost = cost[mask]                                # (M, N)
             envs_idx = mask
         else:
             cand_pos = candidates.position
@@ -332,8 +372,18 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         #    candidates to inf so they are never selected.
         if keep is not None:
             combined_errors[~keep] = float('inf')
-        #    Pick the candidate with the lowest combined error per env.
-        best_idx = combined_errors.argmin(dim=-1)  # () or (M|B,)
+        #    Pick the candidate with the lowest combined error per env.  A
+        #    quality cost only orders the reachable candidates: unreachable
+        #    ones keep their raw error behind a large offset, so they still
+        #    win only when nothing is reachable (and then fail the gate).
+        ranking = combined_errors
+        if cost is not None:
+            cost = cost.to(device=combined_errors.device, dtype=combined_errors.dtype)
+            reachable = combined_errors <= self.ik_error_threshold
+            ranking = torch.where(
+                reachable, combined_errors + cost, combined_errors + 1e6,
+            )
+        best_idx = ranking.argmin(dim=-1)  # () or (M|B,)
         self._debug_last["best_idx"] = best_idx.clone() if isinstance(best_idx, torch.Tensor) else int(best_idx)
 
         # IK quality gate: fail if the best candidate is unreachable.  The
@@ -696,6 +746,101 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         """Keep only grasps that approach from above (EEF approach-axis points down).
         """
         return candidates.approach_direction[..., 2] < 0
+
+    @staticmethod
+    def filter_fn_prefer_top_down(candidates : GraspCandidates) -> torch.Tensor:
+        """Prefer top-down grasps, falling back to all candidates per row.
+
+        See :func:`filter_fn_prefer_top_down` (module level) for the full
+        rationale.  This static form mirrors :meth:`filter_fn_top_down`.
+        """
+        return filter_fn_prefer_top_down(candidates)
+
+
+def filter_fn_prefer_top_down(candidates: GraspCandidates) -> torch.Tensor:
+    """Grasp-candidate filter that *prefers* top-down grasps without excluding all.
+
+    ``BoxGripperGraspPolicy.filter_fn_top_down`` keeps only candidates whose
+    approach axis points down.  Catalog objects whose grasp candidates come from
+    mesh sampling (GSO/YCB) often expose side approaches only — e.g. a hammer
+    lying flat — and filtering them out would leave the grasp policy with no
+    candidate at all (every candidate gets an ``inf`` IK error and the phase
+    fails immediately).
+
+    This filter keeps the candidates approaching from above
+    (``approach_direction[..., 2] < 0``) and, for any batch row where that set
+    is empty, falls back to keeping *all* candidates in that row.  The fallback
+    is applied per row on a batched ``(B, N)`` mask; for an unbatched ``(N,)``
+    mask the top-down mask is returned unchanged (matching the reference
+    implementation this is ported from).
+
+    Args:
+        candidates: ``GraspCandidates`` in world coordinates.
+
+    Returns:
+        ``(..., n_candidates)`` bool mask (``True`` = keep).
+    """
+    keep = candidates.approach_direction[..., 2] < 0
+    if isinstance(keep, torch.Tensor) and keep.dim() > 1:
+        return keep | ~keep.any(dim=-1, keepdim=True)
+    return keep
+
+
+def filter_fn_clean_top_down(
+    candidates: GraspCandidates,
+    *,
+    min_down_cos: float = 0.5,
+    max_opening_alignment: float = 0.5,
+) -> torch.Tensor:
+    """Grasp-candidate filter that keeps only *clean* top-down grasps.
+
+    Unlike :func:`filter_fn_prefer_top_down` (a soft preference that accepts any
+    downward-leaning approach), this is a **restrictive** filter: a candidate is
+    kept only when
+
+    1. its approach is genuinely downward —
+       ``approach_direction[..., 2] <= -min_down_cos`` (default ``-0.5``,
+       i.e. within ~60° of straight down), **and**
+    2. its grasp frame is well-conditioned — the approach and opening axes are
+       near-orthogonal, ``|approach · opening| <= max_opening_alignment``
+       (default ``0.5``).  A candidate source may emit frames in which the
+       approach is almost *collinear* with the opening
+       (``|approach · opening| ≈ 1``); building an EEF frame from such a pair
+       leaves the closing direction ill-defined and the resulting pose
+       unreachable, so those candidates are rejected here even when their
+       approach happens to point down.  (:class:`MeshObject`'s antipodal
+       sampler emits exactly orthogonal frames.)
+
+    Because mesh/bbox samplers now emit genuinely clean top-down candidates
+    (e.g. the bounding-box family, whose frames are exactly orthogonal), this
+    filter lets the *stock* :class:`ObjectGeometryGraspCandidateProvider` be
+    used with a restrictive selection instead of a custom re-framing provider.
+
+    Per-row fallback: for a batched ``(B, N)`` mask, any row with no surviving
+    candidate falls back to keeping *all* candidates in that row (so a feasible
+    grasp is still attempted rather than failing the phase outright).  For an
+    unbatched ``(N,)`` mask the restrictive mask is returned unchanged.
+
+    Args:
+        candidates: ``GraspCandidates`` in world coordinates.
+        min_down_cos: Minimum ``-approach_z`` (cosine of the approach to
+            straight-down) for a candidate to count as top-down.
+        max_opening_alignment: Maximum ``|approach · opening|`` for the grasp
+            frame to count as well-conditioned.
+
+    Returns:
+        ``(..., n_candidates)`` bool mask (``True`` = keep).
+    """
+    approach = candidates.approach_direction
+    opening = candidates.opening_direction
+    downward = approach[..., 2] <= -float(min_down_cos)
+    alignment = (approach * opening).sum(dim=-1).abs()
+    clean = alignment <= float(max_opening_alignment)
+    keep = downward & clean
+    if isinstance(keep, torch.Tensor) and keep.dim() > 1:
+        return keep | ~keep.any(dim=-1, keepdim=True)
+    return keep
+
 
 def _to_bool_tensor(value: Union[torch.Tensor, bool], like: torch.Tensor) -> torch.Tensor:
     """Coerce a bool or Tensor to a bool Tensor matching *like*'s shape/device."""
