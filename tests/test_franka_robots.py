@@ -3,8 +3,8 @@
 Covers, for ``franka_emika_panda``, ``franka_fr3_hand`` and
 ``franka_fr3_robotiq_2f85``:
 
-  - The active arm ``max_joint_pos_vel`` is the intended DROID limit of
-    0.2 rad/s (a scalar), with the Franka hardware per-joint limits retained
+  - The active arm ``max_joint_pos_vel`` is the simulation IK velocity limit
+    of 0.4 rad/s (a scalar), with the Franka hardware per-joint limits retained
     only as reference constants (including the legacy
     ``DROID_FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS`` alias).
   - Grasp detection resolves every configured pad link, raises a clear error
@@ -13,7 +13,7 @@ Covers, for ``franka_emika_panda``, ``franka_fr3_hand`` and
     the contact tensor's device (CPU, and CUDA where available), honouring
     the batched ``valid_mask``.
   - Integration: the default combined controller of ``FrankaEmikaPanda``
-    wires the 0.2 rad/s limit into the arm sub-controller.
+    wires the 0.4 rad/s limit into the arm sub-controller.
 """
 
 from __future__ import annotations
@@ -43,24 +43,19 @@ _HARDWARE_LIMITS = [2.075, 2.075, 2.075, 2.075, 2.51, 2.51, 2.51]
 # Velocity-limit configuration
 # ---------------------------------------------------------------------------
 
-# The FR3 + Robotiq arm runs at 0.4 rad/s in simulation (the 0.2 rad/s DROID
-# teleop limit was too slow to track transport waypoints); the others keep 0.2.
-_ARM_IK_VEL_LIMITS = {
-    franka_emika_panda: 0.2,
-    franka_fr3_hand: 0.2,
-    franka_fr3_robotiq_2f85: 0.4,
-}
+# Raised from the 0.2 rad/s DROID teleop limit, which was too slow in simulation
+# to track transport waypoints.
+ARM_IK_VEL_LIMIT = 0.4
 
 
 @pytest.mark.parametrize("mod", _VARIANT_MODULES, ids=lambda m: m.__name__.rsplit(".", 1)[-1])
 def test_arm_max_joint_pos_vel_is_droid_limit(mod):
-    """Active arm rate limit is the variant's scalar IK velocity limit."""
-    expected = _ARM_IK_VEL_LIMITS[mod]
-    assert mod.DROID_FRANKA_ARM_IK_VEL_LIMIT == expected
+    """Active arm rate limit is the scalar 0.4 rad/s IK velocity limit."""
+    assert mod.DROID_FRANKA_ARM_IK_VEL_LIMIT == ARM_IK_VEL_LIMIT
     limit = mod._DEFAULT_SUB_CONTROLLERS["arm"]["max_joint_pos_vel"]
-    assert isinstance(limit, float) and limit == expected, (
+    assert isinstance(limit, float) and limit == ARM_IK_VEL_LIMIT, (
         f"{mod.__name__}: arm max_joint_pos_vel should be the scalar "
-        f"{expected} rad/s, got {limit!r}"
+        f"{ARM_IK_VEL_LIMIT} rad/s, got {limit!r}"
     )
 
 
@@ -200,8 +195,8 @@ def test_panda_combined_controller_uses_droid_limit():
     assert arm_limit is not None
     flat = arm_limit[0] if arm_limit.dim() == 2 else arm_limit
     assert flat.numel() == 7
-    assert torch.allclose(flat, torch.full_like(flat, 0.2)), (
-        f"Arm sub-controller limit should be 0.2 rad/s on all 7 joints, got {flat}"
+    assert torch.allclose(flat, torch.full_like(flat, ARM_IK_VEL_LIMIT)), (
+        f"Arm sub-controller limit should be {ARM_IK_VEL_LIMIT} rad/s on all 7 joints, got {flat}"
     )
 
     env.close()

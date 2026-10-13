@@ -43,7 +43,7 @@ DROID_FRANKA_ARM_IK_VEL_LIMIT = 0.4
 # Franka hardware per-joint velocity limits (rad/s) from franka_hardware.yaml.
 # Intentionally retained as hardware/reference documentation for future
 # controller/planner work, even though the active controller uses the DROID
-# 0.2 rad/s limit above; NOT wired into any active controller.
+# IK velocity limit above; NOT wired into any active controller.
 FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS = torch.tensor([2.075, 2.075, 2.075, 2.075, 2.51, 2.51, 2.51])
 
 # Previous DROID_-prefixed name, intentionally retained alongside the

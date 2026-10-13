@@ -25,16 +25,18 @@ EE_LINK_NAME = "hand"
 # Finger link names for grasp contact detection
 FINGER_PAD_LINK_NAMES = ["left_finger", "right_finger"]
 
-# DROID IK/controller velocity limit for the Franka arm (rad/s).
-# This is the max joint velocity used by the DROID IK controller, not the
-# per-joint hardware limits from franka_hardware.yaml.
+# Max joint velocity used by the arm's IK controller (rad/s).  This
+# rate-limits the per-step IK joint-position targets.  Originally the DROID
+# real-robot teleop limit (0.2 rad/s —
 # Ref: https://github.com/droid-dataset/droid/blob/main/droid/robot_ik/robot_ik_solver.py#L10
-DROID_FRANKA_ARM_IK_VEL_LIMIT = 0.2
+# ); raised to 0.4 rad/s for simulation, where the conservative teleop limit
+# made the arm too slow to track transport waypoints.
+DROID_FRANKA_ARM_IK_VEL_LIMIT = 0.4
 
 # Franka hardware per-joint velocity limits (rad/s) from franka_hardware.yaml.
 # Intentionally retained as hardware/reference documentation for future
 # controller/planner work, even though the active controller uses the DROID
-# 0.2 rad/s limit above; NOT wired into any active controller.
+# IK velocity limit above; NOT wired into any active controller.
 FRANKA_HARDWARE_ARM_JOINT_VEL_LIMITS = torch.tensor([2.075, 2.075, 2.075, 2.075, 2.51, 2.51, 2.51])
 
 # Previous DROID_-prefixed name, intentionally retained alongside the
