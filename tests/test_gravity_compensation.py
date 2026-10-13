@@ -9,6 +9,7 @@ Covers:
     resets it).
   - Guards: velocity control and batched worlds without batched DOF info
     reject ``gravity_compensation=True``.
+  - A float ``gravity_compensation`` scales the written feedforward.
 """
 
 import pytest
@@ -174,3 +175,22 @@ def test_batched_world_requires_batched_dofs_info():
     with pytest.raises(ValueError, match="batch_dofs_info"):
         FrankaEmikaPanda(GenesisWorld(batch_size=2), name="franka", controller_type="joint_position",
                          gravity_compensation=True)
+
+
+@pytest.mark.parametrize("factor", [0.5, 1.2])
+def test_compensation_factor_scales_the_feedforward(factor):
+    # A factor off 1 models a real robot that under- / over-compensates.
+    world, robot, env = _make(FrankaEmikaPanda, name="franka", controller_type="joint_position",
+                              gravity_compensation=factor)
+    assert robot.controller.gravity_compensation == pytest.approx(factor)
+    pose = _franka_pose(world)
+    robot.entity.set_dofs_position(pose)
+    expected = factor * robot.controller._gravity_feedforward.torque()
+    env.step(pose)
+    bias0, _, _ = robot.entity.get_dofs_act_bias()
+    torch.testing.assert_close(bias0, expected)
+
+
+def test_compensation_off_reports_zero_factor():
+    _, robot, _ = _make(FrankaEmikaPanda, name="franka", controller_type="joint_position")
+    assert robot.controller.gravity_compensation == 0.0

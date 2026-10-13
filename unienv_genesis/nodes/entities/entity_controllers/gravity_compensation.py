@@ -24,16 +24,22 @@ class GravityFeedforward:
         prismatic: g_j = -(sum_l m_l) (a_j . g)
 
     Only the robot's own links are compensated; held / grasped objects are not.
+
+    ``scale`` multiplies the torque written by :meth:`apply` (``1.0`` = exact
+    compensation); a value off 1 models a real robot whose own compensation
+    under- or over-shoots.  :meth:`torque` always returns the unscaled ``g(q)``.
     """
 
     def __init__(
         self,
         entity: gs_entities.RigidEntity,
         dofs_idx_local: Optional[Sequence[int]] = None,
+        scale: float = 1.0,
     ) -> None:
         self.dofs_idx_local = (
             list(range(entity.n_dofs)) if dofs_idx_local is None else list(dofs_idx_local)
         )
+        self.scale = float(scale)
         self.rebuild(entity)
 
     def rebuild(self, entity: gs_entities.RigidEntity) -> None:
@@ -93,6 +99,8 @@ class GravityFeedforward:
         return torch.where(self._is_revolute, revolute, prismatic)
 
     def apply(self) -> None:
-        """Write ``g(q)`` into ``act_bias[0]``, keeping the current Kp / Kd terms."""
+        """Write ``scale * g(q)`` into ``act_bias[0]``, keeping the current Kp / Kd terms."""
         _, bias1, bias2 = self.entity.get_dofs_act_bias(self.dofs_idx_local)
-        self.entity.set_dofs_act_bias(self.torque(), bias1, bias2, self.dofs_idx_local)
+        self.entity.set_dofs_act_bias(
+            self.scale * self.torque(), bias1, bias2, self.dofs_idx_local,
+        )
