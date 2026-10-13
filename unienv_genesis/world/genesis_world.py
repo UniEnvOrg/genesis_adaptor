@@ -205,8 +205,7 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         """
         if not self.is_batched:
             return False
-        rigid_options = getattr(self.scene, "rigid_options", None)
-        return bool(getattr(rigid_options, "batch_dofs_info", False))
+        return bool(self.scene.options.rigid.batch_dofs_info)
 
     @property
     def world_timestep(self) -> float:

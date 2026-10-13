@@ -24,8 +24,12 @@ class JointVelocityController(
         max_joint_vel : Optional[Union[float, PyTorchArrayType]] = None,
         joint_names : Optional[Sequence[str]] = None,
         is_grasping_fn = None,
+        gravity_compensation : bool = False,
         **kwargs,
     ) -> None:
+        if gravity_compensation:
+            # Genesis' velocity mode ignores act_bias, so there is no feedforward slot.
+            raise ValueError("gravity_compensation is not supported by velocity control.")
         super().__init__(world, entity, Kp, Kd, joint_indexes, max_joint_vel, joint_names=joint_names, is_grasping_fn=is_grasping_fn, **kwargs)
         self.action_space = self.action_space['target_joint_velocity']
 
