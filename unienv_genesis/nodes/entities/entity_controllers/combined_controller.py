@@ -211,7 +211,7 @@ class CombinedController(EntityController[gs_entities.RigidEntity, dict, dict]):
             ctrls = {n: c for n, c in self._sub_controllers.items() if isinstance(c, EndEffectorPoseController)}
             first = next(iter(ctrls.values()), None)
             shareable = (
-                1 < len(ctrls) <= self.entity._IK_n_tgts
+                1 < len(ctrls) <= self.entity.solver._options.IK_max_targets
                 and all(c.joint_indexes is not None for c in ctrls.values())
                 and all(c._ik_call_kwargs() == first._ik_call_kwargs() for c in ctrls.values())
                 and all(

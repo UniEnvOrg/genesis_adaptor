@@ -44,6 +44,7 @@ class JointPositionController(
             target_qpos,
             dofs_idx_local=self.joint_indexes
         )
+        self._apply_gravity_compensation()
 
     def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict for joint position control.

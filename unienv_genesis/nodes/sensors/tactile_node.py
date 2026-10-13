@@ -335,7 +335,7 @@ class TactileSensorNode(SensorNode[Sensor, None, Dict[str, PyTorchArrayType]]):
                 data[..., sl].reshape(*data.shape[:-1], *shape)
                 for sl, shape in zip(sensor._read_flat_slices, sensor._return_shapes)
             ]
-            out[key] = fields[0] if len(fields) == 1 else sensor._return_data_class(*fields)
+            out[key] = fields[0] if len(fields) == 1 else sensor._return_data_cls(*fields)
         return out
 
     def update_observation(self) -> None:

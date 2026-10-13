@@ -13,12 +13,25 @@ from unienv_genesis.utils.batch_dim_utils import (
     is_batched,
 )
 from .base import DiscreteEntityController, EntityType, ActType, resolve_joint_indexes
+from .gravity_compensation import GravityFeedforward
 
 class JointPositionAndVelocityController(
     DiscreteEntityController[
         PyTorchArrayType
     ]
 ):
+    """Joint position + velocity impedance controller.
+
+    Genesis applies ``tau = Kp (q* - q) - Kd (q_dot - q_dot*)`` every substep.
+    With ``gravity_compensation=True`` the controller also writes the gravity
+    torque ``g(q)`` of the controlled joints (see :class:`GravityFeedforward`)
+    into Genesis' actuator feedforward ``act_bias[0]`` on every
+    :meth:`apply_action`; it is held across the substeps of that step.  This
+    removes the PD steady-state sag under gravity while the motors still carry
+    the load.  Held / grasped objects are not compensated.  In a batched world
+    this needs ``RigidOptions(batch_dofs_info=True)``, since ``g(q)`` differs per
+    env.
+    """
     controller_type = "joint_position_and_velocity"
 
     def __init__(
@@ -35,6 +48,7 @@ class JointPositionAndVelocityController(
         is_grasping_fn = None,
         position_control_low : Optional[Union[float, PyTorchArrayType]] = None,
         position_control_high : Optional[Union[float, PyTorchArrayType]] = None,
+        gravity_compensation : bool = False,
         **kwargs,
     ) -> None:
         joint_indexes = resolve_joint_indexes(entity, joint_indexes, joint_names)
@@ -111,6 +125,16 @@ class JointPositionAndVelocityController(
         )
         self.Kp = Kp
         self.Kd = Kd
+        self._gravity_feedforward = None
+        if gravity_compensation:
+            if world.is_batched and not world.dofs_info_batched:
+                raise ValueError(
+                    "gravity_compensation in a batched world writes a per-env "
+                    "torque, which requires the scene to store batched DOF info.  "
+                    "Construct the world with scene_init_kwargs=dict(rigid_options="
+                    "gs.options.RigidOptions(batch_dofs_info=True), ...)."
+                )
+            self._gravity_feedforward = GravityFeedforward(entity, self.joint_indexes)
 
     def _expand_gains(
         self, value: Union[float, PyTorchArrayType], gain_name: str,
@@ -184,6 +208,16 @@ class JointPositionAndVelocityController(
             self.entity.set_dofs_kp(self._Kp_expanded, dofs_idx_local=self.joint_indexes)
         if self._Kd_expanded is not None:
             self.entity.set_dofs_kv(self._Kd_expanded, dofs_idx_local=self.joint_indexes)
+        if self._gravity_feedforward is not None:
+            self._gravity_feedforward.rebuild(self.entity)
+
+    @property
+    def gravity_compensation(self) -> bool:
+        return self._gravity_feedforward is not None
+
+    def _apply_gravity_compensation(self) -> None:
+        if self._gravity_feedforward is not None:
+            self._gravity_feedforward.apply()
 
     def apply_action(self, action, dt: Optional[float] = None):
         target_qpos = self._clip_target_qpos(action['target_joint_position'], dt)
@@ -193,6 +227,7 @@ class JointPositionAndVelocityController(
             target_qvel,
             dofs_idx_local=self.joint_indexes
         )
+        self._apply_gravity_compensation()
 
     def get_action_dict(self, action: Any, dt: Optional[float] = None) -> Dict[str, Any]:
         """Return structured action dict for combined position+velocity control.
