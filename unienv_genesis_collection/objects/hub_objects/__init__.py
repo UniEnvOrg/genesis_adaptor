@@ -15,6 +15,24 @@ the local assets folder.  This subpackage provides:
 * :class:`GSOObject` — Google Scanned Objects entry (MJCF + V-HACD
   collision), with :func:`get_gso_catalog`, :func:`list_gso_objects`,
   :func:`make_gso_pool`.
+* :class:`ABOObject` — Amazon Berkeley Objects entry (Z-up OBJ + texture,
+  collision from Genesis's own convex decomposition), with
+  :func:`get_abo_catalog`, :func:`list_abo_objects`, :func:`make_abo_pool`.
+* The :mod:`~unienv_genesis_collection.objects.hub_objects.articulated`
+  subpackage — Hub-backed *articulated* furniture:
+  :class:`~...articulated.HubAssetArticulatedObject` base plus
+  :class:`~...articulated.RoboCasaFixture` (MJCF),
+  :class:`~...articulated.ReplicaCADFurniture` (URDF),
+  :class:`~...articulated.ArtVIPFurniture` (USD),
+  :class:`~...articulated.MolmoSpacesFurniture` (USD, Ai2-THOR subset),
+  :class:`~...articulated.LightwheelFurniture` (SimReady bundle) and
+  :class:`~...articulated.SimReadyWarehouseProp` (rigid props) with their
+  catalog / list / pool helpers.
+* :class:`LightwheelEnv` — the Lightwheel SimReady bundle's **static**
+  ``Locomotion/`` environments (terrains, rooms, a staircase; loaded with
+  ``gs.morphs.USD`` + ``scene.add_stage``, no articulation), with
+  :func:`get_lightwheel_env_catalog`, :func:`list_lightwheel_env_objects`,
+  :func:`make_lightwheel_env_pool`.
 """
 
 from unienv_genesis_collection.objects.hub_objects.catalog import (
@@ -41,6 +59,61 @@ from unienv_genesis_collection.objects.hub_objects.gso_object import (
     list_gso_objects,
     make_gso_pool,
 )
+from unienv_genesis_collection.objects.hub_objects.abo_object import (
+    ABOObject,
+    ABO_ASSETS_ROOT,
+    ABO_CATALOG_PATH,
+    get_abo_catalog,
+    list_abo_objects,
+    make_abo_pool,
+)
+from unienv_genesis_collection.objects.hub_objects.articulated import (
+    HubAssetArticulatedObject,
+    ROBOCASA_ASSETS_ROOT,
+    ROBOCASA_CATALOG_PATH,
+    RoboCasaFixture,
+    get_robocasa_catalog,
+    list_robocasa_objects,
+    make_robocasa_pool,
+    REPLICACAD_ASSETS_ROOT,
+    REPLICACAD_CATALOG_PATH,
+    ReplicaCADFurniture,
+    get_replicacad_catalog,
+    list_replicacad_objects,
+    make_replicacad_pool,
+    ARTVIP_ASSETS_ROOT,
+    ARTVIP_CATALOG_PATH,
+    ArtVIPFurniture,
+    get_artvip_catalog,
+    list_artvip_objects,
+    make_artvip_pool,
+    MOLMOSPACES_ASSETS_ROOT,
+    MOLMOSPACES_CATALOG_PATH,
+    MolmoSpacesFurniture,
+    get_molmospaces_catalog,
+    list_molmospaces_objects,
+    make_molmospaces_pool,
+    LIGHTWHEEL_ASSETS_ROOT,
+    LIGHTWHEEL_CATALOG_PATH,
+    LightwheelFurniture,
+    get_lightwheel_catalog,
+    list_lightwheel_objects,
+    make_lightwheel_pool,
+    SIMREADY_WAREHOUSE_ASSETS_ROOT,
+    SIMREADY_WAREHOUSE_CATALOG_PATH,
+    SimReadyWarehouseProp,
+    get_simready_warehouse_catalog,
+    list_simready_warehouse_objects,
+    make_simready_warehouse_pool,
+)
+from unienv_genesis_collection.objects.hub_objects.lightwheel_env import (
+    LIGHTWHEEL_ENV_ASSETS_ROOT,
+    LIGHTWHEEL_ENV_CATALOG_PATH,
+    LightwheelEnv,
+    get_lightwheel_env_catalog,
+    list_lightwheel_env_objects,
+    make_lightwheel_env_pool,
+)
 
 __all__ = [
     # Base + catalog
@@ -62,4 +135,60 @@ __all__ = [
     "get_gso_catalog",
     "list_gso_objects",
     "make_gso_pool",
+    # Amazon Berkeley Objects
+    "ABOObject",
+    "ABO_ASSETS_ROOT",
+    "ABO_CATALOG_PATH",
+    "get_abo_catalog",
+    "list_abo_objects",
+    "make_abo_pool",
+    # Articulated furniture (RoboCasa MJCF / ReplicaCAD URDF)
+    "HubAssetArticulatedObject",
+    "RoboCasaFixture",
+    "ROBOCASA_ASSETS_ROOT",
+    "ROBOCASA_CATALOG_PATH",
+    "get_robocasa_catalog",
+    "list_robocasa_objects",
+    "make_robocasa_pool",
+    "ReplicaCADFurniture",
+    "REPLICACAD_ASSETS_ROOT",
+    "REPLICACAD_CATALOG_PATH",
+    "get_replicacad_catalog",
+    "list_replicacad_objects",
+    "make_replicacad_pool",
+    # ArtVIP furniture (USD)
+    "ArtVIPFurniture",
+    "ARTVIP_ASSETS_ROOT",
+    "ARTVIP_CATALOG_PATH",
+    "get_artvip_catalog",
+    "list_artvip_objects",
+    "make_artvip_pool",
+    # MolmoSpaces furniture (USD)
+    "MolmoSpacesFurniture",
+    "MOLMOSPACES_ASSETS_ROOT",
+    "MOLMOSPACES_CATALOG_PATH",
+    "get_molmospaces_catalog",
+    "list_molmospaces_objects",
+    "make_molmospaces_pool",
+    # Lightwheel furniture (USD)
+    "LightwheelFurniture",
+    "LIGHTWHEEL_ASSETS_ROOT",
+    "LIGHTWHEEL_CATALOG_PATH",
+    "get_lightwheel_catalog",
+    "list_lightwheel_objects",
+    "make_lightwheel_pool",
+    # SimReady Warehouse rigid props (USD)
+    "SimReadyWarehouseProp",
+    "SIMREADY_WAREHOUSE_ASSETS_ROOT",
+    "SIMREADY_WAREHOUSE_CATALOG_PATH",
+    "get_simready_warehouse_catalog",
+    "list_simready_warehouse_objects",
+    "make_simready_warehouse_pool",
+    # Lightwheel static environments (USD, Locomotion subset)
+    "LightwheelEnv",
+    "LIGHTWHEEL_ENV_ASSETS_ROOT",
+    "LIGHTWHEEL_ENV_CATALOG_PATH",
+    "get_lightwheel_env_catalog",
+    "list_lightwheel_env_objects",
+    "make_lightwheel_env_pool",
 ]

@@ -1,19 +1,24 @@
 [project]
 name = "unienv_genesis"
 description = "Genesis simulation backend for the UniEnv framework: composable scenes, robots, sensors, controllers, and reference policies"
-version = "0.0.1b1"
+version = "0.0.2a1"
 readme = "README.md"
 license = "MIT"
 requires-python = ">= 3.10"
 dependencies = [
     "unienv",
-    "genesis-world>=1.3",
+    "genesis-world>=1.4",
     "torch",
     "PyYAML",
     "huggingface_hub>=0.23",
     "numpy",
     "xbarray",
     "trimesh>=3.22",
+    # USD offline FK (usd_link_meshes_at_config on UsdPhysics stages) + the
+    # ArtVIP asset machinery's layer-closure enumeration. Already a transitive
+    # dependency of genesis-world (its USD loader); pinned for the explicit
+    # version floor.
+    "usd-core>=26.8",
 ]
 
 [project.optional-dependencies]

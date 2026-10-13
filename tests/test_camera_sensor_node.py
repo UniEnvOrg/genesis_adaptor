@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import math
 import pytest
 import torch
@@ -23,14 +25,31 @@ from unienv_genesis.nodes.sensors import (
 )
 from unienv_genesis.options.attach_option import AttachFromName
 
-# Check if NYX is available
-try:
-    import gs_nyx.nyx_py_renderer as npr
-    import gs_nyx.nyx_py_sdk as nps
-    from gs_nyx_plugin.nyx_camera_options import NyxCameraOptions
-    NYX_AVAILABLE = True
-except ImportError:
-    NYX_AVAILABLE = False
+# Check if NYX is available — **lazily**, through the camera node's helper.
+# ``gs_nyx`` bundles its own monolithic OpenUSD runtime
+# (``gs_nyx/libusd_ms.so``), which conflicts with the ``usd-core`` one the
+# ArtVIP/USD tests use (Tf notice registry corruption in one process — see
+# camera_node.py's DSO note).  Importing the Nyx DSOs at *collection* time
+# would poison every other module of the run; the check is deferred to the
+# module-level ``__getattr__`` hook only when the Nyx tests actually run.
+from unienv_genesis.nodes.sensors import camera_node as _camera_node_module
+
+NYX_AVAILABLE = None  # evaluated lazily (see _nyx_available)
+
+
+def _nyx_available():
+    if NYX_AVAILABLE is None:
+        # The Nyx DSOs corrupt the usd-core Tf runtime when a pxr stage was
+        # already opened in the same process (ArtVIP tests import pxr lazily
+        # at call time); Nyx tests skip rather than crash the whole run then.
+        if "pxr" in sys.modules:
+            return False
+        globals()["_camera_node_state"] = _camera_node_module._NYX_STATE
+        globals()["NYX_AVAILABLE"] = _camera_node_module._ensure_nyx() is True
+        globals()["npr"] = _camera_node_module._NYX_STATE["npr"]
+        globals()["nps"] = _camera_node_module._NYX_STATE["nps"]
+        globals()["NyxCameraOptions"] = _camera_node_module._NYX_STATE["NyxCameraOptions"]
+    return NYX_AVAILABLE
 
 
 class DummyBoxNode(WorldNode):
@@ -237,7 +256,7 @@ def _make_nyx_unbatched_env(render_depth=False, render_seg=False, render_normal=
     return env, camera
 
 
-@pytest.mark.skipif(not NYX_AVAILABLE, reason="NYX not available")
+@pytest.mark.skipif(not _nyx_available(), reason="NYX not available")
 def test_nyx_rgb_only_shapes():
     """NYX backend with RGB only should produce correct shapes."""
     env, camera = _make_nyx_unbatched_env()
@@ -257,7 +276,7 @@ def test_nyx_rgb_only_shapes():
     env.close()
 
 
-@pytest.mark.skipif(not NYX_AVAILABLE, reason="NYX not available")
+@pytest.mark.skipif(not _nyx_available(), reason="NYX not available")
 def test_nyx_hybrid_shapes():
     """NYX backend with depth should use hybrid rendering (NYX RGB + genesis depth)."""
     env, camera = _make_nyx_unbatched_env(render_depth=True, render_seg=True, render_normal=True)
@@ -278,7 +297,7 @@ def test_nyx_hybrid_shapes():
     env.close()
 
 
-@pytest.mark.skipif(not NYX_AVAILABLE, reason="NYX not available")
+@pytest.mark.skipif(not _nyx_available(), reason="NYX not available")
 def test_nyx_intrinsics_values():
     """NYX intrinsics should be computed from FOV."""
     env, camera = _make_nyx_unbatched_env()
@@ -304,7 +323,7 @@ def test_nyx_intrinsics_values():
     env.close()
 
 
-@pytest.mark.skipif(not NYX_AVAILABLE, reason="NYX not available")
+@pytest.mark.skipif(not _nyx_available(), reason="NYX not available")
 def test_nyx_extrinsics_values():
     """NYX extrinsics should be valid rotation matrices."""
     env, camera = _make_nyx_unbatched_env()
@@ -319,7 +338,7 @@ def test_nyx_extrinsics_values():
     env.close()
 
 
-@pytest.mark.skipif(not NYX_AVAILABLE, reason="NYX not available")
+@pytest.mark.skipif(not _nyx_available(), reason="NYX not available")
 def test_nyx_local_extrinsics_static():
     """Static NYX camera: local_extrinsics_cv should equal extrinsics_cv."""
     env, camera = _make_nyx_unbatched_env(attach=False)
@@ -335,7 +354,7 @@ def test_nyx_local_extrinsics_static():
     env.close()
 
 
-@pytest.mark.skipif(not NYX_AVAILABLE, reason="NYX not available")
+@pytest.mark.skipif(not _nyx_available(), reason="NYX not available")
 def test_nyx_local_extrinsics_attached():
     """Attached NYX camera: local_extrinsics_cv should be valid."""
     env, camera = _make_nyx_unbatched_env(attach=True)
@@ -363,7 +382,7 @@ def test_nyx_local_extrinsics_attached():
     env.close()
 
 
-@pytest.mark.skipif(not NYX_AVAILABLE, reason="NYX not available")
+@pytest.mark.skipif(not _nyx_available(), reason="NYX not available")
 def test_nyx_observation_space_matches():
     """NYX observation space shape should match actual observation shapes."""
     env, camera = _make_nyx_unbatched_env(render_depth=True)
@@ -424,7 +443,7 @@ def _expected_cam_to_world(camera, link) -> torch.Tensor:
     return link_T @ offset_T
 
 
-@pytest.mark.skipif(not NYX_AVAILABLE, reason="NYX not available")
+@pytest.mark.skipif(not _nyx_available(), reason="NYX not available")
 def test_nyx_entity_only_attach_extrinsics_follow_entity():
     """NYX entity-only attach: world extrinsics track the entity base link.
 
