@@ -446,7 +446,11 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         eef_pos = eef_pos.detach().float()
         eef_quat = eef_quat.detach().float()
 
-        # 6. Store targets and zero counters.
+        # 6. Store targets and zero counters.  Index assignment does not cast
+        # like ``copy_`` does, and the candidate providers may produce float64.
+        grasp_pos = grasp_pos.to(self._target_grasp_pos.dtype)
+        grasp_quat = grasp_quat.to(self._target_grasp_quat.dtype)
+        pre_grasp_pos = pre_grasp_pos.to(self._pre_grasp_pos.dtype)
         if use_sub:
             # Sub-batch tensors are already compressed to the masked envs.
             self._target_grasp_pos[mask] = grasp_pos
