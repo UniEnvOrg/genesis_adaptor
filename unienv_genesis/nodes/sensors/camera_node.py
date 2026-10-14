@@ -316,6 +316,12 @@ class CameraSensorNode(SensorNode[
         self._attach_entity = None
         self._attach_link = None
         self._offset_T = None  # 4x4 camera-to-link transform in OpenGL convention
+        # Per-env camera-to-world pose (OpenGL convention, ``(B, 4, 4)``) set by
+        # :meth:`set_pose`; ``None`` while the camera keeps its option pose.
+        self._world_pose_T: Optional[torch.Tensor] = None
+        # Genesis caches rendered frames per simulation step; a pose change
+        # within the step must bypass that cache once.
+        self._force_genesis_render = False
 
         # Expose render() when RGB is available.
         self.render_mode = "rgb_array" if render_rgb else None
@@ -334,6 +340,7 @@ class CameraSensorNode(SensorNode[
         # reported extrinsics are always the same link.
         self._attach_entity = None
         self._attach_link = None
+        self._world_pose_T = None  # a rebuilt scene starts from the option pose
         if self.option.attach is not None:
             entity, link = self.option.attach.get_attachment(self.world)
             if entity is not None and link is None:
@@ -470,6 +477,69 @@ class CameraSensorNode(SensorNode[
         assert _ensure_nyx(), "the Nyx path requires gs_nyx (was unresolvable)"
         camera = self.world.scene.add_sensor(_NYX_STATE["NyxCameraOptions"](**nyx_kwargs))
         return camera
+
+    def set_pose(
+        self,
+        pos: Any,
+        lookat: Any,
+        up: Any = (0.0, 0.0, 1.0),
+        envs_idx: Optional[Any] = None,
+    ) -> None:
+        """Move a static camera at runtime, per environment.
+
+        Call after the scene is built (e.g. from an ``after_reload`` hook).
+        The pose persists across resets and is dropped when the scene is
+        rebuilt. Rendering and the reported ``extrinsics_cv`` follow it.
+
+        Args:
+            pos / lookat / up: ``(3,)`` or ``(N, 3)`` world-frame camera
+                position, look-at point and up vector.
+            envs_idx: Environments to move (``N`` of them); all when ``None``.
+        """
+        if self.option.attach is not None:
+            raise ValueError(f"camera {self.name!r} is attached to a link; it cannot be posed")
+        if self.sensor is None:
+            raise RuntimeError(f"camera {self.name!r} is not built yet")
+        import genesis.utils.geom as gu
+
+        device = self.world.device
+        n_envs = self.world.batch_size if self.world.batch_size is not None else 1
+        if envs_idx is None:
+            envs_idx = torch.arange(n_envs, device=device)
+        envs_idx = torch.as_tensor(envs_idx, dtype=torch.long, device=device).reshape(-1)
+        n = envs_idx.numel()
+
+        def rows(value):
+            value = torch.as_tensor(value, dtype=torch.float32, device=device)
+            return value.reshape(-1, 3).expand(n, 3)
+
+        pose_T = gu.pos_lookat_up_to_T(rows(pos), rows(lookat), rows(up))  # (N, 4, 4) cam->world, OpenGL
+
+        if self._world_pose_T is None:
+            genesis_camera = self._genesis_sensor if self._genesis_sensor is not None else self.sensor
+            if hasattr(genesis_camera, "get_transform"):
+                current = torch.as_tensor(genesis_camera.get_transform(), dtype=torch.float32, device=device)
+            else:
+                current = torch.as_tensor(self._offset_T, dtype=torch.float32, device=device)
+            self._world_pose_T = current.reshape(-1, 4, 4).expand(n_envs, 4, 4).clone()
+        self._world_pose_T[envs_idx] = pose_T.to(self._world_pose_T.dtype)
+
+        # Genesis camera (the primary one, or the NYX depth/seg/normal one).
+        genesis_camera = self._genesis_sensor if self._genesis_sensor is not None else (
+            self.sensor if self.option.backend != "nyx" else None
+        )
+        if genesis_camera is not None:
+            if self.world.batch_size is None:
+                genesis_camera.set_pose(transform=self._world_pose_T[0])
+            else:
+                genesis_camera.set_pose(transform=pose_T, envs_idx=envs_idx)
+            self._force_genesis_render = True
+        if self.option.backend == "nyx":
+            # Per-env static poses through the plugin's attachment path (the
+            # public ``update_camera_pose`` applies one pose to every env);
+            # static NYX cameras have no link, so nothing overrides it.
+            self.sensor._apply_camera_transform(self._world_pose_T)
+            self._invalidate_nyx_render_cache()
 
     def reload(
         self,
@@ -730,6 +800,9 @@ class CameraSensorNode(SensorNode[
         elif self.option.backend == "nyx" and self._attach_link is not None:
             # NYX attached camera: compose link world transform with offset_T
             camera_transform = self._get_nyx_attached_transform()
+        elif self.option.backend == "nyx" and self._world_pose_T is not None:
+            # NYX static camera moved by set_pose
+            camera_transform = self._world_pose_T.to(dtype=self.world.dtype)
         elif self.option.backend == "nyx":
             # NYX static camera: use stored offset_T as world pose
             camera_transform = torch.as_tensor(
@@ -794,6 +867,10 @@ class CameraSensorNode(SensorNode[
             dtype=self.world.dtype,
             device=self.world.device,
         )
+
+        if self._world_pose_T is not None:
+            # A static camera moved by set_pose: its "link" is the world.
+            return self._get_extrinsics()
 
         offset_T = torch.from_numpy(self._offset_T).to(dtype=self.world.dtype, device=self.world.device)
 
@@ -860,8 +937,10 @@ class CameraSensorNode(SensorNode[
             depth=self._render_depth_internal,
             segmentation=self.render_seg,
             normal=self.render_normal,
-            antialiasing=True
+            antialiasing=True,
+            force_render=self._force_genesis_render,
         )
+        self._force_genesis_render = False
 
         def _to_tensor(x, **kwargs):
             if isinstance(x, torch.Tensor):
@@ -930,7 +1009,9 @@ class CameraSensorNode(SensorNode[
                 depth=self._render_depth_internal,
                 segmentation=self.render_seg,
                 normal=self.render_normal,
+                force_render=self._force_genesis_render,
             )
+            self._force_genesis_render = False
 
             def _to_tensor(x, **kwargs):
                 if isinstance(x, torch.Tensor):
