@@ -26,7 +26,12 @@ if TYPE_CHECKING:
     from unienv_interface.space import BoxSpace
     from unienv_genesis.world.genesis_world import GenesisWorld
 
-__all__ = ["MeshObject"]
+__all__ = ["MeshObject", "CONTACT_INSET"]
+
+#: Distance (m) the antipodal sampler places the grasp point (the fingertip EEF
+#: point) past the contact midpoint along the approach, so the contacts land on
+#: the finger pads rather than the tip edge.
+CONTACT_INSET = 0.01
 
 
 class MeshObject(ManipulatableObject):
@@ -140,7 +145,7 @@ class MeshObject(ManipulatableObject):
         pair_voxel_size: float = 0.01,
         approach_tilts_deg: Sequence[float] = (-60.0, -30.0, 0.0, 30.0, 60.0),
         max_approach_tilt_deg: float = 60.0,
-        contact_inset: float = 0.01,
+        contact_inset: float = CONTACT_INSET,
         finger_width: float = 0.022,
         finger_thickness: float = 0.01,
         n_clearance_samples: int = 4000,

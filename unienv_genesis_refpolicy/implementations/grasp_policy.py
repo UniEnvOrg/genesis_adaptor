@@ -100,15 +100,17 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             ``(GraspCandidates) -> BoolTensor`` that returns a mask over the
             candidate dimension (``True`` = keep).  Applied in world
             coordinates before IK evaluation.  Useful to restrict grasps
-            to top-down only, avoid certain orientations, etc.
-        candidate_cost_fn: Optional callable
-            ``(GraspCandidates) -> FloatTensor`` returning a per-candidate
-            grasp-quality cost (lower = better) over the candidate dimension,
-            in world coordinates.  It only orders the *reachable* candidates
-            (IK error within ``ik_error_threshold``), which are then ranked by
-            IK error + cost; it never makes an unreachable candidate win, and
-            the IK gate still sees the IK error alone.  Without it the
-            reachable candidate with the lowest IK error is chosen.
+            to top-down only, avoid certain orientations, etc.  When
+            ``None``, the candidate provider's
+            :meth:`~unienv_genesis_refpolicy.grasp_providers.base.GraspCandidateProvider.filter`
+            is used.
+
+    The provider's
+    :meth:`~unienv_genesis_refpolicy.grasp_providers.base.GraspCandidateProvider.cost`,
+    when it returns one, orders the *reachable* candidates (IK error within
+    ``ik_error_threshold``) by IK error + cost; it never makes an unreachable
+    candidate win, and the IK gate still sees the IK error alone.  Otherwise
+    the reachable candidate with the lowest IK error is chosen.
 
     Notes:
         Time accounting (``open_gripper_seconds``, ``close_gripper_seconds``,
@@ -143,7 +145,6 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         filter_candidate_fn : Optional[Callable[[GraspCandidates], torch.Tensor]] = None,
         candidate_provider: Optional[GraspCandidateProvider] = None,
         target_entity_fn: Optional[Callable[[], Any]] = None,
-        candidate_cost_fn: Optional[Callable[[GraspCandidates], torch.Tensor]] = None,
     ) -> None:
         super().__init__(world)
 
@@ -164,7 +165,6 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._gripper_name = gripper_name
         self.ik_error_threshold = ik_error_threshold
         self._filter_candidate_fn = filter_candidate_fn
-        self._candidate_cost_fn = candidate_cost_fn
 
         # Resolve optional parameters from gripper controller attributes.
         if gripper_width is None:
@@ -297,9 +297,9 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         }
 
         # 1b. Apply optional filter to remove unwanted candidates.
-        keep: Optional[torch.Tensor] = None
-        if self._filter_candidate_fn is not None:
-            keep = self._filter_candidate_fn(candidates)
+        filter_fn = self._filter_candidate_fn or self._candidate_provider.filter
+        keep: Optional[torch.Tensor] = filter_fn(candidates)
+        if keep is not None:
             self._debug_last["filter_keep_mask"] = keep.clone() if isinstance(keep, torch.Tensor) else keep
             if not batched:
                 # keep: (N,) bool → index into candidate dim
@@ -336,9 +336,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             return
 
         # 1c. Optional grasp-quality cost over the (filtered) candidates.
-        cost: Optional[torch.Tensor] = None
-        if self._candidate_cost_fn is not None:
-            cost = self._candidate_cost_fn(candidates)
+        cost: Optional[torch.Tensor] = self._candidate_provider.cost(candidates)
+        if cost is not None:
             self._debug_last["candidate_cost"] = cost.clone()
 
         if use_sub:
@@ -810,11 +809,6 @@ def filter_fn_clean_top_down(
        unreachable, so those candidates are rejected here even when their
        approach happens to point down.  (:class:`MeshObject`'s antipodal
        sampler emits exactly orthogonal frames.)
-
-    Because mesh/bbox samplers now emit genuinely clean top-down candidates
-    (e.g. the bounding-box family, whose frames are exactly orthogonal), this
-    filter lets the *stock* :class:`ObjectGeometryGraspCandidateProvider` be
-    used with a restrictive selection instead of a custom re-framing provider.
 
     Per-row fallback: for a batched ``(B, N)`` mask, any row with no surviving
     candidate falls back to keeping *all* candidates in that row (so a feasible

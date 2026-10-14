@@ -895,6 +895,9 @@ def test_box_gripper_grasp_policy_cost_ranks_only_reachable_candidates(
                 opening_direction=torch.tensor([[0.0, 1.0, 0.0]] * 3),
             )
 
+        def cost(self, candidates):
+            return None if cost is None else torch.tensor(cost)
+
     def _fake_reachable(_eef_ctrl, target_pos, target_quat, envs_idx=None):
         # IK error grows with x: 0, 0.01 and 0.2 (beyond the 0.05 threshold).
         del _eef_ctrl, target_quat, envs_idx
@@ -911,7 +914,6 @@ def test_box_gripper_grasp_policy_cost_ranks_only_reachable_candidates(
         target_object=object(),
         target_entity=object(),
         candidate_provider=_Provider(),
-        candidate_cost_fn=None if cost is None else (lambda _c: torch.tensor(cost)),
     )
     policy.reset()
 
@@ -1797,7 +1799,7 @@ if __name__ == "__main__":
 
 
 # ------------------------------------------------------------------
-# BboxGraspCandidateProvider
+# Bounding-box grasps (ObjectGeometryGraspCandidateProvider(bbox_grasps=True))
 # ------------------------------------------------------------------
 
 
@@ -1814,9 +1816,19 @@ class _FakeBoxMesh:
 
 
 class _FakeBboxObject:
-    """Minimal object descriptor for BboxGraspCandidateProvider tests."""
+    """Minimal object descriptor for the bbox-grasp tests.
 
-    def __init__(self, low, high, fill_ratio):
+    Its own (antipodal) candidates are ``n_base`` zero grasps.
+    """
+
+    def __init__(self, low, high, fill_ratio, n_base=0):
+        from unienv_genesis_collection.objects.base_object import GraspCandidates
+
+        self._base = GraspCandidates(
+            position=torch.zeros(n_base, 3),
+            approach_direction=torch.zeros(n_base, 3),
+            opening_direction=torch.zeros(n_base, 3),
+        )
         self._low = torch.as_tensor(low, dtype=torch.float32)
         self._high = torch.as_tensor(high, dtype=torch.float32)
         extents = (self._high - self._low)
@@ -1825,6 +1837,9 @@ class _FakeBboxObject:
 
     def _load_trimesh(self):
         return self._mesh
+
+    def list_box_gripper_grasping_candidates(self, entity, gripper_width, gripper_depth=0.01, rng=None):
+        return self._base.clone()
 
     def get_local_bounding_box(self):
         from unienv_genesis_collection.objects.base_object import make_bbox
@@ -1842,36 +1857,20 @@ class _FakeEntity:
         return torch.tensor([1.0, 0.0, 0.0, 0.0])
 
 
-class _FakeBaseProvider:
-    """Returns a fixed set of base candidates (mimics the antipodal provider)."""
-
-    def __init__(self, n, device="cpu"):
-        from unienv_genesis_collection.objects.base_object import GraspCandidates
-
-        self._candidates = GraspCandidates(
-            position=torch.zeros(n, 3, device=device),
-            approach_direction=torch.zeros(n, 3, device=device),
-            opening_direction=torch.zeros(n, 3, device=device),
-        )
-
-    def propose(self, *, mask=None, seed=None):
-        return self._candidates
-
-
 def test_bbox_provider_supplements_box_like_object():
     """A box-like object gets bbox-face grasps appended to the base candidates."""
-    from unienv_genesis_refpolicy.grasp_providers.bbox import (
-        BboxGraspCandidateProvider,
+    from unienv_genesis_refpolicy.grasp_providers import (
+        ObjectGeometryGraspCandidateProvider,
     )
 
     # Box: 0.05 (x) x 0.06 (y) x 0.11 (z), fully filled (fill ratio 1.0).
-    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.06, 0.11], fill_ratio=1.0)
-    provider = BboxGraspCandidateProvider(
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.06, 0.11], fill_ratio=1.0, n_base=7)
+    provider = ObjectGeometryGraspCandidateProvider(
         target_object=obj,
         target_entity=_FakeEntity(),
         gripper_width=0.085,
         gripper_depth=0.01,
-        base_provider=_FakeBaseProvider(n=7),
+        bbox_grasps=True,
     )
     assert provider.is_box_like()
 
@@ -1895,39 +1894,39 @@ def test_bbox_provider_supplements_box_like_object():
 
 
 def test_bbox_provider_silent_for_non_convex_object():
-    """A non-convex object (low fill ratio) yields only the base candidates."""
-    from unienv_genesis_refpolicy.grasp_providers.bbox import (
-        BboxGraspCandidateProvider,
+    """A non-convex object (low fill ratio) yields only its own candidates."""
+    from unienv_genesis_refpolicy.grasp_providers import (
+        ObjectGeometryGraspCandidateProvider,
     )
 
     # Toy-plane-like: bbox is large but the mesh fills a small fraction.
-    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.2, 0.2, 0.05], fill_ratio=0.15)
-    provider = BboxGraspCandidateProvider(
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.2, 0.2, 0.05], fill_ratio=0.15, n_base=5)
+    provider = ObjectGeometryGraspCandidateProvider(
         target_object=obj,
         target_entity=_FakeEntity(),
         gripper_width=0.085,
         gripper_depth=0.01,
-        base_provider=_FakeBaseProvider(n=5),
+        bbox_grasps=True,
     )
     assert not provider.is_box_like()
     out = provider.propose()
-    assert int(out.position.shape[-2]) == 5  # unchanged (base only)
+    assert int(out.position.shape[-2]) == 5  # unchanged (own candidates only)
 
 
 def test_bbox_provider_respects_gripper_width():
     """Axes wider than the gripper opening produce no grasp on that axis."""
-    from unienv_genesis_refpolicy.grasp_providers.bbox import (
-        BboxGraspCandidateProvider,
+    from unienv_genesis_refpolicy.grasp_providers import (
+        ObjectGeometryGraspCandidateProvider,
     )
 
     # Box with one axis (y=0.20) wider than the 0.085 gripper opening.
-    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.20, 0.06], fill_ratio=1.0)
-    provider = BboxGraspCandidateProvider(
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.20, 0.06], fill_ratio=1.0, n_base=0)
+    provider = ObjectGeometryGraspCandidateProvider(
         target_object=obj,
         target_entity=_FakeEntity(),
         gripper_width=0.085,
         gripper_depth=0.01,
-        base_provider=_FakeBaseProvider(n=0),
+        bbox_grasps=True,
     )
     out = provider.propose()
     # No candidate may open along the too-wide y axis.
@@ -1940,18 +1939,18 @@ def test_bbox_provider_respects_gripper_width():
 @pytest.mark.parametrize("width_margin, n_axes", [(0.0, 3), (0.01, 2)])
 def test_bbox_provider_leaves_width_slack(width_margin, n_axes):
     """An axis within ``width_margin`` of the gripper opening is not grasped across."""
-    from unienv_genesis_refpolicy.grasp_providers.bbox import (
-        BboxGraspCandidateProvider,
+    from unienv_genesis_refpolicy.grasp_providers import (
+        ObjectGeometryGraspCandidateProvider,
     )
 
     # y (0.08) fits the 0.085 opening but not with 1 cm of slack.
-    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.08, 0.06], fill_ratio=1.0)
-    provider = BboxGraspCandidateProvider(
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.08, 0.06], fill_ratio=1.0, n_base=0)
+    provider = ObjectGeometryGraspCandidateProvider(
         target_object=obj,
         target_entity=_FakeEntity(),
         gripper_width=0.085,
         gripper_depth=0.01,
-        base_provider=_FakeBaseProvider(n=0),
+        bbox_grasps=True,
         width_margin=width_margin,
     )
     out = provider.propose()
@@ -1960,19 +1959,19 @@ def test_bbox_provider_leaves_width_slack(width_margin, n_axes):
 
 def test_bbox_provider_topdown_grasps_high_on_tall_box():
     """Downward-approach bbox grasps sit near the TOP face, not the bottom."""
-    from unienv_genesis_refpolicy.grasp_providers.bbox import (
-        BboxGraspCandidateProvider,
+    from unienv_genesis_refpolicy.grasp_providers import (
+        ObjectGeometryGraspCandidateProvider,
     )
 
     # Tall box: 0.05 (x) x 0.05 (y) footprint, 0.27 tall (z).  x and y fit the
     # 0.085 gripper; the downward approach must grasp near the top face.
-    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.05, 0.27], fill_ratio=1.0)
-    provider = BboxGraspCandidateProvider(
+    obj = _FakeBboxObject([0.0, 0.0, 0.0], [0.05, 0.05, 0.27], fill_ratio=1.0, n_base=0)
+    provider = ObjectGeometryGraspCandidateProvider(
         target_object=obj,
         target_entity=_FakeEntity(),  # identity pose at world origin
         gripper_width=0.085,
         gripper_depth=0.035,
-        base_provider=_FakeBaseProvider(n=0),
+        bbox_grasps=True,
     )
     assert provider.is_box_like()
     out = provider.propose()

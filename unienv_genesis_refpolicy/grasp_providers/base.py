@@ -28,6 +28,11 @@ class GraspCandidateProvider(ABC):
     Binding is an implementation detail of each provider: the :meth:`propose`
     signature is deliberately unchanged, so fixed-entity providers remain valid
     drop-in implementations.
+
+    **Selection hooks** (optional): :meth:`filter` and :meth:`cost` let a
+    provider also say which of its candidates to prefer and how to rank the
+    reachable ones.  The grasp policy uses them when it is not given its own
+    ``filter_candidate_fn``; the defaults keep every candidate and add no cost.
     """
 
     @abstractmethod
@@ -39,3 +44,11 @@ class GraspCandidateProvider(ABC):
     ) -> GraspCandidates:
         """Return grasp candidates in world coordinates."""
         raise NotImplementedError
+
+    def filter(self, candidates: GraspCandidates) -> Optional[torch.Tensor]:
+        """Mask ``(..., n_candidates)`` of candidates to keep, or ``None`` for all."""
+        return None
+
+    def cost(self, candidates: GraspCandidates) -> Optional[torch.Tensor]:
+        """Grasp-quality cost ``(..., n_candidates)`` (lower = better), or ``None``."""
+        return None
