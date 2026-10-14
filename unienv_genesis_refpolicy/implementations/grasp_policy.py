@@ -112,6 +112,13 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
     candidate win, and the IK gate still sees the IK error alone.  Otherwise
     the reachable candidate with the lowest IK error is chosen.
 
+    With ``selection_temperature`` set (and a provider cost), the grasp is
+    *sampled* instead of taking the best one — e.g. for data collection, so a
+    poor best grasp is not repeated every episode: each candidate is weighted
+    ``exp(-(score - best) / selection_temperature)`` with ``score`` = IK error
+    + cost, filtered-out and unreachable candidates getting zero weight.  The
+    draw uses the policy's generator, reseeded by :meth:`reset`'s ``seed``.
+
     Notes:
         Time accounting (``open_gripper_seconds``, ``close_gripper_seconds``,
         ``phase_patience_seconds``, ``max_seconds``) always uses the explicit
@@ -145,6 +152,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         filter_candidate_fn : Optional[Callable[[GraspCandidates], torch.Tensor]] = None,
         candidate_provider: Optional[GraspCandidateProvider] = None,
         target_entity_fn: Optional[Callable[[], Any]] = None,
+        selection_temperature: Optional[float] = None,
     ) -> None:
         super().__init__(world)
 
@@ -164,6 +172,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._eef_name = eef_name
         self._gripper_name = gripper_name
         self.ik_error_threshold = ik_error_threshold
+        self.selection_temperature = selection_temperature
+        self._selection_rng = torch.Generator(device=world.device)
         self._filter_candidate_fn = filter_candidate_fn
 
         # Resolve optional parameters from gripper controller attributes.
@@ -282,6 +292,9 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             else self.target_entity
         )
 
+        if seed is not None:
+            self._selection_rng.manual_seed(int(seed))
+
         # 1. Query grasp candidates (world coordinates).
         candidates = self._candidate_provider.propose(
             mask=mask,
@@ -383,6 +396,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 reachable, combined_errors + cost, combined_errors + 1e6,
             )
         best_idx = ranking.argmin(dim=-1)  # () or (M|B,)
+        if cost is not None and self.selection_temperature:
+            best_idx = self._sample_candidate(ranking, best_idx)
         self._debug_last["best_idx"] = best_idx.clone() if isinstance(best_idx, torch.Tensor) else int(best_idx)
 
         # IK quality gate: fail if the best candidate is unreachable.  The
@@ -655,6 +670,26 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _sample_candidate(
+        self, ranking: torch.Tensor, best_idx: torch.Tensor,
+    ) -> torch.Tensor:
+        """Draw a candidate per env with weight ``exp(-(score - best) / T)``.
+
+        Rows without any finite weight (nothing kept) keep ``best_idx``.
+        """
+        shifted = ranking - ranking.min(dim=-1, keepdim=True).values
+        weights = torch.exp(-shifted / float(self.selection_temperature))
+        weights = torch.where(torch.isfinite(weights), weights, torch.zeros_like(weights))
+        flat = weights.reshape(-1, weights.shape[-1])
+        empty = flat.sum(dim=-1) == 0
+        flat = torch.where(
+            empty[:, None],
+            F.one_hot(best_idx.reshape(-1), flat.shape[-1]).to(flat),
+            flat,
+        )
+        sampled = torch.multinomial(flat, 1, generator=self._selection_rng)
+        return sampled.reshape(best_idx.shape)
 
     def _build_eef_quaternion(
         self,

@@ -921,6 +921,69 @@ def test_box_gripper_grasp_policy_cost_ranks_only_reachable_candidates(
     assert float(policy._target_grasp_pos[0]) == pytest.approx(expected_x)
 
 
+def _sampling_policy(monkeypatch, temperature):
+    world = GenesisWorld()
+
+    class _Provider(GraspCandidateProvider):
+        def propose(self, *, mask=None, seed=None):
+            del mask, seed
+            return GraspCandidates(
+                position=torch.tensor(
+                    [[0.30, 0.0, 0.7], [0.31, 0.0, 0.7], [0.32, 0.0, 0.7], [0.50, 0.0, 0.7]],
+                    dtype=torch.float32,
+                ),
+                approach_direction=torch.tensor([[0.0, 0.0, -1.0]] * 4),
+                opening_direction=torch.tensor([[0.0, 1.0, 0.0]] * 4),
+            )
+
+        def cost(self, candidates):
+            # The unreachable candidate (x=0.50) has the best cost.
+            return torch.tensor([0.0, 0.05, 0.10, -1.0])
+
+    def _fake_reachable(_eef_ctrl, target_pos, target_quat, envs_idx=None):
+        del _eef_ctrl, target_quat, envs_idx
+        errors = torch.zeros(target_pos.shape[:-1] + (6,), dtype=torch.float32)
+        errors[..., 0] = target_pos[..., 0] - 0.30
+        return errors
+
+    monkeypatch.setattr(GoToRefPolicy, "check_reachable_error", staticmethod(_fake_reachable))
+    return BoxGripperGraspPolicy(
+        world=world,
+        eef_controller=_MockEEFController(world, pos=(0.0, 0.0, 0.8)),
+        gripper_controller=_MockGripperController(),
+        target_object=object(),
+        target_entity=object(),
+        candidate_provider=_Provider(),
+        selection_temperature=temperature,
+    )
+
+
+def test_box_gripper_grasp_policy_samples_reachable_candidates(monkeypatch):
+    policy = _sampling_policy(monkeypatch, temperature=0.2)
+    chosen = []
+    for seed in range(40):
+        policy.reset(seed=seed)
+        assert not policy.get_failure()
+        chosen.append(round(float(policy._target_grasp_pos[0]), 2))
+    # Never the unreachable one; more than one reachable candidate gets drawn,
+    # the best (x=0.30) most often.
+    assert set(chosen) <= {0.30, 0.31, 0.32}
+    assert len(set(chosen)) > 1
+    assert max(set(chosen), key=chosen.count) == 0.30
+    # The same seed draws the same grasp.
+    policy.reset(seed=7)
+    first = float(policy._target_grasp_pos[0])
+    policy.reset(seed=7)
+    assert float(policy._target_grasp_pos[0]) == first
+
+
+def test_box_gripper_grasp_policy_without_temperature_is_deterministic(monkeypatch):
+    policy = _sampling_policy(monkeypatch, temperature=None)
+    for seed in range(5):
+        policy.reset(seed=seed)
+        assert float(policy._target_grasp_pos[0]) == pytest.approx(0.30)
+
+
 # ------------------------------------------------------------------
 # Restrictive top-down candidate filter
 # ------------------------------------------------------------------
