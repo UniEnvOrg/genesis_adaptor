@@ -151,3 +151,26 @@ def test_grasps_leave_width_slack_below_the_gripper_opening(tmp_path):
     assert np.all(np.abs(opening[:, 0]) <= 1e-6)
     _, _, opening = _numpy(_candidates(obj, width_margin=0.0))
     assert np.any(np.abs(opening[:, 0]) >= 1.0 - 1e-6)
+
+
+def test_round_handle_gets_levelled_top_down_grasps(tmp_path):
+    # A 2 cm-radius rod lying along x on the table (z from 0 to 0.04).
+    rod = trimesh.creation.cylinder(radius=0.02, height=0.20, sections=48)
+    rod.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
+    rod.apply_translation([0.0, 0.0, 0.02])
+    path = tmp_path / "rod.obj"
+    rod.export(path)
+    obj = MeshObject(mesh_file=str(path))
+
+    def clean_top_down(**kwargs):
+        pos, approach, opening = _numpy(_candidates(obj, **kwargs))
+        clean = (approach[:, 2] <= -0.999) & (np.abs(opening[:, 2]) < 1e-3)
+        return pos[clean]
+
+    # Without levelling the sampled diameters are tilted, so only the few
+    # facets that happen to be vertical give clean top-down grasps.
+    plain = clean_top_down(rest_clearance=None)
+    levelled = clean_top_down(rest_clearance=0.007)
+    assert len(levelled) >= 100 and len(levelled) >= 10 * len(plain)
+    # Every fingertip clears the resting plane.
+    assert np.all(levelled[:, 2] >= 0.007 - 1e-9)

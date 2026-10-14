@@ -145,6 +145,7 @@ class MeshObject(ManipulatableObject):
         pair_voxel_size: float = 0.01,
         approach_tilts_deg: Sequence[float] = (-60.0, -30.0, 0.0, 30.0, 60.0),
         max_approach_tilt_deg: float = 60.0,
+        rest_clearance: Optional[float] = 0.007,
         contact_inset: float = CONTACT_INSET,
         finger_width: float = 0.022,
         finger_thickness: float = 0.01,
@@ -185,8 +186,20 @@ class MeshObject(ManipulatableObject):
            Every kept grasp (slid or not) must close on surface: the outermost
            sample near the closing line on each side faces outward within the
            friction cone, and the two are ``min_grasp_width`` ..
-           ``gripper_width - width_margin`` apart.  Clearance from the table and other objects
-           is left to world-frame candidate filters.
+           ``gripper_width - width_margin`` apart.
+        5. **Levelled grasps.**  With ``rest_clearance`` set, each pair also
+           gets a clean top-down variant before step 4: the approach along the
+           upright down and the closing axis made horizontal, at the same
+           contact midpoint, lifted so the fingertips are ``rest_clearance``
+           above the object's resting plane (its lowest point in the upright
+           pose, where a table supports it) — a little above the 5 mm
+           table-clearance preference of the world-frame filter, so the
+           variants survive it despite settling or rounding.  On a round or slanted handle
+           lying on a table this turns pinches whose tilted closing axis would
+           swing the lower open finger into the table into ones that clear it;
+           step 4 drops any that no longer close on surface.  Clearance from
+           the actual table and from other objects is left to world-frame
+           candidate filters.
 
         Falls back to the bounding-box method of the base class if no
         candidate survives.  Results are cached per argument set and seed.
@@ -215,8 +228,8 @@ class MeshObject(ManipulatableObject):
             gripper_width, gripper_depth, n_samples, seed, friction_cone_deg,
             pair_normal_deg, pair_axis_deg, pair_lateral_tol, min_grasp_width,
             width_margin, max_pairs, pair_voxel_size, tuple(approach_tilts_deg),
-            max_approach_tilt_deg, contact_inset, finger_width, finger_thickness,
-            n_clearance_samples,
+            max_approach_tilt_deg, rest_clearance, contact_inset, finger_width,
+            finger_thickness, n_clearance_samples,
         )
         if key in self._local_grasp_cache:
             return self._local_grasp_cache[key].clone()
@@ -258,6 +271,14 @@ class MeshObject(ManipulatableObject):
             approach = approach[pair_idx, angle_idx]                      # (C, 3)
             opening = pair_axis[pair_idx]                                 # (C, 3)
             fingertip = pair_mid[pair_idx] + contact_inset * approach
+            if rest_clearance is not None:
+                level_approach, level_opening, level_tip = _levelled(
+                    pair_mid, pair_axis, down, mesh.vertices,
+                    rest_clearance=rest_clearance, contact_inset=contact_inset,
+                )
+                approach = np.concatenate([approach, level_approach])
+                opening = np.concatenate([opening, level_opening])
+                fingertip = np.concatenate([fingertip, level_tip])
 
             cloud, cloud_faces = trimesh.sample.sample_surface(
                 mesh, n_clearance_samples,
@@ -480,6 +501,38 @@ def _approaches(
     )
     within = approach @ down >= np.cos(np.radians(max_tilt_deg)) - 1e-9
     return approach, within
+
+
+def _levelled(
+    midpoints: np.ndarray,
+    closing: np.ndarray,
+    down: np.ndarray,
+    vertices: np.ndarray,
+    *,
+    rest_clearance: float,
+    contact_inset: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Clean top-down variants of the pairs: ``(approach, opening, fingertip)``.
+
+    The approach is ``down``, the closing axis is made horizontal (pairs whose
+    axis is near-vertical are skipped), and the grasp is lifted so the
+    fingertips sit ``rest_clearance`` above the resting plane — the mesh's
+    lowest point along ``-down``.  A vertical approach with a horizontal closing
+    axis keeps every finger corner at fingertip height.  Variants identical to
+    an existing straight-down candidate (horizontal pair, no lift) are left out.
+    """
+    up = -down
+    horizontal = closing - (closing @ down)[:, None] * down
+    norm = np.linalg.norm(horizontal, axis=-1)
+    keep = norm > 0.3
+    horizontal = horizontal[keep] / norm[keep, None]
+    fingertip = midpoints[keep] + contact_inset * down
+    rest = float((np.asarray(vertices) @ up).min())
+    lift = np.clip(rest + rest_clearance - fingertip @ up, 0.0, None)
+    fingertip = fingertip + lift[:, None] * up
+    new = (np.abs(closing[keep] @ down) > 1e-6) | (lift > 0.0)
+    approach = np.broadcast_to(down, fingertip.shape)
+    return approach[new].copy(), horizontal[new], fingertip[new]
 
 
 def _gripper_frame(cloud, origin, approach, opening):
