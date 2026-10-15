@@ -529,7 +529,9 @@ class CameraSensorNode(SensorNode[
             self.sensor if self.option.backend != "nyx" else None
         )
         if genesis_camera is not None:
-            if self.world.batch_size is None:
+            if n_envs == 1:
+                # One environment (unbatched, or a batch of one rendered by the
+                # Rasterizer, whose cameras hold a single pose): no envs_idx.
                 genesis_camera.set_pose(transform=self._world_pose_T[0])
             else:
                 genesis_camera.set_pose(transform=pose_T, envs_idx=envs_idx)

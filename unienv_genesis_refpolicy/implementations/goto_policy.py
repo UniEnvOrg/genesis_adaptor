@@ -20,6 +20,50 @@ from unienv_genesis_refpolicy.base.policy import (
     DURATION_COMPARISON_EPS,
 )
 
+def _quat_slerp(q0: torch.Tensor, q1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """Spherical interpolation of ``(..., 4)`` ``(w, x, y, z)`` quaternions at ``t`` ``(...)``."""
+    dot = torch.sum(q0 * q1, dim=-1, keepdim=True)
+    q1 = torch.where(dot < 0, -q1, q1)
+    dot = dot.abs().clamp(max=1.0)
+    theta = torch.acos(dot)
+    sin = torch.sin(theta)
+    t = t.unsqueeze(-1)
+    small = sin < 1e-6
+    safe = torch.where(small, torch.ones_like(sin), sin)
+    w0 = torch.where(small, 1.0 - t, torch.sin((1.0 - t) * theta) / safe)
+    w1 = torch.where(small, t, torch.sin(t * theta) / safe)
+    q = w0 * q0 + w1 * q1
+    return q / torch.norm(q, dim=-1, keepdim=True)
+
+
+def step_pose_toward(
+    pos: torch.Tensor,
+    quat: torch.Tensor,
+    target_pos: torch.Tensor,
+    target_quat: torch.Tensor,
+    dt: float,
+    max_linear_speed: Optional[float],
+    max_angular_speed: Optional[float],
+):
+    """One straight-line step of a commanded pose toward a target pose.
+
+    Position and rotation (slerp) advance by the same fraction of the remaining
+    motion, the largest one that keeps both within ``max_linear_speed * dt`` /
+    ``max_angular_speed * dt`` (a ``None`` speed is unbounded). Returns the new
+    ``(pos, quat)``.
+    """
+    delta = target_pos - pos
+    distance = torch.norm(delta, dim=-1)
+    dot = torch.sum(quat * target_quat, dim=-1)
+    angle = 2.0 * torch.acos(dot.abs().clamp(max=1.0))
+    alpha = torch.ones_like(distance)
+    if max_linear_speed is not None:
+        alpha = torch.minimum(alpha, max_linear_speed * dt / distance.clamp(min=1e-9))
+    if max_angular_speed is not None:
+        alpha = torch.minimum(alpha, max_angular_speed * dt / angle.clamp(min=1e-9))
+    return pos + alpha.unsqueeze(-1) * delta, _quat_slerp(quat, target_quat, alpha)
+
+
 class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
     """Move an end-effector to a target world-frame pose.
 
@@ -49,6 +93,16 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             ``0`` disables stall detection.
         max_seconds: Maximum policy runtime before timeout. ``0`` disables
             timeout.
+        max_linear_speed / max_angular_speed: Opt-in Cartesian interpolation
+            (m/s, rad/s). By default (both ``None``) the action is the target
+            pose itself, so the EEF follows whatever path the arm's
+            joint-space motion takes — an arc, which e.g. lifts a tool off a
+            table over a long horizontal move. With either speed set, the
+            commanded pose starts at the EEF pose on :meth:`reset` and
+            advances toward the target along the straight line (slerp for
+            the rotation, position and rotation synchronized) by at most
+            these speeds per :meth:`step`. Success / stall checks still use
+            the actual EEF pose against the final target.
 
     Notes:
         Time accounting always uses the explicit ``dt`` passed to
@@ -73,6 +127,8 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         orientation_threshold_stall: float = 1e-3,
         stall_seconds: float = 1.0,
         max_seconds: float = 0.0,
+        max_linear_speed: Optional[float] = None,
+        max_angular_speed: Optional[float] = None,
     ) -> None:
         super().__init__(world)
         require_eef_controller(controller, policy_name="GoToRefPolicy")
@@ -84,6 +140,9 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         self.position_threshold_stall = position_threshold_stall
         self.orientation_threshold_stall = orientation_threshold_stall
         self.stall_seconds = stall_seconds
+        self.max_linear_speed = None if max_linear_speed is None else float(max_linear_speed)
+        self.max_angular_speed = None if max_angular_speed is None else float(max_angular_speed)
+        self._interpolate = self.max_linear_speed is not None or self.max_angular_speed is not None
 
         batch_size = world.batch_size
         device = world.device
@@ -130,6 +189,12 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         self._last_eef_pos.copy_(eef_pos.detach().float())
         self._last_eef_quat.copy_(eef_quat.detach().float())
 
+        # Commanded (interpolated) pose; only used with Cartesian interpolation.
+        self._cmd_pos = self._last_eef_pos.clone()
+        self._cmd_quat = self._last_eef_quat.clone()
+        if self._interpolate:
+            self._action = controller.get_action_world(self._cmd_pos, self._cmd_quat)
+
     @torch.inference_mode()
     def reset(
         self,
@@ -143,7 +208,18 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         # resolve fresh targets in their own reset() write them into
         # ``self.target_pos`` / ``self.target_quat`` before delegating here,
         # so this single recomputation also covers them.
-        action = self.controller.get_action_world(self.target_pos, self.target_quat)
+        if self._interpolate:
+            # Start the straight-line motion from where the EEF is now.
+            eef_pos, eef_quat = self.controller.get_eef_pose_absolute()
+            if mask is not None:
+                self._cmd_pos[mask] = eef_pos.detach().float()[mask]
+                self._cmd_quat[mask] = eef_quat.detach().float()[mask]
+            else:
+                self._cmd_pos.copy_(eef_pos.detach().float())
+                self._cmd_quat.copy_(eef_quat.detach().float())
+            action = self.controller.get_action_world(self._cmd_pos, self._cmd_quat)
+        else:
+            action = self.controller.get_action_world(self.target_pos, self.target_quat)
         if mask is not None:
             self._action[mask] = action[mask]
             self._elapsed_seconds[mask] = 0.0
@@ -234,6 +310,24 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         else:
             self._last_eef_pos.copy_(eef_pos)
             self._last_eef_quat.copy_(eef_quat)
+
+        if self._interpolate:
+            self._advance_command(step_dt, mask)
+
+    def _advance_command(self, dt: float, mask: Optional[torch.Tensor]) -> None:
+        """Move the commanded pose toward the target along the straight line."""
+        new_pos, new_quat = step_pose_toward(
+            self._cmd_pos, self._cmd_quat, self.target_pos, self.target_quat,
+            dt, self.max_linear_speed, self.max_angular_speed,
+        )
+        if mask is not None:
+            self._cmd_pos[mask] = new_pos[mask]
+            self._cmd_quat[mask] = new_quat[mask]
+            self._action[mask] = self.controller.get_action_world(self._cmd_pos, self._cmd_quat)[mask]
+        else:
+            self._cmd_pos.copy_(new_pos)
+            self._cmd_quat.copy_(new_quat)
+            self._action.copy_(self.controller.get_action_world(self._cmd_pos, self._cmd_quat))
 
     @torch.inference_mode()
     def get_action(self) -> torch.Tensor:

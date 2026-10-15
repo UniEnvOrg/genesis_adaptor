@@ -33,7 +33,7 @@ from unienv_genesis_refpolicy.grasp_providers.base import GraspCandidateProvider
 from unienv_genesis_refpolicy.grasp_providers.object_geometry import (
     ObjectGeometryGraspCandidateProvider,
 )
-from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
+from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy, step_pose_toward
 
 class GraspPhase:
     OPEN_GRIPPER = 0
@@ -104,6 +104,15 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             ``None``, the candidate provider's
             :meth:`~unienv_genesis_refpolicy.grasp_providers.base.GraspCandidateProvider.filter`
             is used.
+        max_linear_speed / max_angular_speed: Opt-in Cartesian interpolation
+            of the PRE_GRASP and APPROACH motions (m/s, rad/s), as
+            :class:`GoToRefPolicy`'s: the commanded pose starts at the EEF pose
+            on :meth:`reset` and advances toward the phase target along the
+            straight line, so the fingers descend straight onto the grasp
+            instead of following the arm's joint-space arc (which can land a
+            finger on top of a thin object). Reach checks still use the actual
+            EEF pose against the phase target. ``None`` (default) commands the
+            phase target directly.
 
     The provider's
     :meth:`~unienv_genesis_refpolicy.grasp_providers.base.GraspCandidateProvider.cost`,
@@ -153,6 +162,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         candidate_provider: Optional[GraspCandidateProvider] = None,
         target_entity_fn: Optional[Callable[[], Any]] = None,
         selection_temperature: Optional[float] = None,
+        max_linear_speed: Optional[float] = None,
+        max_angular_speed: Optional[float] = None,
     ) -> None:
         super().__init__(world)
 
@@ -173,6 +184,9 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._gripper_name = gripper_name
         self.ik_error_threshold = ik_error_threshold
         self.selection_temperature = selection_temperature
+        self.max_linear_speed = None if max_linear_speed is None else float(max_linear_speed)
+        self.max_angular_speed = None if max_angular_speed is None else float(max_angular_speed)
+        self._interpolate = self.max_linear_speed is not None or self.max_angular_speed is not None
         self._selection_rng = torch.Generator(device=world.device)
         self._filter_candidate_fn = filter_candidate_fn
 
@@ -247,6 +261,9 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._pre_grasp_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
         self._initial_eef_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
         self._initial_eef_quat = torch.zeros(quat_shape, dtype=torch.float32, device=device)
+        # Commanded (interpolated) pose; only used with Cartesian interpolation.
+        self._cmd_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
+        self._cmd_quat = torch.zeros(quat_shape, dtype=torch.float32, device=device)
         self._debug_last = {}
 
     def save_debug(self, output_dir: str | Path) -> None:
@@ -471,6 +488,14 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             self._initial_eef_pos.copy_(eef_pos)
             self._initial_eef_quat.copy_(eef_quat)
 
+        # The straight-line motion starts from where the EEF is now.
+        if mask is not None:
+            self._cmd_pos[mask] = self._initial_eef_pos[mask]
+            self._cmd_quat[mask] = self._initial_eef_quat[mask]
+        else:
+            self._cmd_pos.copy_(self._initial_eef_pos)
+            self._cmd_quat.copy_(self._initial_eef_quat)
+
         self._zero_counters(mask)
         self._debug_last["status"] = "ok"
 
@@ -581,12 +606,29 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 # No verification — backwards compatible.
                 self._advance(trans_close, GraspPhase.DONE)
 
+        # 5. Advance the commanded pose toward the (possibly new) phase target.
+        if self._interpolate:
+            new_pos, new_quat = step_pose_toward(
+                self._cmd_pos, self._cmd_quat,
+                self._get_phase_target_pos(), self._get_phase_target_quat(),
+                step_dt, self.max_linear_speed, self.max_angular_speed,
+            )
+            if mask is not None:
+                self._cmd_pos[mask] = new_pos[mask]
+                self._cmd_quat[mask] = new_quat[mask]
+            else:
+                self._cmd_pos.copy_(new_pos)
+                self._cmd_quat.copy_(new_quat)
+
     @torch.inference_mode()
     def get_action(
         self, 
     ) -> Dict[str, torch.Tensor]:
-        target_pos = self._get_phase_target_pos()
-        target_quat = self._get_phase_target_quat()
+        if self._interpolate:
+            target_pos, target_quat = self._cmd_pos, self._cmd_quat
+        else:
+            target_pos = self._get_phase_target_pos()
+            target_quat = self._get_phase_target_quat()
 
         arm_action = self._eef_ctrl.get_action_world(target_pos, target_quat)
 
