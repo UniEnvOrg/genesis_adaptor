@@ -266,6 +266,7 @@ class CameraSensorNode(SensorNode[
         control_timestep: Optional[float] = None,
         update_timestep: Optional[float] = None,
         render_position: bool = False,
+        render_on_step: bool = True,
     ):
         """Initialize camera sensor node.
         
@@ -277,6 +278,13 @@ class CameraSensorNode(SensorNode[
             attach_entity_link: Name of the link to attach the camera to
             control_timestep: Control timestep (defaults to world timestep)
             update_timestep: Update timestep (defaults to world timestep)
+            render_on_step: Render after every environment step (default).
+                ``False`` renders only on reload / reset (and on an explicit
+                :meth:`update_observation`); the observation then keeps the
+                last rendered frame. Rendering does not affect the physics,
+                so a render-free rollout can be rendered afterwards from its
+                recorded states (see :meth:`invalidate_render_cache`).
+                Settable at any time through the attribute.
         """
         
         super().__init__(
@@ -308,6 +316,7 @@ class CameraSensorNode(SensorNode[
         self.render_seg = render_seg
         self.render_normal = render_normal
         self.render_position = render_position
+        self.render_on_step = bool(render_on_step)
         # Position map is derived from depth. We may render depth internally
         # even when it is not explicitly exposed in observations.
         self._render_depth_internal = self.render_depth or self.render_position
@@ -586,6 +595,19 @@ class CameraSensorNode(SensorNode[
             self._invalidate_nyx_render_cache()
             self.update_observation()
 
+    def invalidate_render_cache(self) -> None:
+        """Make the next :meth:`update_observation` render the current scene state.
+
+        The renderers cache their frames per simulation step, so a state set
+        without stepping (e.g. ``rigid_solver.set_qpos`` to replay a recorded
+        rollout) would otherwise return the cached frame. Genesis also only
+        refreshes the scene's visual states when the step advances: call
+        ``scene.visualizer.update_visual_states(force_render=True)`` once after
+        setting the state, before rendering.
+        """
+        self._force_genesis_render = True
+        self._invalidate_nyx_render_cache()
+
     def _invalidate_nyx_render_cache(self) -> None:
         """Force the Nyx path tracer to re-render on the next ``read()``.
 
@@ -616,8 +638,8 @@ class CameraSensorNode(SensorNode[
         *,
         priority: int = 0
     ) -> None:
-        """Update observation after environment step."""
-        if priority == 0:
+        """Update observation after environment step (unless ``render_on_step`` is off)."""
+        if priority == 0 and self.render_on_step:
             self.update_observation()
 
     def _get_observation_space(self) -> DictSpace[PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
