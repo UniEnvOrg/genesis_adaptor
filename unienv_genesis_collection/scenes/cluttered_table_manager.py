@@ -205,39 +205,7 @@ class ClutteredTableManager(WorldNode):
         else:
             self.rng.manual_seed(seed)
 
-        # Pre-tensorise static avoid spaces (XY only), inverse-rotated into
-        # the table's local frame so placement sampling stays axis-aligned.
-        # All tensors live on the world's device so that GPU backends never
-        # have to cross-hostcopies during reset().
-        if self.avoid_spaces:
-            world_xy = torch.tensor(
-                [[c[0], c[1]] for c, _r in self.avoid_spaces],
-                dtype=world.dtype,
-                device=world.device,
-            )  # (n_static, 2)
-            # Inverse-rotate world → local table frame.
-            offset = world_xy - torch.tensor(
-                [table_pos[0], table_pos[1]],
-                dtype=world.dtype,
-                device=world.device,
-            )
-            c_y, s_y = self._cos_yaw, self._sin_yaw
-            self._static_avoid_xy = torch.stack([
-                offset[:, 0] * c_y + offset[:, 1] * s_y,
-                -offset[:, 0] * s_y + offset[:, 1] * c_y,
-            ], dim=-1)  # (n_static, 2)
-            self._static_avoid_r = torch.tensor(
-                [r for _c, r in self.avoid_spaces],
-                dtype=world.dtype,
-                device=world.device,
-            )  # (n_static,)
-        else:
-            self._static_avoid_xy = torch.empty(
-                0, 2, dtype=world.dtype, device=world.device,
-            )
-            self._static_avoid_r = torch.empty(
-                0, dtype=world.dtype, device=world.device,
-            )
+        self._tensorize_static_avoid_spaces()
 
         # Populated during reload().
         self._loaded_entities: List = []
@@ -272,6 +240,68 @@ class ClutteredTableManager(WorldNode):
 
         # Pending avoid spaces queued via set_next_reset_avoid_spaces().
         self._pending_avoid_spaces: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+
+    def _tensorize_static_avoid_spaces(self) -> None:
+        """Pre-tensorise the static avoid spaces (XY only) in the table's local frame.
+
+        Inverse-rotated into the table frame so placement sampling stays
+        axis-aligned. All tensors live on the world's device so that GPU
+        backends never need host copies during ``reset()``.
+        """
+        world = self.world
+        if self.avoid_spaces:
+            world_xy = torch.tensor(
+                [[c[0], c[1]] for c, _r in self.avoid_spaces],
+                dtype=world.dtype,
+                device=world.device,
+            )  # (n_static, 2)
+            # Inverse-rotate world → local table frame.
+            offset = world_xy - torch.tensor(
+                [self.table_pos[0], self.table_pos[1]],
+                dtype=world.dtype,
+                device=world.device,
+            )
+            c_y, s_y = self._cos_yaw, self._sin_yaw
+            self._static_avoid_xy = torch.stack([
+                offset[:, 0] * c_y + offset[:, 1] * s_y,
+                -offset[:, 0] * s_y + offset[:, 1] * c_y,
+            ], dim=-1)  # (n_static, 2)
+            self._static_avoid_r = torch.tensor(
+                [r for _c, r in self.avoid_spaces],
+                dtype=world.dtype,
+                device=world.device,
+            )  # (n_static,)
+        else:
+            self._static_avoid_xy = torch.empty(
+                0, 2, dtype=world.dtype, device=world.device,
+            )
+            self._static_avoid_r = torch.empty(
+                0, dtype=world.dtype, device=world.device,
+            )
+
+    def set_table_geometry(
+        self,
+        table_pos: Tuple[float, float, float],
+        table_size: Tuple[float, float],
+        table_yaw: Optional[float] = None,
+    ) -> None:
+        """Move / resize the placement table (e.g. a table re-sampled per reload).
+
+        Takes effect from the next ``reset()``; the static avoid spaces are
+        re-expressed in the new table frame.
+
+        Args:
+            table_pos: Table surface centre ``(x, y, z)``.
+            table_size: Placement region ``(width_x, depth_y)`` in metres.
+            table_yaw: New table yaw (rad); ``None`` keeps the current one.
+        """
+        self.table_pos = tuple(float(v) for v in table_pos)
+        self.table_size = tuple(float(v) for v in table_size)
+        if table_yaw is not None:
+            self.table_yaw = float(table_yaw)
+            self._cos_yaw = math.cos(self.table_yaw)
+            self._sin_yaw = math.sin(self.table_yaw)
+        self._tensorize_static_avoid_spaces()
 
     @property
     def name(self) -> str:
