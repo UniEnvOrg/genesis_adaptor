@@ -763,9 +763,12 @@ class ClutteredTableManager(WorldNode):
         # Start every object at its unique, well-separated parking position
         # (broadcast across the reset scope).  Inactive objects never land on
         # the shared ``(0,0,-1000)`` pile — they keep this per-object slot.
+        # ``clone`` (not ``contiguous``): with a single env in the reset scope
+        # the expanded view is already contiguous, and the placement writes
+        # below would then overwrite the cached park positions.
         positions = self._park_positions_t.unsqueeze(1).expand(
             n_pool, n_envs, 3,
-        ).contiguous()
+        ).clone()
         active_mask = torch.zeros(n_pool, n_envs, dtype=torch.bool, device=self.world.device)
 
         if n_pool == 0:
