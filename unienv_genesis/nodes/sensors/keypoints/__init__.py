@@ -2,7 +2,8 @@
 
 Public API:
     - :class:`KeypointTrackerNode` — lifecycle sensor node
-    - :class:`PointProposer`, :class:`UniformSegmentationPointProposer` — point proposal
+    - :class:`PointProposer`, :class:`UniformSegmentationPointProposer`,
+      :class:`FocusedSegmentationPointProposer` — point proposal
     - :class:`SegmentationTarget`, :class:`SegmentationIndex` — segmentation metadata
     - :class:`KeypointTrackState` — mutable track state buffers
     - :class:`CameraFrame` — normalized camera observation
@@ -16,6 +17,7 @@ from .types import (
     CameraFrame,
 )
 from .proposers import (
+    FocusedSegmentationPointProposer,
     PointProposer,
     UniformSegmentationPointProposer,
 )
@@ -34,6 +36,7 @@ __all__ = [
     "SegmentationIndex",
     "KeypointTrackState",
     "CameraFrame",
+    "FocusedSegmentationPointProposer",
     "PointProposer",
     "UniformSegmentationPointProposer",
     "KeypointCameraPort",

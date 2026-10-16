@@ -3,6 +3,7 @@
 from .base import SensorNode
 from .camera_node import CameraSensorNode, CameraSensorNodeOptions
 from .keypoints import (
+    FocusedSegmentationPointProposer,
     PointProposer,
     UniformSegmentationPointProposer,
     KeypointTrackerNode,
@@ -24,6 +25,7 @@ __all__ = [
     "SensorNode",
     "CameraSensorNode",
     "CameraSensorNodeOptions",
+    "FocusedSegmentationPointProposer",
     "PointProposer",
     "UniformSegmentationPointProposer",
     "KeypointTrackerNode",
