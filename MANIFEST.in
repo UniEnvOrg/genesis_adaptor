@@ -1,5 +1,6 @@
 include README.md
 include LICENSE
+include NOTICE
 include CHANGELOG.md
 recursive-include unienv_genesis_refpolicy/third_party/contact_graspnet_pytorch *.yaml *.pdf
 
