@@ -35,6 +35,14 @@ jobs:
         # CPU-only torch: the tests run Genesis on its CPU backend
         pip install --index-url https://download.pytorch.org/whl/cpu torch
         pip install -e '.[test]'
+    - name: Install software OpenGL (EGL) and robot assets
+      run: |
+        # Genesis creates an offscreen EGL context; Mesa's llvmpipe provides one without a GPU
+        sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libegl-mesa0 libgl1-mesa-dri
+        # Robot meshes (~100 MB) are referenced by the robot XMLs; prefetch them from the Hub
+        python -c "from unienv_genesis_collection.asset_path import download_assets; download_assets(allow_patterns='robots/**')"
     - name: Test with pytest
+      env:
+        PYOPENGL_PLATFORM: egl
       run: |
         pytest ${{ matrix.test_folder }}
