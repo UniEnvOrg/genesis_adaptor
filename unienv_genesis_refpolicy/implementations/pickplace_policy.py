@@ -70,6 +70,7 @@ from unienv_genesis.nodes.entities.entity_controllers.end_effector_pose import (
 from unienv_genesis.nodes.entities.entity_controllers.base import EntityController
 from unienv_genesis_collection.objects.base_object import ManipulatableObject
 from unienv_genesis_refpolicy.base.policy import BaseRefPolicy
+from unienv_genesis_refpolicy.base.tip_frame import tip_frame_controller
 from unienv_genesis_refpolicy.grasp_providers.base import GraspCandidateProvider
 from unienv_genesis_refpolicy.implementations.goto_lambda_policy import GoToLambdaRefPolicy
 from unienv_genesis_refpolicy.implementations.grasp_policy import BoxGripperGraspPolicy
@@ -89,7 +90,9 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
 
     Args:
         world: Genesis world instance.
-        eef_controller: :class:`EndEffectorPoseController` for the arm.
+        eef_controller: :class:`EndEffectorPoseController` for the arm. Every
+            phase moves the gripper's tip (the arm EEF composed with the
+            gripper controller's ``eef_tip_offset``, if any).
         gripper_controller: Controller for the gripper.
         task: :class:`ObjectRelocateTask` (or any object exposing
             ``_goal_pos`` and ``target_object_entity``).
@@ -167,6 +170,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         target_entity_fn: Optional[Callable[[], Any]] = None,
     ) -> None:
         super().__init__(world)
+        eef_controller = tip_frame_controller(eef_controller, gripper_controller)
         self.controller = eef_controller
         self.gripper_controller = gripper_controller
         self.task = task

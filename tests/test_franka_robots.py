@@ -14,6 +14,9 @@ Covers, for ``franka_emika_panda``, ``franka_fr3_hand`` and
     the batched ``valid_mask``.
   - Integration: the default combined controller of ``FrankaEmikaPanda``
     wires the 0.4 rad/s limit into the arm sub-controller.
+  - ``FrankaFR3WithRobotiq2F85``: the arm EEF is the flange (``g_base``, no
+    offset) and the gripper tip, 0.159 m along the approach axis, is the
+    gripper sub-controller's ``eef_tip_offset``.
 """
 
 from __future__ import annotations
@@ -33,6 +36,8 @@ from unienv_genesis_collection.robots import (
     franka_fr3_robotiq_2f85,
 )
 from unienv_genesis_collection.robots.franka_emika_panda import FrankaEmikaPanda
+from unienv_genesis_collection.robots.franka_fr3_robotiq_2f85 import FrankaFR3WithRobotiq2F85
+from unienv_genesis_refpolicy.base.tip_frame import TipFrameEEFController, tip_frame_controller
 from unienv_interface.world import WorldEnv
 
 _VARIANT_MODULES = [franka_emika_panda, franka_fr3_hand, franka_fr3_robotiq_2f85]
@@ -202,6 +207,49 @@ def test_panda_combined_controller_uses_droid_limit():
     env.close()
 
 
+# ---------------------------------------------------------------------------
+# FR3 + Robotiq: flange EEF, gripper tip offset
+# ---------------------------------------------------------------------------
+
+def test_fr3_robotiq_arm_eef_is_flange_and_gripper_has_tip_offset():
+    arm = franka_fr3_robotiq_2f85._DEFAULT_SUB_CONTROLLERS["arm"]
+    gripper = franka_fr3_robotiq_2f85._DEFAULT_SUB_CONTROLLERS["gripper"]
+    assert arm["target_link"].link_name == "g_base"
+    assert arm["target_link"].offset_pos is None
+    assert gripper["eef_tip_offset"] == [0.0, 0.0, 0.159]
+    # The tip lies along the approach axis the grasp policies align.
+    assert gripper["approach_direction"] == [0.0, 0.0, 1.0]
+
+
+def test_fr3_robotiq_tip_frame_is_flange_plus_offset():
+    world = GenesisWorld()
+    robot = FrankaFR3WithRobotiq2F85(world, name="franka")
+    env = WorldEnv(world, [robot], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    arm, gripper = robot.controller["arm"], robot.controller["gripper"]
+    assert arm.eef_offset_pos is None  # the controller's EEF is g_base itself
+    tip = tip_frame_controller(arm, gripper)
+    assert isinstance(tip, TipFrameEEFController)
+
+    link = robot.entity.get_link("g_base")
+    link_pos, link_quat = link.get_pos(), link.get_quat()
+    flange_pos, flange_quat = arm.get_eef_pose_absolute()
+    assert torch.allclose(flange_pos, link_pos, atol=1e-5)
+
+    tip_pos, tip_quat = tip.get_eef_pose_absolute()
+    rotation = gs.utils.geom.quat_to_R(link_quat.cpu().numpy())
+    expected = link_pos.cpu() + torch.as_tensor(rotation[:, 2] * 0.159, dtype=torch.float32)
+    assert torch.allclose(tip_pos.cpu(), expected, atol=1e-5)
+    assert torch.allclose(tip_quat, flange_quat, atol=1e-6)
+
+    # IK for the current tip pose holds the arm: the error is ~0.
+    _, error = tip.solve_ik_absolute(tip_pos, tip_quat)
+    assert float(error.abs().max()) < 1e-3
+
+    env.close()
+
+
 if __name__ == "__main__":
     for mod in _VARIANT_MODULES:
         test_arm_max_joint_pos_vel_is_droid_limit(mod)
@@ -210,4 +258,6 @@ if __name__ == "__main__":
         test_is_grasping_batched_valid_mask(mod)
         test_is_grasping_missing_pad_link_fails_loudly(mod)
     test_panda_combined_controller_uses_droid_limit()
+    test_fr3_robotiq_arm_eef_is_flange_and_gripper_has_tip_offset()
+    test_fr3_robotiq_tip_frame_is_flange_plus_offset()
     print("All tests passed!")

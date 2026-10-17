@@ -27,6 +27,7 @@ from unienv_genesis_refpolicy.base.policy import (
     require_eef_controller,
     DURATION_COMPARISON_EPS,
 )
+from unienv_genesis_refpolicy.base.tip_frame import tip_frame_controller
 from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
 from unienv_genesis.utils.batch_dim_utils import try_scalar
 
@@ -48,7 +49,8 @@ class MoveObjectPolicy(GoToRefPolicy):
         target_quat: Optional desired object quaternion. If ``None``, the
             object's current quaternion at reset is preserved.
         gripper_controller: Optional gripper controller used for contact-based
-            failure detection.
+            failure detection. With an ``eef_tip_offset`` it also makes the
+            policy move the gripper's tip, as the grasp policy does.
         fail_on_gripper_contact_loss: Whether losing object contact should fail
             the policy.
         slip_position_threshold: Maximum allowed drift in the cached object→EEF
@@ -78,6 +80,7 @@ class MoveObjectPolicy(GoToRefPolicy):
         track_relative_pose: bool = True,
         **kwargs,
     ) -> None:
+        controller = tip_frame_controller(controller, gripper_controller)
         require_eef_controller(controller, policy_name="MoveObjectPolicy")
         if fail_on_gripper_contact_loss and gripper_controller is None:
             raise ValueError(

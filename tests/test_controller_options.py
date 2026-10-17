@@ -40,6 +40,8 @@ GRIPPER_DESCRIPTION = dict(
     gripper_depth=0.05,
     gripper_open_action=-1.0,
     gripper_close_action=1.0,
+    eef_tip_offset=[0.0, 0.0, 0.1],
+    eef_tip_offset_quat=[1.0, 0.0, 0.0, 0.0],
 )
 
 

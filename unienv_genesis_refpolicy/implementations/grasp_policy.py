@@ -29,6 +29,7 @@ from unienv_genesis_refpolicy.base.policy import (
     require_eef_controller,
     DURATION_COMPARISON_EPS,
 )
+from unienv_genesis_refpolicy.base.tip_frame import tip_frame_controller
 from unienv_genesis_refpolicy.grasp_providers.base import GraspCandidateProvider
 from unienv_genesis_refpolicy.grasp_providers.object_geometry import (
     ObjectGeometryGraspCandidateProvider,
@@ -62,7 +63,11 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
 
     Args:
         world: Genesis world instance.
-        eef_controller: :class:`EndEffectorPoseController` for the arm.
+        eef_controller: :class:`EndEffectorPoseController` for the arm. The
+            policy places the gripper's tip (the arm EEF composed with the
+            gripper controller's ``eef_tip_offset``, if any; see
+            :func:`~unienv_genesis_refpolicy.base.tip_frame.tip_frame_controller`)
+            at the grasp pose.
         gripper_controller: Controller for the gripper (any
             :class:`EntityController`).
         target_object: The object descriptor to grasp.
@@ -167,6 +172,7 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
     ) -> None:
         super().__init__(world)
 
+        eef_controller = tip_frame_controller(eef_controller, gripper_controller)
         require_eef_controller(eef_controller, policy_name="BoxGripperGraspPolicy")
         self._eef_ctrl = eef_controller
         self._gripper_ctrl = gripper_controller

@@ -101,6 +101,12 @@ class EntityController(
         "gripper_depth",
         "gripper_open_action",
         "gripper_close_action",
+        # Gripper tip relative to the arm's EEF (``target_link``): ``(3,)``
+        # position in the EEF frame and optional ``(w, x, y, z)`` rotation.
+        # The reference policies place this tip at grasp poses
+        # (``unienv_genesis_refpolicy.base.tip_frame``).
+        "eef_tip_offset",
+        "eef_tip_offset_quat",
     })
     """Extra keyword arguments stored as attributes without a warning."""
 

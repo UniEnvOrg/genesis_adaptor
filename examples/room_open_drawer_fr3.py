@@ -252,12 +252,14 @@ def init_reach_policy(world, franka, task, placement):
     Builds a :class:`GoToRefPolicy` from the task's own ``handle_position``
     observation (world frame), offset towards the room (the fixture's front)
     and slightly up.  The target orientation is the robot's initial
-    end-effector orientation, so the hand keeps its approach angle.
+    end-effector orientation, so the hand keeps its approach angle.  The
+    gripper's tip (not the flange) goes to the pre-grasp point.
     """
     import torch
+    from unienv_genesis_refpolicy.base.tip_frame import tip_frame_controller
     from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
 
-    arm = franka.controller["arm"]
+    arm = tip_frame_controller(franka.controller["arm"], franka.controller["gripper"])
     handle_position = task.get_observation()["handle_position"]
     front_dir = torch.tensor(
         [math.sin(placement.yaw), -math.cos(placement.yaw), 0.0],
@@ -337,7 +339,7 @@ def main() -> None:
 
     # -- Actions: scripted reach (arm) + open gripper ----------------------
     reach = init_reach_policy(world, franka, task, placement)
-    arm = franka.controller["arm"]
+    arm = reach.controller  # the gripper tip
     gripper_action = torch.full(
         get_batch_aware_shape(world.batch_size, 1),
         -1.0,  # Robotiq convention: -1 = fully open

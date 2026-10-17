@@ -21,8 +21,17 @@ ARM_HOME_JOINT_POSITIONS = torch.tensor([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, 
 GRIPPER_HOME_JOINT_POSITIONS = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 HOME_JOINT_POSITIONS = torch.cat([ARM_HOME_JOINT_POSITIONS, GRIPPER_HOME_JOINT_POSITIONS])
 
-# End-effector link name for IK control (arm wrist, before gripper)
+# End-effector link name for IK control: the Robotiq base, at the FR3 flange
+# (``fr3_flange``) origin and rotated 90 degrees about its z axis, so the arm
+# EEF is the flange (same origin and tool z axis).
 EE_LINK_NAME = "g_base"
+
+# Gripper tip (between the fingertips, centred in the open direction) in the
+# EEF (``g_base``) frame: 0.159 m along the approach axis (Robotiq base to
+# fingertip, mujoco_menagerie CAD). Grasp candidates place this point (see
+# base_object.list_box_gripper_grasping_candidates_local); the reference
+# policies read it from the gripper sub-controller's ``eef_tip_offset``.
+GRIPPER_TIP_OFFSET = [0.0, 0.0, 0.159]
 
 # Joint names for arm and gripper (resolved to indexes at controller init)
 ARM_JOINT_NAMES = [f"fr3_joint{i}" for i in range(1, 8)]
@@ -58,11 +67,9 @@ _DEFAULT_SUB_CONTROLLERS = {
     "arm": {
         "controller_type": "eef_pose",
         "joint_names": ARM_JOINT_NAMES,
-        # Virtual EEF offset from the target_link (g_base) origin to the gripper fingertip along the approach direction, centred in the open direction.  This point is where grasp candidates place the EEF (see base_object.list_box_gripper_grasping_candidates_local).
-        # ~0.159 m (Robotiq base to fingertip)
-        "target_link": LinkAttachment(
-            link_name=EE_LINK_NAME, offset_pos=[0.0, 0.0, 0.159],
-        ),
+        # The arm EEF is the flange; the gripper tip is the gripper's
+        # ``eef_tip_offset`` below.
+        "target_link": LinkAttachment(link_name=EE_LINK_NAME),
         "Kp": torch.tensor([4500, 4500, 3500, 3500, 2000, 2000, 2000], dtype=torch.float32),
         "Kd": torch.tensor([450, 450, 350, 350, 200, 200, 200], dtype=torch.float32),
         # DROID IK/controller velocity limit for the Franka arm (rad/s).
@@ -82,7 +89,7 @@ _DEFAULT_SUB_CONTROLLERS = {
         "is_grasping_fn": make_is_grasping(GRIPPER_PAD_LINK_NAMES),
         # Grasp frame directions in the EEF frame (g_base body frame).
         # approach_direction: axis along which the gripper approaches the
-        #   object (fingertip direction); eef_offset is measured along this.
+        #   object (fingertip direction); the tip offset is measured along this.
         # open_direction: axis along which the fingers separate.
         "approach_direction": [0.0, 0.0, 1.0],
         "open_direction": [1.0, 0.0, 0.0],
@@ -90,6 +97,8 @@ _DEFAULT_SUB_CONTROLLERS = {
         "gripper_depth": 0.035,
         "gripper_open_action": -1.0,  # action value for fully open gripper
         "gripper_close_action": 1.0,  # action value for fully closed gripper
+        # Gripper tip in the arm EEF (flange) frame.
+        "eef_tip_offset": GRIPPER_TIP_OFFSET,
     },
 }
 
@@ -102,7 +111,8 @@ class FrankaFR3WithRobotiq2F85(RobotDescriptionNode):
     They are combined in ``assets/robots/franka_fr3_robotiq_2f85/fr3_robotiq_2f85.xml``.
 
     Default controller is ``"combined"``:
-      - ``"arm"``     sub-controller: ``eef_pose`` (IK-based end-effector control)
+      - ``"arm"``     sub-controller: ``eef_pose`` (IK-based end-effector
+        control of the flange, ``g_base``)
       - ``"gripper"`` sub-controller: ``mimic_joint_position`` (single scalar)
 
     Gripper action convention::
