@@ -39,6 +39,7 @@ import trimesh
 
 from unienv_genesis import GenesisWorld
 from unienv_interface.world import WorldEnv
+from unienv_interface.space.space_utils.metadata_utils import validate_metadata
 
 from unienv_genesis_collection.objects.articulated_object import (
     ArticulatedObject,
@@ -415,6 +416,16 @@ def test_observation_space_batched_and_unbatched():
         for key, space in spaces.items():
             assert space.device == world.device, key
             assert space.dtype == world.dtype, key
+
+        # Space metadata: the "joint_position" is an open fraction, not radians.
+        validate_metadata(task.observation_space)
+        for key in ("joint_position", "target_fraction"):
+            md = spaces[key].metadata.to_dict()
+            assert md["kind"] == "task" and md["units"] == "normalized", key
+            assert md["normalized"] is True, key
+            assert md["joint"] == "drawer_slide" and md["furniture"] == "counter", key
+        handle = spaces["handle_position"].metadata.to_dict()
+        assert (handle["kind"], handle["units"], handle["frame"]) == ("task", "m", "world")
 
 
 def test_after_reload_binds_by_name():

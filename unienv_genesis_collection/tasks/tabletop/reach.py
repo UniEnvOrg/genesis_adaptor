@@ -35,6 +35,7 @@ from unienv_interface.space import BoxSpace, DictSpace
 from unienv_interface.world.node import WorldNode
 from unienv_genesis.world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
+from unienv_genesis.utils.space_metadata import position_metadata, quaternion_metadata
 
 __all__ = ["ReachTargetTask"]
 
@@ -133,7 +134,8 @@ class ReachTargetTask(WorldNode):
         self._reward: Union[float, torch.Tensor] = 0.0
         self._terminated: Union[bool, torch.Tensor] = False
 
-        # Observation space (batch-aware shapes, world device).
+        # Observation space (batch-aware shapes, world device), all in the
+        # world frame.
         obs_spaces = {
             "eef_position": BoxSpace(
                 PyTorchComputeBackend,
@@ -142,6 +144,7 @@ class ReachTargetTask(WorldNode):
                 shape=get_batch_aware_shape(self.world.batch_size, 3),
                 dtype=self.world.dtype,
                 device=self.world.device,
+                metadata=position_metadata("task", frame="world", label="end-effector position"),
             ),
             "target_position": BoxSpace(
                 PyTorchComputeBackend,
@@ -150,6 +153,7 @@ class ReachTargetTask(WorldNode):
                 shape=get_batch_aware_shape(self.world.batch_size, 3),
                 dtype=self.world.dtype,
                 device=self.world.device,
+                metadata=position_metadata("task", frame="world", label="target end-effector position"),
             ),
         }
         if self.target_orientation is not None:
@@ -160,6 +164,9 @@ class ReachTargetTask(WorldNode):
                 shape=get_batch_aware_shape(self.world.batch_size, 4),
                 dtype=self.world.dtype,
                 device=self.world.device,
+                metadata=quaternion_metadata(
+                    "task", frame="world", label="target end-effector orientation",
+                ),
             )
         self.observation_space = DictSpace(
             PyTorchComputeBackend,

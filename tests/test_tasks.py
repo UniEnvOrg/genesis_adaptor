@@ -37,6 +37,7 @@ from unienv_genesis_collection.tasks.tabletop import (
     ObjectRelocateTask,
 )
 from unienv_interface.world import WorldEnv
+from unienv_interface.space.space_utils.metadata_utils import validate_metadata
 
 
 # ------------------------------------------------------------------
@@ -170,6 +171,14 @@ def test_reach_observation_space_batched():
         assert task.observation_space[key].device == world.device, (
             f"{key} space on {task.observation_space[key].device}, expected {world.device}"
         )
+
+    # Space metadata: world-frame task positions / orientation.
+    validate_metadata(task.observation_space)
+    for key in ("eef_position", "target_position"):
+        md = task.observation_space[key].metadata.to_dict()
+        assert (md["kind"], md["units"], md["frame"]) == ("task", "m", "world"), key
+    md = task.observation_space["target_orientation"].metadata.to_dict()
+    assert (md["kind"], md["rotation"], md["frame"]) == ("task", "quat_wxyz", "world")
 
     # Observed values match the declared batched shapes.
     obs = task.get_observation()
@@ -354,6 +363,12 @@ def test_pickplace_priorities_explicit_zero():
     assert task.reload_priorities == {0}, task.reload_priorities
     assert task.reset_priorities == {0}, task.reset_priorities
     assert task.after_reload_priorities == {0}, task.after_reload_priorities
+
+    # Space metadata: world-frame object / goal positions.
+    validate_metadata(task.observation_space)
+    for key in ("target_position", "goal_position"):
+        md = task.observation_space[key].metadata.to_dict()
+        assert (md["kind"], md["units"], md["frame"]) == ("task", "m", "world"), key
 
     print("  PASS: pickplace explicit priority 0 honored")
     world.close()

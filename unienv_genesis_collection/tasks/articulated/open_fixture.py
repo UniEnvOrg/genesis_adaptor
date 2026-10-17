@@ -69,7 +69,9 @@ import torch
 from unienv_interface.backends.pytorch import PyTorchComputeBackend
 from unienv_interface.space import BoxSpace, DictSpace
 from unienv_interface.world.node import WorldNode
+from unienv_interface.space.space_utils.metadata_utils import metadata
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
+from unienv_genesis.utils.space_metadata import position_metadata
 from unienv_genesis_collection.objects.articulated_object import (
     ArticulatedObject,
     ArticulationError,
@@ -230,6 +232,15 @@ class OpenArticulatedJointTask(WorldNode):
         # unbatched (``handle_position`` is the only vectorised entry).
         self._fraction_shape = get_batch_aware_shape(self.world.batch_size, ())
         fraction_shape = self._fraction_shape
+        # ``joint_position`` is NOT the joint coordinate (rad / m) but the open
+        # fraction of the joint's range, like ``target_fraction``.
+        fraction_md = dict(
+            units="normalized",
+            normalized=True,
+            furniture=furniture_key,
+            joint=joint_name,
+            fraction_of="joint range: 0 = closed (lower limit), 1 = open (upper limit)",
+        )
         self.observation_space = DictSpace(
             PyTorchComputeBackend,
             {
@@ -240,6 +251,7 @@ class OpenArticulatedJointTask(WorldNode):
                     shape=fraction_shape,
                     dtype=self.world.dtype,
                     device=self.world.device,
+                    metadata=metadata("task", label="current open fraction of the joint", **fraction_md),
                 ),
                 "target_fraction": BoxSpace(
                     PyTorchComputeBackend,
@@ -248,6 +260,7 @@ class OpenArticulatedJointTask(WorldNode):
                     shape=fraction_shape,
                     dtype=self.world.dtype,
                     device=self.world.device,
+                    metadata=metadata("task", label="goal open fraction of the joint", **fraction_md),
                 ),
                 "handle_position": BoxSpace(
                     PyTorchComputeBackend,
@@ -256,6 +269,10 @@ class OpenArticulatedJointTask(WorldNode):
                     shape=get_batch_aware_shape(self.world.batch_size, 3),
                     dtype=self.world.dtype,
                     device=self.world.device,
+                    metadata=position_metadata(
+                        "task", frame="world", label="handle link bounding-box centre",
+                        furniture=furniture_key, joint=joint_name,
+                    ),
                 ),
             },
             device=self.world.device,

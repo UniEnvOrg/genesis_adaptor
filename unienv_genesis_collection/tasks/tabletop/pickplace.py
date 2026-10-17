@@ -7,6 +7,7 @@ from unienv_interface.space import BoxSpace, DictSpace
 from unienv_interface.world.node import WorldNode
 from unienv_genesis.world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
+from unienv_genesis.utils.space_metadata import position_metadata
 from unienv_genesis_collection.objects.base_object import ManipulatableObject, bbox_size, bbox_center
 from unienv_genesis_collection.scenes.table_builder import TableBuilder
 from unienv_genesis_collection.scenes.cluttered_table_manager import ClutteredTableManager
@@ -103,6 +104,9 @@ class ObjectRelocateTask(WorldNode):
                     shape=get_batch_aware_shape(self.world.batch_size, 3),
                     dtype=self.world.dtype,
                     device=self.world.device,
+                    metadata=position_metadata(
+                        "task", frame="world", label="position of the object to move (entity origin)",
+                    ),
                 ),
                 "goal_position": BoxSpace(
                     PyTorchComputeBackend,
@@ -111,6 +115,9 @@ class ObjectRelocateTask(WorldNode):
                     shape=get_batch_aware_shape(self.world.batch_size, 3),
                     dtype=self.world.dtype,
                     device=self.world.device,
+                    metadata=position_metadata(
+                        "task", frame="world", label="goal position of the object",
+                    ),
                 ),
             },
             device=self.world.device,
