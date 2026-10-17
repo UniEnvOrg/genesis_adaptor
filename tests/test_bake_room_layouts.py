@@ -84,6 +84,13 @@ _REAL_ASSETS_DIR = (
     Path(__file__).parent.parent / "unienv_genesis_collection" / "assets"
 )
 
+# The baked-file round-trips and spot checks read the real scene assets (~13 GB,
+# downloaded from the Hub on demand); skip them where those aren't present (e.g. CI).
+requires_scene_assets = pytest.mark.skipif(
+    not (_REAL_ASSETS_DIR / "scenes" / "rooms").is_dir(),
+    reason="real scene assets (unienv_genesis_collection/assets/scenes/rooms) are not downloaded",
+)
+
 
 def _load_script():
     spec = importlib.util.spec_from_file_location(
@@ -486,6 +493,7 @@ def test_bake_arrangement_skips_tilted_instance(
 # ---------------------------------------------------------------------------
 
 
+@requires_scene_assets
 def test_baked_arrangement_id_lookup(no_download):
     """``arrangement="replicacad/<name>"`` resolves the baked file."""
     rel = baked_spec_relative_path("replicacad/apt_0", kind="arrangement")
@@ -493,6 +501,7 @@ def test_baked_arrangement_id_lookup(no_download):
     assert (_REAL_ASSETS_DIR.joinpath(*rel)).is_file()
 
 
+@requires_scene_assets
 def test_baked_layout_id_lookup(no_download):
     rel = baked_spec_relative_path("robocasa_kitchen/open_kitchen", kind="layout")
     assert rel == (
@@ -501,6 +510,7 @@ def test_baked_layout_id_lookup(no_download):
     assert (_REAL_ASSETS_DIR.joinpath(*rel)).is_file()
 
 
+@requires_scene_assets
 def test_every_baked_arrangement_round_trips(no_download):
     import glob
 
@@ -521,6 +531,7 @@ def test_every_baked_arrangement_round_trips(no_download):
         assert loaded.shell_id == spec.shell_id
 
 
+@requires_scene_assets
 def test_every_baked_layout_round_trips(no_download):
     for style in ("open_kitchen", "galley"):
         spec = load_baked_room_layout_spec(f"robocasa_kitchen/{style}", kind="layout")
@@ -528,6 +539,7 @@ def test_every_baked_layout_round_trips(no_download):
         assert spec.shell_id == f"robocasa_kitchen/{style}"
 
 
+@requires_scene_assets
 def test_baked_apt_0_spot_checks(no_download):
     """apt_0's baked poses follow from the upstream arrangement's data model."""
     spec = load_baked_room_layout_spec("replicacad/apt_0", kind="arrangement")
@@ -578,6 +590,7 @@ def test_baked_apt_0_spot_checks(no_download):
     assert door.yaw == pytest.approx(0.0, abs=1e-9)
 
 
+@requires_scene_assets
 def test_baked_apt_0_room_size_from_shell_bbox(no_download):
     import trimesh
 
@@ -597,6 +610,7 @@ def test_baked_apt_0_room_size_from_shell_bbox(no_download):
     assert wall_height == pytest.approx(float(hi[1]), rel=1e-9)
 
 
+@requires_scene_assets
 def test_baked_robocasa_open_kitchen_spot_checks(no_download):
     spec = load_baked_room_layout_spec("robocasa_kitchen/open_kitchen", kind="layout")
     assert spec.room_size == pytest.approx((6.2, 5.2, 2.7))
@@ -616,6 +630,7 @@ def test_baked_robocasa_open_kitchen_spot_checks(no_download):
         )
 
 
+@requires_scene_assets
 def test_baked_robocasa_layouts_are_deterministic(tmp_path, no_download):
     """Re-baking the layouts reproduces byte-identical JSON."""
     for style in ("open_kitchen", "galley"):

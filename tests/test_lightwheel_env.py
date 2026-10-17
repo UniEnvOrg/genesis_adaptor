@@ -730,7 +730,10 @@ def test_repackage_scene_transcodes_exr_textures(tmp_path):
     textures.mkdir()
     import imageio.v2 as imageio
 
-    imageio.imwrite(str(textures / "road_D.EXR"), np.full((4, 4, 3), 0.5, dtype=np.float32))
+    try:
+        imageio.imwrite(str(textures / "road_D.EXR"), np.full((4, 4, 3), 0.5, dtype=np.float32))
+    except Exception as exc:  # no EXR-capable imageio plugin installed (e.g. CI)
+        pytest.skip(f"cannot write EXR images here: {exc}")
 
     packaged, _n, unresolvable = _SCRIPT.repackage_scene(
         asset_dir, "lightwheel_env_SnowGround", "SnowGround.usd",
