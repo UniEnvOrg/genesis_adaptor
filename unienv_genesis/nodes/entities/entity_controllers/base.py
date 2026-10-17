@@ -1,5 +1,6 @@
-from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Generic, TypeVar, Sequence
+from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Generic, TypeVar, Sequence, ClassVar, FrozenSet
 import abc
+import warnings
 import genesis as gs
 from genesis.engine import entities as gs_entities
 from genesis.engine.entities.rigid_entity import RigidLink
@@ -62,12 +63,39 @@ def resolve_joint_indexes(
     return joint_indexes
 
 
+class UnknownControllerOptionWarning(UserWarning):
+    """A controller was given a keyword argument that it does not know.
+
+    Such options are still stored as attributes (so code reading a custom
+    attribute keeps working), but no controller uses them: usually the key is
+    misspelled or meant for another controller.
+    """
+
+
 class EntityController(
     abc.ABC,
     Generic[EntityType, ObsType, ActType]
 ):
-    """Base controller for Genesis entities."""
+    """Base controller for Genesis entities.
+
+    Keyword arguments that no controller in the ``__init__`` chain consumes
+    end up here. Those named in :attr:`extra_attributes` are stored as
+    attributes of the controller; any other key is stored as well, with an
+    :class:`UnknownControllerOptionWarning`.
+    """
     controller_type : str
+
+    extra_attributes : ClassVar[FrozenSet[str]] = frozenset({
+        # Gripper description read by the reference grasp policies
+        # (``BoxGripperGraspPolicy``) from the gripper sub-controller.
+        "approach_direction",
+        "open_direction",
+        "gripper_width",
+        "gripper_depth",
+        "gripper_open_action",
+        "gripper_close_action",
+    })
+    """Extra keyword arguments stored as attributes without a warning."""
 
     def __init__(
         self,
@@ -81,6 +109,16 @@ class EntityController(
         self.entity = entity
         self.observation_space = observation_space
         self.action_space = action_space
+        unknown = sorted(key for key in kwargs if key not in self.extra_attributes)
+        if unknown:
+            warnings.warn(
+                f"{type(self).__name__} got unknown option(s) {unknown}: they are "
+                f"stored as attributes but not used by the controller (misspelled, "
+                f"or meant for another controller?). Known extra attributes: "
+                f"{sorted(self.extra_attributes)}.",
+                UnknownControllerOptionWarning,
+                stacklevel=2,
+            )
         for key, value in kwargs.items():
             setattr(self, key, value)
 
