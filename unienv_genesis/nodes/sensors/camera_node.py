@@ -83,6 +83,11 @@ from xbarray.transformations.pointcloud.pytorch import (
     depth_image_to_world,
 )
 from unienv_interface.space import Space, DictSpace, BoxSpace
+from unienv_interface.space.space_utils.metadata_utils import (
+    depth_metadata,
+    image_metadata,
+    metadata,
+)
 from unienv_interface.backends.pytorch import (
     PyTorchComputeBackend,
     PyTorchArrayType,
@@ -100,6 +105,7 @@ from unienv_interface.backends.numpy import (
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
 from unienv_genesis.options.attach_option import AttachmentProvider
+from unienv_genesis.utils.space_metadata import attach_extras
 
 from .base import SensorNode, ContextType, ObsType
 
@@ -642,9 +648,87 @@ class CameraSensorNode(SensorNode[
         if priority == 0 and self.render_on_step:
             self.update_observation()
 
+    def _segmentation_level(self) -> Optional[str]:
+        """The scene's ``VisOptions.segmentation_level`` (``None`` if unavailable)."""
+        scene = getattr(self.world, "scene", None)
+        if scene is None:
+            return None
+        # Genesis 1.4+ keeps the vis options on ``scene.options.vis``
+        # (``scene.vis_options`` existed only in older builds).
+        vis_options = getattr(scene, "vis_options", None)
+        if vis_options is None:
+            vis_options = getattr(getattr(scene, "options", None), "vis", None)
+        level = getattr(vis_options, "segmentation_level", None)
+        return level if isinstance(level, str) else None
+
+    def _space_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """Metadata of each observation key (see :meth:`_get_observation_space`).
+
+        ``source`` is the node name; an attached camera also records the
+        ``entity`` / ``link`` its attachment provider names. ``fps`` is left
+        out: the camera renders once per environment step, a rate the camera
+        does not know.
+        """
+        attach = self.option.attach
+        common: Dict[str, Any] = attach_extras(self.name, attach)
+        # The "link" whose frame ``local_extrinsics_cv`` maps from: the attached
+        # link, or the world for a static camera.
+        local_reference = "link_local" if attach is not None else "world"
+        return {
+            "rgb": image_metadata(**common),
+            "depth": depth_metadata(near=float(self.option.near), far=float(self.option.far), **common),
+            "seg": metadata(
+                "segmentation",
+                layout="HW",
+                # Pixel values index ``segmentation_sensor._visualizer.segmentation_idx_dict``
+                # (0 is the background).
+                level=self._segmentation_level(),
+                background=0,
+                **common,
+            ),
+            "normal": metadata("normal", layout="HWC", names=["nx", "ny", "nz"], **common),
+            "position": metadata(
+                "pointcloud", layout="HWC", units="m", frame="world", names=["x", "y", "z"], **common,
+            ),
+            "intrinsics_cv": metadata(
+                "intrinsics",
+                frame="camera_cv",
+                units="px",
+                label="pinhole camera matrix K = [[fx, 0, cx], [0, fy, cy], [0, 0, 1]] (OpenCV)",
+                **common,
+            ),
+            "extrinsics_cv": metadata(
+                "extrinsics",
+                frame="camera_cv",
+                reference_frame="world",
+                units="m",
+                label="world-to-camera [R | t] (OpenCV camera frame): p_cam = R @ p_world + t",
+                **common,
+            ),
+            "local_extrinsics_cv": metadata(
+                "extrinsics",
+                frame="camera_cv",
+                reference_frame=local_reference,
+                units="m",
+                label=(
+                    "attached-link-to-camera [R | t] (OpenCV camera frame): p_cam = R @ p_link + t; "
+                    "for a static camera the link is the world (same as extrinsics_cv)"
+                ),
+                **common,
+            ),
+        }
+
     def _get_observation_space(self) -> DictSpace[PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
-        """Get the observation space for this camera sensor."""
+        """Get the observation space for this camera sensor.
+
+        Every key carries space metadata (:meth:`_space_metadata`): ``rgb`` is
+        an ``rgb`` / ``HWC`` image, ``depth`` metric depth (``HW``), ``seg``
+        a segmentation index map, ``normal`` a surface-normal map,
+        ``position`` a per-pixel world point cloud and the ``*_cv`` matrices
+        are OpenCV intrinsics / extrinsics.
+        """
         spaces: Dict[str, Space] = {}
+        md = self._space_metadata()
 
         W, H = self.option.res
         B = self.world.batch_size
@@ -656,6 +740,7 @@ class CameraSensorNode(SensorNode[
                 shape=get_batch_aware_shape(B, (H, W, 3)),
                 dtype=torch.uint8,
                 device=self.world.device,
+                metadata=md["rgb"],
             )
 
         if self.render_depth:
@@ -666,6 +751,7 @@ class CameraSensorNode(SensorNode[
                 shape=get_batch_aware_shape(B, (H, W)),
                 dtype=self.world.dtype,
                 device=self.world.device,
+                metadata=md["depth"],
             )
 
         if self.render_seg:
@@ -676,6 +762,7 @@ class CameraSensorNode(SensorNode[
                 shape=get_batch_aware_shape(B, (H, W)),
                 dtype=torch.int32,
                 device=self.world.device,
+                metadata=md["seg"],
             )
 
         if self.render_normal:
@@ -686,6 +773,7 @@ class CameraSensorNode(SensorNode[
                 shape=get_batch_aware_shape(B, (H, W, 3)),
                 dtype=self.world.dtype,
                 device=self.world.device,
+                metadata=md["normal"],
             )
 
         if self.render_position:
@@ -696,6 +784,7 @@ class CameraSensorNode(SensorNode[
                 shape=get_batch_aware_shape(B, (H, W, 3)),
                 dtype=self.world.dtype,
                 device=self.world.device,
+                metadata=md["position"],
             )
 
         spaces["intrinsics_cv"] = BoxSpace(
@@ -705,6 +794,7 @@ class CameraSensorNode(SensorNode[
             shape=get_batch_aware_shape(B, (3, 3)),
             dtype=self.world.dtype,
             device=self.world.device,
+            metadata=md["intrinsics_cv"],
         )
         spaces["extrinsics_cv"] = BoxSpace(
             PyTorchComputeBackend,
@@ -713,6 +803,7 @@ class CameraSensorNode(SensorNode[
             shape=get_batch_aware_shape(B, (3, 4)),
             dtype=self.world.dtype,
             device=self.world.device,
+            metadata=md["extrinsics_cv"],
         )
         spaces["local_extrinsics_cv"] = BoxSpace(
             PyTorchComputeBackend,
@@ -721,6 +812,7 @@ class CameraSensorNode(SensorNode[
             shape=get_batch_aware_shape(B, (3, 4)),
             dtype=self.world.dtype,
             device=self.world.device,
+            metadata=md["local_extrinsics_cv"],
         )
 
         return DictSpace(

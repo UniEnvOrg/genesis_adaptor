@@ -29,6 +29,11 @@ from unienv_interface.backends.pytorch import (
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
 from unienv_genesis.options.attach_option import AttachmentProvider
+from unienv_genesis.utils.space_metadata import (
+    pose_frame,
+    position_metadata,
+    quaternion_metadata,
+)
 
 from .base import SensorNode
 
@@ -293,6 +298,11 @@ class EndEffectorStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayTy
         B = self.world.batch_size
         dtype = self.world.dtype
         device = self.world.device
+        frame = pose_frame(self.option.base_frame is not None)
+        extra = {"source": self.name}
+        link_name = getattr(self.option.attach, "link_name", None)
+        if isinstance(link_name, str):
+            extra["link"] = link_name
         spaces: Dict[str, Space] = {
             "eef_position": BoxSpace(
                 PyTorchComputeBackend,
@@ -301,6 +311,7 @@ class EndEffectorStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayTy
                 shape=get_batch_aware_shape(B, 3),
                 dtype=dtype,
                 device=device,
+                metadata=position_metadata(frame=frame, **extra),
             ),
             "eef_quaternion": BoxSpace(
                 PyTorchComputeBackend,
@@ -309,6 +320,7 @@ class EndEffectorStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayTy
                 shape=get_batch_aware_shape(B, 4),
                 dtype=dtype,
                 device=device,
+                metadata=quaternion_metadata(frame=frame, **extra),
             ),
         }
         return DictSpace(

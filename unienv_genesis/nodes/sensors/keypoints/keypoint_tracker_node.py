@@ -32,6 +32,7 @@ from xbarray.transformations.rotation_conversions.pytorch import (
 )
 
 from unienv_interface.space import DictSpace, BoxSpace
+from unienv_interface.space.space_utils.metadata_utils import metadata
 from unienv_interface.backends.pytorch import (
     PyTorchComputeBackend,
     PyTorchArrayType,
@@ -136,7 +137,16 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
     # ------------------------------------------------------------------
 
     def _get_observation_space(self) -> DictSpace[PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
+        """Observation space, with metadata on every key.
+
+        ``point_positions`` / ``point_movements`` are world-frame points / per-step
+        displacements in metres, ``points_2d`` the ``(u, v)`` pixel coordinates
+        of the points in the delegated camera's image, ``point_segmentations``
+        the segmentation index each point was proposed on (at the camera
+        scene's segmentation level) and the masks are per-point flags.
+        """
         B = self.world.batch_size
+        common = {"source": self.name, "camera": self.camera_node.name}
         spaces = {
             "point_positions": BoxSpace(
                 PyTorchComputeBackend,
@@ -145,6 +155,10 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, (self.max_points, 3)),
                 dtype=self.world.dtype,
                 device=self.world.device,
+                metadata=metadata(
+                    "keypoints", units="m", frame="world", names=["x", "y", "z"],
+                    label="tracked point positions", **common,
+                ),
             ),
             "points_2d": BoxSpace(
                 PyTorchComputeBackend,
@@ -153,6 +167,10 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, (self.max_points, 2)),
                 dtype=self.world.dtype,
                 device=self.world.device,
+                metadata=metadata(
+                    "keypoints", units="px", names=["u", "v"],
+                    label="tracked points projected into the camera image", **common,
+                ),
             ),
             "point_movements": BoxSpace(
                 PyTorchComputeBackend,
@@ -161,6 +179,10 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, (self.max_points, 3)),
                 dtype=self.world.dtype,
                 device=self.world.device,
+                metadata=metadata(
+                    "keypoints", units="m", frame="world", names=["dx", "dy", "dz"],
+                    label="per-step displacement of the tracked points", **common,
+                ),
             ),
             "point_segmentations": BoxSpace(
                 PyTorchComputeBackend,
@@ -169,6 +191,10 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, (self.max_points,)),
                 dtype=torch.int32,
                 device=self.world.device,
+                metadata=metadata(
+                    "segmentation", level=self._segmentation_level,
+                    label="segmentation index of each tracked point (-1 for an empty slot)", **common,
+                ),
             ),
             "valid_masks": BoxSpace(
                 PyTorchComputeBackend,
@@ -177,6 +203,7 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, (self.max_points,)),
                 dtype=torch.uint8,
                 device=self.world.device,
+                metadata=metadata("mask", label="point slot holds a tracked point", **common),
             ),
             "visibility_masks": BoxSpace(
                 PyTorchComputeBackend,
@@ -185,6 +212,7 @@ class KeypointTrackerNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, (self.max_points,)),
                 dtype=torch.uint8,
                 device=self.world.device,
+                metadata=metadata("mask", label="point visible in the camera image", **common),
             ),
         }
         return DictSpace(PyTorchComputeBackend, spaces, device=self.world.device)

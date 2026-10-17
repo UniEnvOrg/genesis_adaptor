@@ -24,6 +24,9 @@ from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
 from unienv_genesis.options.attach_option import AttachmentProvider
 
+from unienv_interface.space.space_utils.metadata_utils import metadata
+from unienv_genesis.utils.space_metadata import attach_extras
+
 from .base import SensorNode
 
 __all__ = [
@@ -176,6 +179,13 @@ class ContactForceSensorNode(SensorNode[ContactForceSensor, None, Dict[str, PyTo
                 shape=get_batch_aware_shape(B, 3),
                 dtype=dtype,
                 device=device,
+                metadata=metadata(
+                    "force",
+                    units="N",
+                    frame="link_local",
+                    names=["fx", "fy", "fz"],
+                    **attach_extras(self.name, self.option.attach),
+                ),
             ),
         }
         return DictSpace(

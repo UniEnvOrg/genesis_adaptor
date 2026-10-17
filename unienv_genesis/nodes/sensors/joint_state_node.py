@@ -22,6 +22,11 @@ from unienv_interface.backends.pytorch import (
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape, broadcast_to_batch
 from unienv_genesis.options.attach_option import AttachmentProvider
+from unienv_genesis.utils.space_metadata import (
+    joint_proprio_metadata,
+    position_metadata,
+    quaternion_metadata,
+)
 from ..entities.entity_controllers.base import resolve_joint_indexes
 
 from .base import SensorNode
@@ -207,7 +212,13 @@ class JointStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
     def _get_observation_space(
         self,
     ) -> DictSpace[PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
-        """Build the observation space from the built entity's limits."""
+        """Build the observation space from the built entity's limits.
+
+        Per-DOF readings carry ``units`` / ``names`` lists from the entity's
+        joints (``rad`` / ``rad/s`` / ``N*m`` for rotational DOFs, ``m`` /
+        ``m/s`` / ``N`` for translational ones); the root pose is in the
+        world frame.
+        """
         entity = self._entity
         dofs_idx = self._joint_indexes
         n_dofs = self._n_dofs
@@ -229,6 +240,7 @@ class JointStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 high=pos_high,
                 dtype=dtype,
                 device=device,
+                metadata=joint_proprio_metadata(entity, dofs_idx, "position"),
             )
 
         if self.option.read_velocity:
@@ -239,6 +251,7 @@ class JointStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, n_dofs),
                 dtype=dtype,
                 device=device,
+                metadata=joint_proprio_metadata(entity, dofs_idx, "velocity"),
             )
 
         if self.option.read_torque:
@@ -249,6 +262,7 @@ class JointStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, n_dofs),
                 dtype=dtype,
                 device=device,
+                metadata=joint_proprio_metadata(entity, dofs_idx, "force"),
             )
 
         if self.option.read_motor_torque:
@@ -261,6 +275,7 @@ class JointStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 high=force_high,
                 dtype=dtype,
                 device=device,
+                metadata=joint_proprio_metadata(entity, dofs_idx, "force"),
             )
 
         if self.option.read_root_pose:
@@ -271,6 +286,7 @@ class JointStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, 3),
                 dtype=dtype,
                 device=device,
+                metadata=position_metadata(frame="world"),
             )
             spaces["root_quat"] = BoxSpace(
                 PyTorchComputeBackend,
@@ -279,6 +295,7 @@ class JointStateSensorNode(SensorNode[None, None, Dict[str, PyTorchArrayType]]):
                 shape=get_batch_aware_shape(B, 4),
                 dtype=dtype,
                 device=device,
+                metadata=quaternion_metadata(frame="world"),
             )
 
         return DictSpace(

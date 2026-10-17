@@ -24,6 +24,9 @@ from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
 from unienv_genesis.options.attach_option import AttachmentProvider
 
+from unienv_interface.space.space_utils.metadata_utils import proprio_metadata
+from unienv_genesis.utils.space_metadata import attach_extras
+
 from .base import SensorNode
 
 __all__ = [
@@ -194,6 +197,9 @@ class IMUSensorNode(SensorNode[IMUSensor, None, Dict[str, PyTorchArrayType]]):
         dtype = self.world.dtype
         device = self.world.device
         shape = get_batch_aware_shape(B, 3)
+        # All readings are in the sensor frame (the link frame rotated by
+        # ``euler_offset``).
+        common = dict(frame="link_local", names=["x", "y", "z"], **attach_extras(self.name, self.option.attach))
         spaces: Dict[str, Space] = {
             "lin_acc": BoxSpace(
                 PyTorchComputeBackend,
@@ -202,6 +208,7 @@ class IMUSensorNode(SensorNode[IMUSensor, None, Dict[str, PyTorchArrayType]]):
                 shape=shape,
                 dtype=dtype,
                 device=device,
+                metadata=proprio_metadata(units="m/s^2", label="accelerometer", **common),
             ),
             "ang_vel": BoxSpace(
                 PyTorchComputeBackend,
@@ -210,6 +217,7 @@ class IMUSensorNode(SensorNode[IMUSensor, None, Dict[str, PyTorchArrayType]]):
                 shape=shape,
                 dtype=dtype,
                 device=device,
+                metadata=proprio_metadata(units="rad/s", label="gyroscope", **common),
             ),
             "mag": BoxSpace(
                 PyTorchComputeBackend,
@@ -218,6 +226,8 @@ class IMUSensorNode(SensorNode[IMUSensor, None, Dict[str, PyTorchArrayType]]):
                 shape=shape,
                 dtype=dtype,
                 device=device,
+                # In the units of the reference ``magnetic_field`` (no units key).
+                metadata=proprio_metadata(label="magnetometer", **common),
             ),
         }
         return DictSpace(

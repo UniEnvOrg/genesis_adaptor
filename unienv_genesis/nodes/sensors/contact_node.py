@@ -24,6 +24,9 @@ from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
 from unienv_genesis.options.attach_option import AttachmentProvider
 
+from unienv_interface.space.space_utils.metadata_utils import metadata
+from unienv_genesis.utils.space_metadata import attach_extras
+
 from .base import SensorNode
 
 __all__ = [
@@ -177,6 +180,9 @@ class ContactSensorNode(SensorNode[ContactSensor, None, Dict[str, PyTorchArrayTy
                 PyTorchComputeBackend,
                 shape=get_batch_aware_shape(B, ()),
                 device=device,
+                metadata=metadata(
+                    "mask", label="link in contact", **attach_extras(self.name, self.option.attach),
+                ),
             ),
         }
         return DictSpace(
