@@ -79,9 +79,10 @@ python examples/room_open_drawer_fr3.py --backend cpu --n-envs 4 --no-render  # 
 furniture once, and the task binds to it by **name** (its priorities default to
 one above the room's, so it binds and resets after the room rebuilt):
 
-* **observation** — `joint_position` / `target_fraction` (one scalar per env)
-  and `handle_position` (the joint's child link, or `grasp_link_name`, as
-  reported on the built entity).
+* **observation** — `joint_position` / `target_fraction` (one scalar per env;
+  both are open *fractions* in `[0, 1]`, not joint coordinates — their space
+  metadata says `units="normalized"`) and `handle_position` (world frame, the
+  joint's child link, or `grasp_link_name`, as reported on the built entity).
 * **reward** — `-|current_fraction - target_fraction|`, dense, in `[-1, 0]`.
 * **termination** — `|current - target| < success_threshold`.
 * **reset** — the goal is sampled from `target_fraction_range` (default

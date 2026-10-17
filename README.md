@@ -51,9 +51,33 @@ context, obs, info = env.reset(seed=0, reload=True)
 #   "franka": {"joint_position": ..., "eef_position": ..., ...},
 #   "camera": {"rgb": ..., "depth": ...},
 # }
+# Each space describes its data, e.g.
+# env.observation_space["camera"]["rgb"].metadata["layout"] == "HWC"
 ```
 
 `WorldEnv` calls each node's lifecycle methods in the correct priority order automatically. You do not manage dependencies by hand.
+
+### Space Metadata
+
+Every observation and action space the nodes declare carries unienv [space metadata](https://github.com/UniEnvOrg/UniEnvPy/blob/main/docs/concepts/spaces-and-backends.md#space-metadata) describing what the data means, so wrappers, storages and dataset exporters can find e.g. the camera images without knowing the node:
+
+```python
+from unienv_interface.space.space_utils.metadata_utils import find_spaces_by_metadata
+
+env.observation_space["camera"]["rgb"].metadata
+# {"kind": "image", "format": "rgb", "layout": "HWC", "source": "camera"}
+env.observation_space["franka"]["arm"]["joint_position"].metadata["units"]
+# ["rad", "rad", ...]   one entry per DOF, "m" for prismatic joints
+find_spaces_by_metadata(franka.action_space, control="gripper")
+# [(("gripper",), BoxSpace(...))]
+```
+
+- **Cameras**: `rgb` (`image`, `rgb` / `HWC`), `depth` (metres, `HW`), `seg` (`segmentation`, with the scene's segmentation level), `normal`, `position` (world `pointcloud`), `intrinsics_cv` / `extrinsics_cv` / `local_extrinsics_cv` (OpenCV `camera_cv` frame). `source` is the camera node's name.
+- **Joint readings and targets**: per-DOF `units` (`rad` / `rad/s` / `N*m` for revolute DOFs, `m` / `m/s` / `N` for prismatic ones) and `names` from the entity's joints; root and end-effector poses state their `frame` (`world`, or `base` with a configured `base_frame`) and `rotation="quat_wxyz"`.
+- **Actions**: `control` / `mode` (`joint_position`, `joint_velocity`, `eef_pose` with the `rotation` of its `rotation_representation`, `gripper` for a mimic gripper with `open_value` / `closed_value`).
+- **Tasks**: `kind="task"` goals and targets in the world frame.
+
+Controller configs are checked as well: a keyword argument that no controller uses raises an `UnknownControllerOptionWarning` (see `EntityController.extra_attributes` for the extra attributes a controller config may carry).
 
 ### Articulated Rooms
 
