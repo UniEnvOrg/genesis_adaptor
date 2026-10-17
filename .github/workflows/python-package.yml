@@ -24,9 +24,16 @@ jobs:
       uses: actions/setup-python@v3
       with:
         python-version: ${{ matrix.python-version }}
+    - name: Free disk space
+      run: |
+        # The CUDA builds of torch and its NVIDIA wheels overflow the runner's disk
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        df -h /
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        # CPU-only torch: the tests run Genesis on its CPU backend
+        pip install --index-url https://download.pytorch.org/whl/cpu torch
         pip install -e '.[test]'
     - name: Test with pytest
       run: |
