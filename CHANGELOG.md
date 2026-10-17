@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.0.2a2 (2026-10-17)
 
 ### Added
 
@@ -19,6 +19,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Relicensed under the Apache License 2.0 (previously MIT); `NOTICE` carries the copyright and third-party attributions.
 - **Breaking — `FrankaFR3WithRobotiq2F85`'s arm EEF is the flange**: the `arm` sub-controller's `target_link` is `g_base` (on `fr3_flange`) without the former 0.159 m fingertip offset, so its `eef_position` / `eef_quaternion` observations, `eef_pose` actions and `get_eef_pose_absolute()` are the flange pose, like the real FR3. The fingertip is now the `gripper` sub-controller's `eef_tip_offset` (`GRIPPER_TIP_OFFSET` = `[0, 0, 0.159]`), which the grasp / pick-place policies apply, so they behave as before. Code that commanded the arm controller with fingertip targets directly (e.g. a `GoToRefPolicy` built on `controller["arm"]`) must wrap it with `tip_frame_controller(arm, gripper)`, as `examples/room_open_drawer_fr3.py` now does.
 - Requires `unienv>=0.0.1b16` (space metadata).
 - **Franka arm IK velocity limit 0.2 → 0.4 rad/s** (`DROID_FRANKA_ARM_IK_VEL_LIMIT`, the `max_joint_pos_vel` of the default arm sub-controller) for `FrankaEmikaPanda`, `FrankaFR3WithHand` and `FrankaFR3WithRobotiq2F85`. The DROID real-robot teleop limit made the simulated arm too slow to track transport waypoints; the Franka hardware per-joint limits stay reference-only.

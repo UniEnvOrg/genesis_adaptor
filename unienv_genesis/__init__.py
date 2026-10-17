@@ -22,7 +22,7 @@ from unienv_genesis.nodes.sensors import (
     ContactSensorNodeOptions,
 )
 
-__version__ = "0.0.1b1"
+__version__ = "0.0.2a2"
 
 __all__ = [
     "GenesisWorld",

@@ -1,7 +1,7 @@
 [project]
 name = "unienv_genesis"
 description = "Genesis simulation backend for the UniEnv framework: composable scenes, robots, sensors, controllers, and reference policies"
-version = "0.0.2a1"
+version = "0.0.2a2"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">= 3.10"
