@@ -1,5 +1,6 @@
 from typing import Literal, Optional, Dict, Any, List, Tuple, Union, Generic, TypeVar, Sequence
 import abc
+import math
 import genesis as gs
 from genesis.engine.entities.rigid_entity import RigidEntity, RigidLink
 import torch
@@ -15,6 +16,7 @@ from xbarray.transformations.rotation_conversions.pytorch import (
     matrix_to_rotation_6d,
 )
 from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
+from unienv_interface.space.space_utils.metadata_utils import action_metadata, metadata
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.options.attach_option import LinkAttachment
@@ -46,11 +48,60 @@ class AbsoluteRotationConventionUtils:
         else:
             raise ValueError(f"Unsupported rotation representation: {representation}")
     
+    METADATA_ROTATIONS = {"euler": "euler_rxyz", "quat": "quat_wxyz", "rot6d": "rot6d"}
+    """Space-metadata ``rotation`` of each representation.
+
+    ``"euler"`` angles use the intrinsic ``"XYZ"`` convention of
+    :func:`euler_angles_to_matrix` (``R = Rx(a) @ Ry(b) @ Rz(c)``), i.e.
+    transforms3d's rotating-axes ``"rxyz"``; ``"rot6d"`` is the first two rows
+    of the rotation matrix (:func:`matrix_to_rotation_6d`).
+    """
+
+    ROTATION_NAMES = {
+        "euler": ["rx", "ry", "rz"],
+        "quat": ["qw", "qx", "qy", "qz"],
+        "rot6d": ["r00", "r01", "r02", "r10", "r11", "r12"],
+    }
+    """Element names of each rotation representation."""
+
+    @staticmethod
+    def get_action_metadata(
+        representation: AVAILABLE_REPRESENTATIONS_T,
+        normalized: bool = False,
+        **extra: Any,
+    ) -> Dict[str, Any]:
+        """Space metadata of an absolute ``[position (3), rotation]`` EEF pose action.
+
+        With ``normalized`` (``normalize_rotation_action``), euler angles are
+        divided by pi: their elements are ``"normalized"`` and
+        ``rotation_range`` gives the ``[-pi, pi]`` they map to. Quaternion and
+        6D elements are unitless (``"normalized"``) either way; the position is
+        in metres and never normalized.
+        """
+        if representation not in AbsoluteRotationConventionUtils.METADATA_ROTATIONS:
+            raise ValueError(f"Unsupported rotation representation: {representation}")
+        rot_names = AbsoluteRotationConventionUtils.ROTATION_NAMES[representation]
+        if representation == "euler" and not normalized:
+            rot_unit = "rad"
+        else:
+            rot_unit = "normalized"
+        if representation == "euler" and normalized:
+            extra.setdefault("rotation_range", [-math.pi, math.pi])
+        return action_metadata(
+            control="eef_pose",
+            mode="absolute",
+            rotation=AbsoluteRotationConventionUtils.METADATA_ROTATIONS[representation],
+            names=["x", "y", "z", *rot_names],
+            units=["m", "m", "m", *([rot_unit] * len(rot_names))],
+            **extra,
+        )
+
     @staticmethod
     def get_action_space(
         representation: AVAILABLE_REPRESENTATIONS_T, 
         batch_size: Optional[int],
         device: Optional[PyTorchDeviceType],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> BoxSpace[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType]:
         if representation == "euler":
             rot_dim = 3
@@ -71,6 +122,7 @@ class AbsoluteRotationConventionUtils:
             shape=get_batch_aware_shape(batch_size, action_dim),
             dtype=torch.float32,
             device=device,
+            metadata=metadata,
         )
     
     @staticmethod
@@ -171,6 +223,12 @@ class EndEffectorPoseController(
         # unconstrained (no translational position bounds).
         self.action_space = AbsoluteRotationConventionUtils.get_action_space(
             rotation_representation, batch_size, world.device,
+            metadata=AbsoluteRotationConventionUtils.get_action_metadata(
+                rotation_representation,
+                normalized=normalize_rotation_action,
+                frame=self.eef_frame,
+                link=self._target_link_name,
+            ),
         )
         # EEF observation keys (eef_position, eef_quaternion) are already added
         # by the DiscreteEntityController base when target_link is provided.
@@ -181,6 +239,13 @@ class EndEffectorPoseController(
             shape=get_batch_aware_shape(batch_size, 6),
             dtype=world.dtype,
             device=world.device,
+            metadata=metadata(
+                "state",
+                units=["m", "m", "m", "rad", "rad", "rad"],
+                names=["pos_err_x", "pos_err_y", "pos_err_z", "rot_err_x", "rot_err_y", "rot_err_z"],
+                frame=self.eef_frame,
+                label="IK pose error of the last commanded EEF pose",
+            ),
         )
         self._last_ik_result = {}
 

@@ -5,6 +5,8 @@ from unienv_interface.space import BoxSpace, DictSpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.utils.batch_dim_utils import get_batch_aware_shape
+from unienv_genesis.utils.space_metadata import dof_names
+from unienv_interface.space.space_utils.metadata_utils import action_metadata
 from .joint_position_velocity_control import JointPositionAndVelocityController
 from .joint_position import JointPositionController
 from .joint_velocity import JointVelocityController
@@ -32,6 +34,54 @@ def _apply_mimic(
 ) -> torch.Tensor:             # (..., n_dofs)
     """action * multiplier + shift, broadcasting (…, 1) × (n_dofs,) → (…, n_dofs)."""
     return action * multiplier + shift
+
+
+def _is_finite_bound(value) -> bool:
+    if value is None:
+        return False
+    return bool(torch.isfinite(torch.as_tensor(value, dtype=torch.float32)).all())
+
+
+def _mimic_metadata(
+    controller,
+    control: str,
+    multiplier: torch.Tensor,
+    shift: torch.Tensor,
+    control_low,
+    control_high,
+) -> Dict[str, Any]:
+    """Action metadata of a mimic controller's scalar control signal.
+
+    The signal drives every controlled joint as ``joint = signal *
+    multiplier + shift``; ``mimic_joints`` / ``multiplier`` / ``shift``
+    record that mapping. A controller configured with the gripper description
+    (``gripper_open_action`` / ``gripper_close_action``, see
+    :attr:`EntityController.extra_attributes`) is a gripper command
+    (``control="gripper"``); with finite control bounds it is a normalized
+    signal, and ``open_value`` / ``closed_value`` give the fully open / closed
+    commands. ``control`` is ``"joint_position"`` or ``"joint_velocity"``.
+    """
+    extra: Dict[str, Any] = {
+        "mimic_joints": dof_names(controller.entity, controller.joint_indexes),
+        # float32 values, written with float32 precision (-0.02, not -0.0199999995)
+        "multiplier": [float(f"{v:.7g}") for v in multiplier.tolist()],
+        "shift": [float(f"{v:.7g}") for v in shift.tolist()],
+    }
+    open_value = getattr(controller, "gripper_open_action", None)
+    closed_value = getattr(controller, "gripper_close_action", None)
+    if open_value is None or closed_value is None:
+        return action_metadata(control=control, mode="absolute", names=["mimic"], **extra)
+    normalized = _is_finite_bound(control_low) and _is_finite_bound(control_high)
+    return action_metadata(
+        control="gripper",
+        mode="absolute" if control == "joint_position" else "velocity",
+        names=["gripper"],
+        normalized=True if normalized else None,
+        units="normalized" if normalized else None,
+        open_value=float(open_value),
+        closed_value=float(closed_value),
+        **extra,
+    )
 
 
 class MimicJointPositionAndVelocityController(JointPositionAndVelocityController):
@@ -120,6 +170,10 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
                     shape=get_batch_aware_shape(world.batch_size, 1),
                     dtype=torch.float32,
                     device=dev,
+                    metadata=_mimic_metadata(
+                        self, "joint_position", self._pos_multiplier, self._pos_shift,
+                        position_control_low, position_control_high,
+                    ),
                 ),
                 "target_joint_velocity": BoxSpace(
                     PyTorchComputeBackend,
@@ -128,6 +182,10 @@ class MimicJointPositionAndVelocityController(JointPositionAndVelocityController
                     shape=get_batch_aware_shape(world.batch_size, 1),
                     dtype=torch.float32,
                     device=dev,
+                    metadata=_mimic_metadata(
+                        self, "joint_velocity", self._vel_multiplier, self._vel_shift,
+                        velocity_control_low, velocity_control_high,
+                    ),
                 ),
             },
             device=dev,
@@ -244,6 +302,9 @@ class MimicJointPositionController(JointPositionController):
             shape=get_batch_aware_shape(world.batch_size, 1),
             dtype=torch.float32,
             device=dev,
+            metadata=_mimic_metadata(
+                self, "joint_position", self._multiplier, self._shift, control_low, control_high,
+            ),
         )
 
     def apply_action(self, action, dt: Optional[float] = None):
@@ -341,6 +402,9 @@ class MimicJointVelocityController(JointVelocityController):
             shape=get_batch_aware_shape(world.batch_size, 1),
             dtype=torch.float32,
             device=dev,
+            metadata=_mimic_metadata(
+                self, "joint_velocity", self._multiplier, self._shift, control_low, control_high,
+            ),
         )
 
     def apply_action(self, action, dt: Optional[float] = None):
@@ -387,6 +451,7 @@ class MimicJointVelocityController(JointVelocityController):
                     shape=get_batch_aware_shape(batch_size, n_dofs),
                     dtype=self._clip_low.dtype,
                     device=device,
+                    metadata=self._joint_target_metadata("joint_velocity"),
                 ),
             },
             device=device,

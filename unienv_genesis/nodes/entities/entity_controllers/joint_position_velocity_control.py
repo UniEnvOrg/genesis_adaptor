@@ -14,6 +14,7 @@ from unienv_genesis.utils.batch_dim_utils import (
 )
 from .base import DiscreteEntityController, EntityType, ActType, resolve_joint_indexes
 from .gravity_compensation import GravityFeedforward
+from unienv_genesis.utils.space_metadata import joint_action_metadata
 
 class JointPositionAndVelocityController(
     DiscreteEntityController[
@@ -105,6 +106,7 @@ class JointPositionAndVelocityController(
                     high=pos_action_high,
                     dtype=joint_limit_low.dtype,
                     device=joint_limit_low.device,
+                    metadata=joint_action_metadata(entity, joint_indexes, "joint_position"),
                 ),
                 "target_joint_velocity": BoxSpace(
                     PyTorchComputeBackend,
@@ -113,10 +115,14 @@ class JointPositionAndVelocityController(
                     shape=None if vel_limit is not None else get_batch_aware_shape(batch_size, n_dofs),
                     dtype=joint_limit_low.dtype,
                     device=joint_limit_low.device,
+                    metadata=joint_action_metadata(entity, joint_indexes, "joint_velocity"),
                 ),
             },
             device=joint_limit_low.device,
         )
+        # Per-joint velocity targets, kept for ``get_action_dict_space`` since
+        # subclasses replace ``action_space`` (single-joint / mimic controls).
+        self._target_joint_velocity_space = action_space["target_joint_velocity"]
         super().__init__(
             world, entity, joint_indexes, action_space,
             is_grasping_fn=is_grasping_fn,
@@ -263,34 +269,10 @@ class JointPositionAndVelocityController(
         (when an end-effector is configured) ``target_eef_position`` and
         ``target_eef_quaternion``.
         """
-        batch_size = self.world.batch_size
-        device = self.world.device
-
         spaces: Dict[str, Space] = {
-            "target_joint_position": BoxSpace(
-                PyTorchComputeBackend,
-                low=self.joint_position_low,
-                high=self.joint_position_high,
-                dtype=self.joint_position_low.dtype,
-                device=device,
-            ),
+            "target_joint_position": self._joint_position_target_space(),
+            **self._eef_target_spaces(),
+            "target_joint_velocity": self._target_joint_velocity_space,
         }
-        if self._has_eef:
-            spaces["target_eef_position"] = BoxSpace(
-                PyTorchComputeBackend,
-                low=-torch.inf,
-                high=torch.inf,
-                shape=get_batch_aware_shape(batch_size, 3),
-                dtype=torch.float32,
-                device=device,
-            )
-            spaces["target_eef_quaternion"] = BoxSpace(
-                PyTorchComputeBackend,
-                low=-1,
-                high=1,
-                shape=get_batch_aware_shape(batch_size, 4),
-                dtype=torch.float32,
-                device=device,
-            )
-        spaces["target_joint_velocity"] = self.action_space["target_joint_velocity"]
+        device = self.world.device
         return DictSpace(PyTorchComputeBackend, spaces, device=device)

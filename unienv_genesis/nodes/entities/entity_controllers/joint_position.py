@@ -70,33 +70,9 @@ class JointPositionController(
         Includes ``target_joint_position`` and (when an end-effector is
         configured) ``target_eef_position`` / ``target_eef_quaternion``.
         """
-        batch_size = self.world.batch_size
-        device = self.world.device
-
         spaces: Dict[str, Space] = {
-            "target_joint_position": BoxSpace(
-                PyTorchComputeBackend,
-                low=self.joint_position_low,
-                high=self.joint_position_high,
-                dtype=self.joint_position_low.dtype,
-                device=device,
-            ),
+            "target_joint_position": self._joint_position_target_space(),
+            **self._eef_target_spaces(),
         }
-        if self._has_eef:
-            spaces["target_eef_position"] = BoxSpace(
-                PyTorchComputeBackend,
-                low=-torch.inf,
-                high=torch.inf,
-                shape=get_batch_aware_shape(batch_size, 3),
-                dtype=torch.float32,
-                device=device,
-            )
-            spaces["target_eef_quaternion"] = BoxSpace(
-                PyTorchComputeBackend,
-                low=-1,
-                high=1,
-                shape=get_batch_aware_shape(batch_size, 4),
-                dtype=torch.float32,
-                device=device,
-            )
+        device = self.world.device
         return DictSpace(PyTorchComputeBackend, spaces, device=device)

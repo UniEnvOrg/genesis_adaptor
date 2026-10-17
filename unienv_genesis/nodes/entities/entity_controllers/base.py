@@ -22,6 +22,13 @@ from unienv_genesis.utils.batch_dim_utils import (
     is_batched,
     broadcast_to_batch,
 )
+from unienv_genesis.utils.space_metadata import (
+    joint_action_metadata,
+    joint_proprio_metadata,
+    pose_frame,
+    position_metadata,
+    quaternion_metadata,
+)
 from ..base import EntityNode, EntityType, ContextType, ObsType, ActType
 
 
@@ -255,6 +262,9 @@ class DiscreteEntityController(
         )
 
         # Build observation space before calling super().__init__
+        def joint_md(quantity):
+            return joint_proprio_metadata(entity, joint_indexes, quantity)
+
         obs_space = DictSpace(
             PyTorchComputeBackend,
             {
@@ -264,6 +274,7 @@ class DiscreteEntityController(
                     high=joint_position_high,
                     dtype=joint_position_low.dtype,
                     device=joint_position_low.device,
+                    metadata=joint_md("position"),
                 ),
                 "joint_velocity": BoxSpace(
                     PyTorchComputeBackend,
@@ -272,6 +283,7 @@ class DiscreteEntityController(
                     shape=get_batch_aware_shape(batch_size, n_dofs),
                     dtype=joint_position_low.dtype,
                     device=joint_position_low.device,
+                    metadata=joint_md("velocity"),
                 ),
                 "joint_torque": BoxSpace(
                     PyTorchComputeBackend,
@@ -280,6 +292,7 @@ class DiscreteEntityController(
                     shape=get_batch_aware_shape(batch_size, n_dofs),
                     dtype=joint_force_low.dtype,
                     device=joint_force_low.device,
+                    metadata=joint_md("force"),
                 ),
                 "joint_motor_torque": BoxSpace(
                     PyTorchComputeBackend,
@@ -287,6 +300,7 @@ class DiscreteEntityController(
                     high=joint_force_high,
                     dtype=joint_force_low.dtype,
                     device=joint_force_low.device,
+                    metadata=joint_md("force"),
                 ),
                 "root_pos": BoxSpace(
                     PyTorchComputeBackend,
@@ -295,6 +309,7 @@ class DiscreteEntityController(
                     shape=get_batch_aware_shape(batch_size, 3),
                     dtype=joint_force_low.dtype,
                     device=joint_force_low.device,
+                    metadata=position_metadata(frame="world"),
                 ),
                 "root_quat": BoxSpace(
                     PyTorchComputeBackend,
@@ -303,6 +318,7 @@ class DiscreteEntityController(
                     shape=get_batch_aware_shape(batch_size, 4),
                     dtype=joint_force_low.dtype,
                     device=joint_force_low.device,
+                    metadata=quaternion_metadata(frame="world"),
                 ),
             },
             device=joint_position_low.device,
@@ -311,6 +327,7 @@ class DiscreteEntityController(
         # Conditionally add EEF observation keys when an end-effector is configured
         self._has_eef = self._target_link_attachment is not None
         if self._has_eef:
+            eef_frame = pose_frame(self._base_frame_attachment is not None)
             obs_space['eef_position'] = BoxSpace(
                 PyTorchComputeBackend,
                 low=-torch.inf,
@@ -318,6 +335,7 @@ class DiscreteEntityController(
                 shape=get_batch_aware_shape(batch_size, 3),
                 dtype=world.dtype,
                 device=world.device,
+                metadata=position_metadata(frame=eef_frame, link=self._target_link_name),
             )
             obs_space['eef_quaternion'] = BoxSpace(
                 PyTorchComputeBackend,
@@ -326,6 +344,7 @@ class DiscreteEntityController(
                 shape=get_batch_aware_shape(batch_size, 4),
                 dtype=world.dtype,
                 device=world.device,
+                metadata=quaternion_metadata(frame=eef_frame, link=self._target_link_name),
             )
         
         super().__init__(world, entity, obs_space, action_space, **kwargs)
@@ -681,6 +700,63 @@ class DiscreteEntityController(
     # ------------------------------------------------------------------
     # Introspection helpers
     # ------------------------------------------------------------------
+
+    @property
+    def eef_frame(self) -> Optional[str]:
+        """Metadata ``frame`` of the EEF poses: ``"base"`` with a base frame, else ``"world"``.
+
+        ``None`` when no end-effector is configured.
+        """
+        if not self._has_eef:
+            return None
+        return pose_frame(self._base_frame_attachment is not None)
+
+    def _joint_target_metadata(self, control: str, **extra: Any) -> Dict[str, Any]:
+        """Action metadata of absolute per-joint targets of the controlled DOFs."""
+        return joint_action_metadata(self.entity, self.joint_indexes, control, **extra)
+
+    def _joint_position_target_space(self) -> BoxSpace:
+        """Per-joint position targets within the joint limits (``target_joint_position``)."""
+        return BoxSpace(
+            PyTorchComputeBackend,
+            low=self.joint_position_low,
+            high=self.joint_position_high,
+            dtype=self.joint_position_low.dtype,
+            device=self.world.device,
+            metadata=self._joint_target_metadata("joint_position"),
+        )
+
+    def _eef_target_spaces(self) -> Dict[str, BoxSpace]:
+        """``target_eef_position`` / ``target_eef_quaternion`` spaces (empty without an EEF).
+
+        These are the EEF poses that joint-position targets reach (forward
+        kinematics), in the base / world frame of :attr:`eef_frame`.
+        """
+        if not self._has_eef:
+            return {}
+        batch_size = self.world.batch_size
+        device = self.world.device
+        common = dict(control="eef_pose", mode="absolute", frame=self.eef_frame, link=self._target_link_name)
+        return {
+            "target_eef_position": BoxSpace(
+                PyTorchComputeBackend,
+                low=-torch.inf,
+                high=torch.inf,
+                shape=get_batch_aware_shape(batch_size, 3),
+                dtype=torch.float32,
+                device=device,
+                metadata=position_metadata("action", **common),
+            ),
+            "target_eef_quaternion": BoxSpace(
+                PyTorchComputeBackend,
+                low=-1,
+                high=1,
+                shape=get_batch_aware_shape(batch_size, 4),
+                dtype=torch.float32,
+                device=device,
+                metadata=quaternion_metadata("action", **common),
+            ),
+        }
 
     def compute_eef_pose_from_qpos(
         self,
