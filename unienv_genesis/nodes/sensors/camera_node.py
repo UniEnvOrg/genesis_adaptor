@@ -1033,6 +1033,76 @@ class CameraSensorNode(SensorNode[
         """Public helper to convert depth map to world position map."""
         return self._depth_to_position_map(depth)
 
+    #: Feature dimensions of the rendered image types (without a batch dimension).
+    _IMAGE_FEATURE_NDIM = {"rgb": 3, "depth": 2, "seg": 2, "normal": 3}
+
+    def _check_rendered_batch(self, **images: Any) -> None:
+        """Raise when a non-batched renderer rendered a batched world of several environments.
+
+        Genesis's ``Rasterizer`` / ``RayTracer`` render one environment; their
+        images carry no batch dimension. That is fine for an unbatched world
+        or a batch of one (:meth:`_conform_to_space` adds the dimension), but
+        a larger batch would silently get one environment's image.
+        """
+        B = self.world.batch_size
+        if B is None or B <= 1:
+            return
+        for key, image in images.items():
+            if image is not None and image.ndim == self._IMAGE_FEATURE_NDIM[key]:
+                raise RuntimeError(
+                    f"camera {self.name!r}: {key!r} was rendered for one environment "
+                    f"{tuple(image.shape)} in a world of {B}; a batched world of more than "
+                    "one environment needs a batched renderer (gs.renderers.BatchRenderer)"
+                )
+
+    def _conform_to_space(self, obs: Dict[str, Any]) -> Dict[str, PyTorchArrayType]:
+        """Give every observation leaf the shape and dtype its space declares.
+
+        The renderers disagree on batching: Genesis's non-batched renderers
+        (``Rasterizer``, ``RayTracer``) render one environment and return it
+        without a batch dimension — also in a batched world of one — while
+        the ``BatchRenderer`` and NYX always return one. The leaves get the
+        world's batching: a leading batch dimension of one is added in a
+        batched world and dropped in an unbatched one. Dtypes are the declared
+        ones whatever the renderer returns (e.g. the ``Rasterizer``'s
+        ``int64`` segmentation becomes ``int32``).
+
+        Raises:
+            RuntimeError: A leaf was rendered for one environment in a batched
+                world of several (a non-batched renderer cannot render it), or
+                its shape does not match the space otherwise.
+        """
+        B = self.world.batch_size
+        spaces = self.observation_space.spaces
+        conformed: Dict[str, PyTorchArrayType] = {}
+        for key, value in obs.items():
+            space = spaces.get(key)
+            if space is None:
+                conformed[key] = value
+                continue
+            value = torch.as_tensor(value, device=self.world.device)
+            shape = tuple(space.shape)
+            if tuple(value.shape) != shape:
+                if B is not None and tuple(value.shape) == shape[1:]:
+                    if B != 1:
+                        raise RuntimeError(
+                            f"camera {self.name!r}: {key!r} was rendered for one environment "
+                            f"{tuple(value.shape)} in a world of {B}; a batched world of more than "
+                            "one environment needs a batched renderer (gs.renderers.BatchRenderer)"
+                        )
+                    value = value.unsqueeze(0)
+                elif B is None and value.ndim == len(shape) + 1 and value.shape[0] == 1:
+                    value = value[0]
+                if tuple(value.shape) != shape:
+                    raise RuntimeError(
+                        f"camera {self.name!r}: {key!r} has shape {tuple(value.shape)}, "
+                        f"its observation space declares {shape}"
+                    )
+            if value.dtype != space.dtype:
+                value = value.to(space.dtype)
+            conformed[key] = value
+        return conformed
+
     def update_observation(self) -> None:
         """Render and cache camera observations."""
         device = self.world.device
@@ -1057,6 +1127,7 @@ class CameraSensorNode(SensorNode[
             force_render=self._force_genesis_render,
         )
         self._force_genesis_render = False
+        self._check_rendered_batch(rgb=rgb, depth=depth, seg=segmentation, normal=normal)
 
         def _to_tensor(x, **kwargs):
             if isinstance(x, torch.Tensor):
@@ -1083,7 +1154,7 @@ class CameraSensorNode(SensorNode[
         obs["extrinsics_cv"] = self._get_extrinsics()
         obs["local_extrinsics_cv"] = self._get_local_extrinsics()
 
-        self._last_observation = obs
+        self._last_observation = self._conform_to_space(obs)
 
     def _update_observation_nyx(self, device) -> None:
         """Render via NYX path tracer (``sensor.read().rgb``).
@@ -1128,6 +1199,7 @@ class CameraSensorNode(SensorNode[
                 force_render=self._force_genesis_render,
             )
             self._force_genesis_render = False
+            self._check_rendered_batch(depth=depth, seg=segmentation, normal=normal)
 
             def _to_tensor(x, **kwargs):
                 if isinstance(x, torch.Tensor):
@@ -1150,7 +1222,7 @@ class CameraSensorNode(SensorNode[
         obs["extrinsics_cv"] = self._get_extrinsics()
         obs["local_extrinsics_cv"] = self._get_local_extrinsics()
 
-        self._last_observation = obs
+        self._last_observation = self._conform_to_space(obs)
     
     @property
     def segmentation_sensor(self) -> CameraSensor:

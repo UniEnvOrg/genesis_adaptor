@@ -215,6 +215,65 @@ def test_unbatched_observation_space_matches():
         assert cam_obs[key].shape == space.shape, (
             f"Shape mismatch for {key!r}: obs={cam_obs[key].shape}, space={space.shape}"
         )
+        # The Rasterizer returns int64 segmentation; the space declares int32.
+        assert cam_obs[key].dtype == space.dtype, (
+            f"Dtype mismatch for {key!r}: obs={cam_obs[key].dtype}, space={space.dtype}"
+        )
+    env.close()
+
+
+def _make_rasterized_env(batch_size):
+    """A batched world rendered by the (non-batched) Rasterizer."""
+    world = GenesisWorld(
+        batch_size=batch_size,
+        scene_init_kwargs={"renderer": gs.renderers.Rasterizer()},
+    )
+    box = DummyBoxNode(world)
+    camera = CameraSensorNode(
+        world=world,
+        name="cam",
+        option=_cam_opt(),
+        render_rgb=True,
+        render_depth=True,
+        render_seg=True,
+        render_position=True,
+    )
+    env = WorldEnv(world, [box, camera], render_mode=None)
+    return env, camera
+
+
+def _assert_matches_space(camera, cam_obs):
+    for key, space in camera.observation_space.spaces.items():
+        assert cam_obs[key].shape == space.shape, (key, cam_obs[key].shape, space.shape)
+        assert cam_obs[key].dtype == space.dtype, (key, cam_obs[key].dtype, space.dtype)
+
+
+def test_rasterized_batch_of_one_keeps_its_batch_dimension():
+    """The Rasterizer renders one environment without a batch dimension; a
+    batched world of one still gets ``(1, ...)`` leaves, through reset, step
+    and a masked reset (which slices the observation by the mask)."""
+    env, camera = _make_rasterized_env(batch_size=1)
+    env.reset(seed=0, reload=True)
+    W, H = RES
+    cam_obs = camera.get_observation()
+    assert cam_obs["rgb"].shape == (1, H, W, 3)
+    assert cam_obs["extrinsics_cv"].shape == (1, 3, 4)
+    _assert_matches_space(camera, cam_obs)
+
+    env.step(None)
+    _assert_matches_space(camera, camera.get_observation())
+
+    _, obs, _ = env.reset(mask=torch.ones(1, dtype=torch.bool, device=camera.world.device))
+    assert obs["depth"].shape == (1, H, W)
+    env.close()
+
+
+def test_rasterized_batch_of_several_is_rejected():
+    """A non-batched renderer cannot render several environments: the camera
+    raises instead of reporting one environment's image as the batch."""
+    env, camera = _make_rasterized_env(batch_size=2)
+    with pytest.raises(RuntimeError, match="batched renderer"):
+        env.reset(seed=0, reload=True)
     env.close()
 
 
