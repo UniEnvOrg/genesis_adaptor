@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **Ramped motion and command hand-off for the interpolating reference policies** (`unienv_genesis_refpolicy.base.motion`), opt-in on `GoToRefPolicy` (and subclasses) and `BoxGripperGraspPolicy`: `ramp_seconds` gives the straight-line motion a trapezoidal speed profile (accelerate to the cruise speeds within `ramp_seconds`, decelerate to stop at the target) instead of jumping from rest to full speed; `continue_command=True` starts a phase from the commanded pose, speed and direction the previous interpolating phase on the same arm left behind (stored on the arm controller, shared by tip-frame views), when that command is within 5 cm / 0.5 rad of the EEF, so consecutive phases join without stopping at the achieved pose.
+
+### Changed
+
+- **`GoToRefPolicy` interpolates by default**: `max_linear_speed` / `max_angular_speed` default to `DEFAULT_MAX_LINEAR_SPEED` (0.15 m/s) / `DEFAULT_MAX_ANGULAR_SPEED` (0.4 rad/s) instead of `None`, so the commanded pose moves along the straight line from the EEF to the target (also for `GoToLambdaRefPolicy`, `MoveObjectPolicy`, `MoveObjectLambdaPolicy` and `PickPlaceRefPolicy`'s motion phases). Pass `max_linear_speed=None, max_angular_speed=None` for the previous behaviour (the target commanded at once). `BoxGripperGraspPolicy` still interpolates only with explicit speeds.
+
 ### Fixed
 
 - **`CameraSensorNode` observations now match their declared space in shape and dtype**, whatever the renderer. Genesis's non-batched renderers (`Rasterizer`, `RayTracer`) render one environment and return it without a batch dimension, also in a batched world of one, so a `batch_size=1` world rendered by the Rasterizer (the single-env setup of e.g. `droid_sim_real`'s collection scene) reported `depth` / `seg` / `normal` / `position` as `(H, W[, C])` and `extrinsics_cv` / `local_extrinsics_cv` as `(3, 4)` against `(1, ...)` spaces; the first masked `WorldEnv.reset` then failed slicing them by the mask. The leaves are now conformed to the space at the end of `update_observation` (a batch dimension of one added in a batched world, dropped in an unbatched one) and cast to the declared dtype: the Rasterizer's `int64` segmentation is reported as the declared `int32`, as the `BatchRenderer` already did. A non-batched renderer in a batched world of several environments now raises a `RuntimeError` naming the `BatchRenderer` instead of reporting one environment's image (or failing later in the position map).

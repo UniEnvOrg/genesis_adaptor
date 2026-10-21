@@ -35,6 +35,7 @@ from unienv_genesis_refpolicy.grasp_providers.object_geometry import (
     ObjectGeometryGraspCandidateProvider,
 )
 from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy, step_pose_toward
+from unienv_genesis_refpolicy.base.motion import load_command, ramped_step_pose_toward, store_command
 
 class GraspPhase:
     OPEN_GRIPPER = 0
@@ -118,6 +119,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             finger on top of a thin object). Reach checks still use the actual
             EEF pose against the phase target. ``None`` (default) commands the
             phase target directly.
+        ramp_seconds / continue_command: With interpolation, the trapezoidal
+            speed profile and the command hand-off of :class:`GoToRefPolicy`.
 
     The provider's
     :meth:`~unienv_genesis_refpolicy.grasp_providers.base.GraspCandidateProvider.cost`,
@@ -169,6 +172,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         selection_temperature: Optional[float] = None,
         max_linear_speed: Optional[float] = None,
         max_angular_speed: Optional[float] = None,
+        ramp_seconds: Optional[float] = None,
+        continue_command: bool = False,
     ) -> None:
         super().__init__(world)
 
@@ -193,6 +198,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self.max_linear_speed = None if max_linear_speed is None else float(max_linear_speed)
         self.max_angular_speed = None if max_angular_speed is None else float(max_angular_speed)
         self._interpolate = self.max_linear_speed is not None or self.max_angular_speed is not None
+        self.ramp_seconds = None if ramp_seconds is None else float(ramp_seconds)
+        self.continue_command = bool(continue_command)
         self._selection_rng = torch.Generator(device=world.device)
         self._filter_candidate_fn = filter_candidate_fn
 
@@ -270,6 +277,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         # Commanded (interpolated) pose; only used with Cartesian interpolation.
         self._cmd_pos = torch.zeros(pos_shape, dtype=torch.float32, device=device)
         self._cmd_quat = torch.zeros(quat_shape, dtype=torch.float32, device=device)
+        self._cmd_speed = torch.zeros(scalar_shape, dtype=torch.float32, device=device)  # fraction of cruise
+        self._cmd_dir = torch.zeros(pos_shape, dtype=torch.float32, device=device)  # last unit step direction
         self._debug_last = {}
 
     def save_debug(self, output_dir: str | Path) -> None:
@@ -494,13 +503,22 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             self._initial_eef_pos.copy_(eef_pos)
             self._initial_eef_quat.copy_(eef_quat)
 
-        # The straight-line motion starts from where the EEF is now.
+        # The straight-line motion starts from where the EEF is now (or from the
+        # previous policy's command, continue_command).
+        start_pos, start_quat = self._initial_eef_pos, self._initial_eef_quat
+        start_speed = torch.zeros_like(self._cmd_speed)
+        if self.continue_command:
+            start_pos, start_quat, start_speed = load_command(
+                self._eef_ctrl, start_pos, start_quat, self._pre_grasp_pos,
+            )
         if mask is not None:
-            self._cmd_pos[mask] = self._initial_eef_pos[mask]
-            self._cmd_quat[mask] = self._initial_eef_quat[mask]
+            self._cmd_pos[mask] = start_pos[mask]
+            self._cmd_quat[mask] = start_quat[mask]
+            self._cmd_speed[mask] = start_speed[mask]
         else:
-            self._cmd_pos.copy_(self._initial_eef_pos)
-            self._cmd_quat.copy_(self._initial_eef_quat)
+            self._cmd_pos.copy_(start_pos)
+            self._cmd_quat.copy_(start_quat)
+            self._cmd_speed.copy_(start_speed)
 
         self._zero_counters(mask)
         self._debug_last["status"] = "ok"
@@ -614,17 +632,36 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
 
         # 5. Advance the commanded pose toward the (possibly new) phase target.
         if self._interpolate:
-            new_pos, new_quat = step_pose_toward(
-                self._cmd_pos, self._cmd_quat,
-                self._get_phase_target_pos(), self._get_phase_target_quat(),
-                step_dt, self.max_linear_speed, self.max_angular_speed,
-            )
+            # With the ramp, the command decelerates to rest at each phase
+            # target, so a phase switch (pre-grasp -> approach) starts at rest.
+            if self.ramp_seconds is not None:
+                new_pos, new_quat, new_speed = ramped_step_pose_toward(
+                    self._cmd_pos, self._cmd_quat,
+                    self._get_phase_target_pos(), self._get_phase_target_quat(), self._cmd_speed,
+                    step_dt, self.max_linear_speed, self.max_angular_speed, self.ramp_seconds,
+                )
+            else:
+                new_pos, new_quat = step_pose_toward(
+                    self._cmd_pos, self._cmd_quat,
+                    self._get_phase_target_pos(), self._get_phase_target_quat(),
+                    step_dt, self.max_linear_speed, self.max_angular_speed,
+                )
+                new_speed = self._cmd_speed
+            moved = new_pos - self._cmd_pos
+            moved_norm = torch.norm(moved, dim=-1, keepdim=True)
+            new_dir = torch.where(moved_norm > 1e-6, moved / moved_norm.clamp(min=1e-9), self._cmd_dir)
             if mask is not None:
                 self._cmd_pos[mask] = new_pos[mask]
                 self._cmd_quat[mask] = new_quat[mask]
+                self._cmd_speed[mask] = new_speed[mask]
+                self._cmd_dir[mask] = new_dir[mask]
             else:
                 self._cmd_pos.copy_(new_pos)
                 self._cmd_quat.copy_(new_quat)
+                self._cmd_speed.copy_(new_speed)
+                self._cmd_dir.copy_(new_dir)
+            if self.continue_command:
+                store_command(self._eef_ctrl, self._cmd_pos, self._cmd_quat, self._cmd_speed, self._cmd_dir, mask)
 
     @torch.inference_mode()
     def get_action(

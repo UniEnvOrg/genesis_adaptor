@@ -193,6 +193,7 @@ def test_goto_lambda_unbatched():
         world, controller=mock_eef,
         target_pos_fn=lambda: task._target_pos,
         position_threshold=0.02, stall_seconds=0,
+        max_linear_speed=None, max_angular_speed=None,
     )
     policy.reset(seed=0)
 
@@ -1684,7 +1685,7 @@ def test_goto_action_recomputed_on_reset_when_base_frame_changes():
     policy = GoToRefPolicy(
         world, controller=mock_eef,
         target_pos=target_pos, target_quat=target_quat,
-        stall_seconds=0,
+        stall_seconds=0, max_linear_speed=None, max_angular_speed=None,
     )
     policy.reset()
     action_before = policy.get_action().clone()
@@ -1717,7 +1718,7 @@ def test_goto_action_recomputed_selectively_for_mask():
     policy = GoToRefPolicy(
         world, controller=mock_eef,
         target_pos=target_pos, target_quat=target_quat,
-        stall_seconds=0,
+        stall_seconds=0, max_linear_speed=None, max_angular_speed=None,
     )
     policy.reset()
     action_before = policy.get_action().clone()
@@ -1750,7 +1751,7 @@ def test_goto_lambda_action_follows_base_frame_change():
     policy = GoToLambdaRefPolicy(
         world, controller=mock_eef,
         target_pos_fn=lambda: fixed_target,
-        stall_seconds=0,
+        stall_seconds=0, max_linear_speed=None, max_angular_speed=None,
     )
     policy.reset()
     action_before = policy.get_action().clone()
@@ -1762,6 +1763,31 @@ def test_goto_lambda_action_follows_base_frame_change():
     assert torch.allclose(action_after[:3], fixed_target - 0.1 * torch.tensor([1.0, 0.0, 0.0]), atol=1e-6)
 
     print("  PASS: goto-lambda action follows base-frame change")
+
+
+def test_goto_interpolates_by_default():
+    """By default the commanded pose starts at the EEF and moves at the default speed."""
+    from unienv_genesis_refpolicy.implementations.goto_policy import DEFAULT_MAX_LINEAR_SPEED
+
+    world = GenesisWorld()
+    start = torch.tensor([0.0, 0.0, 0.5])
+    mock_eef = _MockEEFController(world, pos=tuple(start.tolist()), base_pos=(0.0, 0.0, 0.0))
+    target_pos = torch.tensor([0.5, 0.0, 0.5])
+    policy = GoToRefPolicy(
+        world, controller=mock_eef,
+        target_pos=target_pos, target_quat=torch.tensor([1.0, 0.0, 0.0, 0.0]),
+        stall_seconds=0,
+    )
+    policy.reset()
+    assert torch.allclose(policy.get_action()[:3].cpu(), start, atol=1e-6)
+
+    dt = 0.1
+    for step in range(1, 4):
+        policy.step(dt=dt)
+        expected = start + torch.tensor([DEFAULT_MAX_LINEAR_SPEED * dt * step, 0.0, 0.0])
+        assert torch.allclose(policy.get_action()[:3].cpu(), expected, atol=1e-5)
+
+    print("  PASS: goto interpolates by default")
 
 
 # ------------------------------------------------------------------
@@ -1857,6 +1883,9 @@ if __name__ == "__main__":
     print()
     print("=== test_goto_lambda_action_follows_base_frame_change ===")
     test_goto_lambda_action_follows_base_frame_change()
+    print()
+    print("=== test_goto_interpolates_by_default ===")
+    test_goto_interpolates_by_default()
     print()
     print("All tests passed!")
 
