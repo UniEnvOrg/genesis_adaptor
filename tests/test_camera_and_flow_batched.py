@@ -131,6 +131,27 @@ def _make_batched_camera_env():
     return env, camera
 
 
+def test_batched_nyx_rgb_only_camera_reports_its_pose_per_env():
+    """A static NYX camera without depth / seg (no secondary genesis camera)
+    reports its shared pose once; the observation still carries one per env."""
+    from unienv_genesis.nodes.sensors import camera_node as camera_node_module
+
+    if camera_node_module._ensure_nyx() is not True:
+        pytest.skip("NYX not available")
+    world = GenesisWorld(batch_size=N_ENVS)
+    box = MovingBoxNode(world)
+    camera = CameraSensorNode(world=world, name="cam", option=_cam_opt(backend="nyx", spp=4), render_rgb=True)
+    env = WorldEnv(world, [box, camera], render_mode=None)
+    try:
+        env.reset(seed=0, reload=True)
+        obs = camera.get_observation()
+        for key, space in camera.observation_space.spaces.items():
+            assert obs[key].shape == space.shape, (key, obs[key].shape, space.shape)
+        assert torch.allclose(obs["extrinsics_cv"][0], obs["extrinsics_cv"][1])
+    finally:
+        env.close()
+
+
 def test_batched_camera_observation_shapes():
     env, camera = _make_batched_camera_env()
     env.reset(seed=0, reload=True)
