@@ -12,8 +12,9 @@ Then upload them with the other collection assets (needs write access to the org
 :mod:`unienv_genesis_collection.objects.props` loads them.
 
 Writes ``unienv_genesis_collection/assets/objects/props/<asset>/``: one visual OBJ (+ MTL)
-per material, one convex collision OBJ per collision piece, and a single-link
-URDF tying them together. Collision pieces are the un-bevelled convex hulls the
+per asset (Nyx renders only a link's first ``<visual>``, so the brush's wood and
+bristles share one multi-material OBJ), one convex collision OBJ per collision
+piece, and a single-link URDF tying them together. Collision pieces are the un-bevelled convex hulls the
 visuals are built from, so physics never depends on mesh decomposition.
 
 Units are metres, +Z up. Wood textures are CC0 (Poly Haven ``oak_veneer_01``,
@@ -168,6 +169,18 @@ def assign(obj: bpy.types.Object, mat) -> None:
     obj.data.materials.append(mat)
 
 
+def join_objects(name: str, objs) -> bpy.types.Object:
+    """Join objects into the first one, keeping each part's material slots and UVs."""
+    for other in bpy.context.scene.objects:
+        other.select_set(False)
+    for obj in objs:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = objs[0]
+    bpy.ops.object.join()
+    objs[0].name = name
+    return objs[0]
+
+
 def export_obj(obj: bpy.types.Object, path: Path, *, visual: bool) -> None:
     for other in bpy.context.scene.objects:
         other.select_set(False)
@@ -198,7 +211,9 @@ class Asset:
         self.collisions: list[str] = []
 
     def visual(self, obj: bpy.types.Object, part: str, mat, *, rgba=(1, 1, 1, 1), texture: Path | None = None) -> None:
-        assign(obj, mat)
+        """Export ``obj`` as one visual; ``mat=None`` keeps the materials already on it."""
+        if mat is not None:
+            assign(obj, mat)
         fname = f"{self.name}_{part}.obj"
         export_obj(obj, self.dir / fname, visual=True)
         if texture is not None:
@@ -348,7 +363,7 @@ def make_brush() -> None:
     wood_obj = join("brush_wood", [stock_obj, handle_obj])
     smooth_by_angle(wood_obj, 50.0)
     box_uv(wood_obj, tile=1.0, grain_axis=0)
-    asset.visual(wood_obj, "wood", wood, texture=TEXTURES / "cherry_veneer.png")
+    assign(wood_obj, wood)
 
     # Bristle tufts: a dense grid of slightly flared, jittered cylinders.
     rng = random.Random(7)
@@ -367,7 +382,11 @@ def make_brush() -> None:
     tufts = object_from_bmesh("tufts", bm)
     smooth_by_angle(tufts, 60.0)
     fibre = material("hand_brush_bristles", (0.12, 0.11, 0.10, 1.0), roughness=0.85)
-    asset.visual(tufts, "bristles", fibre, rgba=(0.12, 0.11, 0.10, 1.0))
+    assign(tufts, fibre)
+    # One visual mesh with both materials: Nyx reads URDFs itself and keeps only
+    # the first <visual> of a link, which dropped a separate bristle mesh.
+    body = join_objects("brush", [wood_obj, tufts])
+    asset.visual(body, "body", None, texture=TEXTURES / "cherry_veneer.png")
     asset.write_urdf(mass=0.14, com=(0.04, 0.0, 0.040), inertia_box=(0.29, 0.05, 0.06))
 
 
