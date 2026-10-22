@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - **`GoToRefPolicy` interpolates by default**: `max_linear_speed` / `max_angular_speed` default to `DEFAULT_MAX_LINEAR_SPEED` (0.15 m/s) / `DEFAULT_MAX_ANGULAR_SPEED` (0.4 rad/s) instead of `None`, so the commanded pose moves along the straight line from the EEF to the target (also for `GoToLambdaRefPolicy`, `MoveObjectPolicy`, `MoveObjectLambdaPolicy` and `PickPlaceRefPolicy`'s motion phases). Pass `max_linear_speed=None, max_angular_speed=None` for the previous behaviour (the target commanded at once). `BoxGripperGraspPolicy` still interpolates only with explicit speeds.
+- **ZED cameras render from 1 cm** (`unienv_genesis_collection.sensors.cameras.zed`): the ZED Mini / ZED 2i (2.1 mm, 4 mm) option helpers used each sensor's minimum depth range as the near clipping plane (0.1 / 0.3 / 1.5 m), which cut close-by objects out of the RGB image too — a head-mounted exterior camera lost the robot's own forearm, a wrist camera the gripper fingers. They now clip at `ZED_NEAR_CLIP` (0.01 m; `near=0` gives NaN depth in Genesis's rasterizer and NYX rejects it); the minimum depth ranges are `ZED_MINI_MIN_DEPTH` / `ZED_2I_WIDELEN_MIN_DEPTH` / `ZED_2I_NARROWLEN_MIN_DEPTH` for masking depth like the sensors. Pass `near=` to keep the old clipping.
 
 ### Fixed
 

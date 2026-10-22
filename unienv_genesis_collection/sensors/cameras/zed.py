@@ -9,7 +9,13 @@ from unienv_genesis.nodes.sensors.camera_node import CameraSensorNodeOptions
 
 __all__ = [
     "ZedSupportedResolution",
+    "ZED_NEAR_CLIP",
+    "ZED_MINI_MIN_DEPTH",
+    "ZED_2I_WIDELEN_MIN_DEPTH",
+    "ZED_2I_NARROWLEN_MIN_DEPTH",
     "get_zed_mini_camera_options",
+    "get_zed_2i_widelen_camera_options",
+    "get_zed_2i_narrowlen_camera_options",
 ]
 
 class ZedSupportedResolution(Enum):
@@ -33,6 +39,18 @@ class ZedSupportedResolution(Enum):
     def size(self) -> tuple[int, int]:
         return self.value
 
+#: Near clipping plane of every ZED camera (m). It is a rendering parameter, not
+#: the sensors' minimum depth (:data:`ZED_MINI_MIN_DEPTH` & co.): clipping there
+#: would hide close-by objects real RGB images show — the gripper fingers under a
+#: wrist camera, a robot's arms under a head-mounted camera. Genesis's rasterizer
+#: returns NaN depth at ``near=0`` and NYX requires ``near > 0``, hence 1 cm.
+ZED_NEAR_CLIP = 0.01
+
+#: Minimum depth range (m) of each ZED model, for masking simulated depth like the sensor's.
+ZED_MINI_MIN_DEPTH = 0.1
+ZED_2I_WIDELEN_MIN_DEPTH = 0.3
+ZED_2I_NARROWLEN_MIN_DEPTH = 1.5
+
 # Zed Mini camera parameters
 ZED_MINI_FOVS = {
     ZedSupportedResolution.HD2K: 46,
@@ -41,7 +59,7 @@ ZED_MINI_FOVS = {
     ZedSupportedResolution.WVGA: 54
 }
 ZED_MINI_DEFAULT_PARAM = {
-    "near": 0.1,
+    "near": ZED_NEAR_CLIP,
     "far": 20.0,
     "aperture": 2.0,
 }
@@ -67,7 +85,7 @@ ZED_2I_WIDELEN_FOVS = {
     ZedSupportedResolution.WVGA: 71
 }
 ZED_2I_WIDELEN_DEFAULT_PARAM = {
-    "near": 0.3,
+    "near": ZED_NEAR_CLIP,
     "far": 20.0,
     "aperture": 2.0,
 }
@@ -93,7 +111,7 @@ ZED_2I_NARROWLEN_FOVS = {
     ZedSupportedResolution.WVGA: 43
 }
 ZED_2I_NARROWLEN_DEFAULT_PARAM = {
-    "near": 1.5,
+    "near": ZED_NEAR_CLIP,
     "far": 35.0,
     "aperture": 1.8
 }
