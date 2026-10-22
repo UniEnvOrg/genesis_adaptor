@@ -77,8 +77,11 @@ class JointPositionAndVelocityController(
         position_control_low = position_control_low.to(device=dev, dtype=torch.float32) if isinstance(position_control_low, torch.Tensor) else position_control_low
         position_control_high = position_control_high.to(device=dev, dtype=torch.float32) if isinstance(position_control_high, torch.Tensor) else position_control_high
 
-        # Get limits from entity - returns (low, high) tuple of shape (batch_size, n_dofs) or (n_dofs,)
-        joint_limit_low, joint_limit_high = entity.get_dofs_limit(dofs_idx_local=joint_indexes)
+        # Joint limits with a batch dimension in a batched world (Genesis >= 1.4 reports them once, (n_dofs,)).
+        joint_limit_low, joint_limit_high = (
+            broadcast_to_batch(limit, batch_size, n_dofs).contiguous()
+            for limit in entity.get_dofs_limit(dofs_idx_local=joint_indexes)
+        )
 
         # Build velocity limit tensor if provided (symmetric around zero)
         vel_limit = (

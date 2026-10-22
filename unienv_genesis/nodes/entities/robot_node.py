@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from unienv_interface.space import Space, DictSpace, BoxSpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
+from unienv_genesis.utils.kinematics import forward_kinematics
 from unienv_interface.world.nodes.flat_combined_node import FlatCombinedWorldNode
 from .base import EntityNode, ContextType, ObsType, ActType
 from .entity_controllers.base import EntityController, resolve_joint_indexes
@@ -380,7 +381,9 @@ class RobotDescriptionNode(EntityNode[
             entry point for ``target_link`` / ``base_frame`` / virtual
             EEF offset semantics.
 
-        Proxy to :meth:`genesis.engine.entities.RigidEntity.forward_kinematics`.
+        Proxy to :func:`unienv_genesis.utils.forward_kinematics` (Genesis's
+        ``forward_kinematics_query``, or ``RigidEntity.forward_kinematics``
+        before genesis-world#3233).
 
         Args:
             qpos: Joint positions — shape ``(n_qs,)`` or ``(batch_size, n_qs)``.
@@ -393,7 +396,8 @@ class RobotDescriptionNode(EntityNode[
             requested links.
         """
         entity = self._require_rigid_entity()
-        return entity.forward_kinematics(
+        return forward_kinematics(
+            entity,
             qpos,
             qs_idx_local=qs_idx_local,
             links_idx_local=links_idx_local,

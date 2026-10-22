@@ -7,6 +7,7 @@ from unienv_genesis.utils.batch_dim_utils import (
     index_batch_dimension,
 )
 from unienv_genesis.utils.entity_group import EntityGroup
+from unienv_genesis.utils.kinematics import forward_kinematics
 
 __all__ = [
     "is_batched",
@@ -14,4 +15,5 @@ __all__ = [
     "broadcast_to_batch",
     "index_batch_dimension",
     "EntityGroup",
+    "forward_kinematics",
 ]

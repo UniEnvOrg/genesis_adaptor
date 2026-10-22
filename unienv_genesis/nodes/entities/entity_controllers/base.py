@@ -17,6 +17,7 @@ from unienv_interface.space import Space, DictSpace, BoxSpace, BinarySpace
 from unienv_interface.backends.pytorch import PyTorchComputeBackend, PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, PyTorchRNGType
 from unienv_genesis.world.genesis_world import GenesisWorld
 from unienv_genesis.options.attach_option import LinkAttachment
+from unienv_genesis.utils.kinematics import forward_kinematics
 from unienv_genesis.utils.batch_dim_utils import (
     get_batch_aware_shape,
     is_batched,
@@ -218,9 +219,15 @@ class DiscreteEntityController(
         n_dofs = len(joint_indexes) if joint_indexes is not None else entity.n_dofs
         batch_size = world.batch_size
         
-        # Get limits from entity - returns (low, high) tuple of shape (batch_size, n_dofs) or (n_dofs,)
-        joint_position_low, joint_position_high = entity.get_dofs_limit(dofs_idx_local=joint_indexes)
-        joint_force_low, joint_force_high = entity.get_dofs_force_range(dofs_idx_local=joint_indexes)
+        # Joint limits / force ranges with a batch dimension in a batched world: Genesis >= 1.4
+        # reports these static quantities once, (n_dofs,), whatever the batch size.
+        joint_position_low, joint_position_high, joint_force_low, joint_force_high = (
+            broadcast_to_batch(limit, batch_size, n_dofs).contiguous()
+            for limit in (
+                *entity.get_dofs_limit(dofs_idx_local=joint_indexes),
+                *entity.get_dofs_force_range(dofs_idx_local=joint_indexes),
+            )
+        )
 
         # Normalize target_link / base_frame into LinkAttachment objects (or None).
         # A bare str is treated as a LinkAttachment with no offset.
@@ -771,14 +778,14 @@ class DiscreteEntityController(
         """Compute the virtual EEF pose (in base/world frame) for given joint positions.
 
         This is the **single canonical entry point** for EEF-aware FK from
-        joint positions.  It uses :meth:`entity.forward_kinematics` for the
+        joint positions.  It uses :func:`unienv_genesis.utils.forward_kinematics` for the
         configured ``target_link`` while leaving un-controlled joints at
         their current values.  The virtual EEF offset is applied and the
         result is converted to the configured base frame (or world frame
         if no ``base_frame`` is set).
 
         The robot-node level exposes only the raw
-        :meth:`entity.forward_kinematics` primitive; all EEF semantics
+        :meth:`forward_kinematics` primitive; all EEF semantics
         (target_link, base_frame, virtual offset) live here on the
         controller.
 
@@ -805,7 +812,7 @@ class DiscreteEntityController(
     ) -> Tuple[PyTorchArrayType, PyTorchArrayType]:
         """Compute the virtual EEF pose (in base/world frame) for given joint positions.
 
-        Uses :meth:`entity.forward_kinematics` for the configured ``target_link``
+        Uses :func:`unienv_genesis.utils.forward_kinematics` for the configured ``target_link``
         while leaving un-controlled joints at their current values.  The virtual
         EEF offset is applied and the result is converted to the configured base
         frame (or world frame if no ``base_frame`` is set).
@@ -818,7 +825,8 @@ class DiscreteEntityController(
             ``(eef_position, eef_quaternion)`` in the base/world frame.
         """
         link_idx = [self.target_link.idx_local]
-        links_pos, links_quat = self.entity.forward_kinematics(
+        links_pos, links_quat = forward_kinematics(
+            self.entity,
             target_qpos,
             qs_idx_local=self.joint_indexes,
             links_idx_local=link_idx,

@@ -142,3 +142,20 @@ if __name__ == "__main__":
     test_robot_masked_reset()
     print()
     print("All tests passed!")
+
+
+def test_joint_spaces_batched():
+    """Joint-limit-bounded spaces carry the batch dimension: Genesis >= 1.4 reports
+    the limits and force ranges once, ``(n_dofs,)``, whatever the batch size."""
+    world = GenesisWorld(batch_size=2)
+    robot = FrankaEmikaPanda(world, name="franka")
+    env = WorldEnv(world, [robot], render_mode=None)
+    try:
+        env.reset(seed=0, reload=True)
+        obs_space = env.observation_space
+        for part, n_dofs in (("arm", 7), ("gripper", 2)):
+            for key in ("joint_position", "joint_velocity", "joint_torque", "joint_motor_torque"):
+                assert obs_space[part][key].shape == (2, n_dofs), (part, key, obs_space[part][key].shape)
+        assert env.action_space["arm"].shape == (2, 6)
+    finally:
+        env.close()
