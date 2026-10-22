@@ -46,6 +46,10 @@ This package provides:
 * :class:`ObjectInfo` — per-object catalog metadata (language annotations
   ordered broad → detailed, and category tags in a separate field); dataset
   catalogs ship with the assets as ``catalog.json``.
+* :mod:`~unienv_genesis_collection.objects.props` — task props modelled in
+  Blender (dustpan, hand brush, crumpled paper balls, shelf) as
+  :class:`UrdfPropObject` single-link URDFs with designed convex collision
+  pieces (``objects/props`` in the asset collection).
 * :class:`ManipulatableTool` — mixin ABC for objects with tool functionality
   (sweeping, scooping, cutting, etc.).
 * :class:`ManipulatableContainer` — abstract base for hollow objects (bowls,
@@ -123,6 +127,8 @@ from unienv_genesis_collection.objects.hub_objects import (
     list_lightwheel_env_objects,
     make_lightwheel_env_pool,
 )
+from unienv_genesis_collection.objects.props import UrdfPropObject
+from unienv_genesis_collection.objects import props
 from unienv_genesis_collection.objects.base_tool import (
     ManipulatableTool,
     FunctionalPoint,
@@ -208,6 +214,9 @@ __all__ = [
     "get_lightwheel_env_catalog",
     "list_lightwheel_env_objects",
     "make_lightwheel_env_pool",
+    # Blender-made task props
+    "UrdfPropObject",
+    "props",
     # Tool
     "ManipulatableTool",
     "FunctionalPoint",
