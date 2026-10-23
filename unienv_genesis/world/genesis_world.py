@@ -1,6 +1,7 @@
 """Genesis World backend for UniEnv."""
 
 from typing import Optional, Any, Dict, Union, List, Sequence
+import gc
 import time
 import logging
 import genesis as gs
@@ -293,6 +294,12 @@ class GenesisWorld(World[PyTorchArrayType, PyTorchDeviceType, PyTorchDtypeType, 
         # Clear scene if it was previously built
         if self.scene is not None:
             self.scene.destroy()
+            self.scene = None
+            # The destroyed scene's objects reference each other, so the GPU
+            # memory they hold (solver fields, renderer buffers) is only freed
+            # by a cyclic garbage-collection pass, which rarely runs on its
+            # own: without one, every rebuild kept ~0.6 GB alive.
+            gc.collect()
         self.scene = self.create_scene(disable_viewer=disable_viewer)
     
     def after_reload(
