@@ -1672,6 +1672,51 @@ def test_pickplace_release_tracks_duration_in_seconds():
     env.close()
 
 
+def test_pickplace_candidate_provider_factory_resolved_per_grasp_node():
+    """A zero-arg ``candidate_provider`` factory is called for every grasp node.
+
+    The graph re-invokes its factory nodes on each full reset (e.g. after a
+    scene reload that swaps the target object); each grasp node must get a
+    provider built for the *current* object instead of the first one.
+    """
+    world = GenesisWorld()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=(0.0, 0.0, 0.65))
+    target = BoxObject(size=(0.04, 0.04, 0.04), name="cube", color=(1, 0, 0, 1))
+    task = ObjectRelocateTask(
+        world, table_builder=table, clutter_manager=None,
+        target_object=target,
+    )
+    env = WorldEnv(world, [plane, table, task], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    class _Provider(GraspCandidateProvider):
+        def propose(self, *, mask=None, seed=None):
+            raise AssertionError("not used")
+
+    built = []
+
+    def factory():
+        built.append(_Provider())
+        return built[-1]
+
+    policy = PickPlaceRefPolicy(
+        world=world,
+        eef_controller=_MockEEFController(world, pos=(0.0, 0.0, 0.8)),
+        gripper_controller=_MockGripperController(),
+        task=task,
+        target_object=target,
+        target_entity=task.target_object_entity,
+        grasp_kwargs={"candidate_provider": factory},
+    )
+    make_grasp = policy._graph._node_specs["grasp"]
+    first, second = make_grasp(), make_grasp()
+    assert len(built) == 2
+    assert first._candidate_provider is built[0]
+    assert second._candidate_provider is built[1]
+    env.close()
+
+
 # ------------------------------------------------------------------
 # GoTo action recomputation on reset (base-frame changes)
 # ------------------------------------------------------------------

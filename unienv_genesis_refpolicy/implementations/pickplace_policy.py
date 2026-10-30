@@ -239,14 +239,19 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         # 1. Grasp (factory — target_entity may be None until env.reset loads it)
         def make_grasp():
             # A ``candidate_provider`` passed as a zero-arg callable is resolved
-            # here (lazily, on node construction) so callers can defer building
-            # it until the task's target object exists.  Non-callable providers
-            # are used as-is.
-            candidate_provider = grasp_kwargs.get("candidate_provider")
+            # here, on every node construction (the graph re-invokes its
+            # factories on each full reset), so callers can defer building it
+            # until the task's target object exists, and a scene reload that
+            # swaps the target object gets a provider for the new object.
+            # Non-callable providers are used as-is.  The shared
+            # ``grasp_kwargs`` must not be overwritten with the first provider:
+            # it would keep proposing grasps from the first object's geometry.
+            node_grasp_kwargs = dict(grasp_kwargs)
+            candidate_provider = node_grasp_kwargs.get("candidate_provider")
             if callable(candidate_provider) and not isinstance(
                 candidate_provider, GraspCandidateProvider
             ):
-                grasp_kwargs["candidate_provider"] = candidate_provider()
+                node_grasp_kwargs["candidate_provider"] = candidate_provider()
             return BoxGripperGraspPolicy(
                 world=world,
                 eef_controller=eef_controller,
@@ -258,7 +263,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 target_entity_fn=target_entity_fn,
                 eef_name=eef_name,
                 gripper_name=gripper_name,
-                **grasp_kwargs,
+                **node_grasp_kwargs,
             )
 
         nodes["grasp"] = make_grasp
