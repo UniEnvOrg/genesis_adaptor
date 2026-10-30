@@ -1717,6 +1717,44 @@ def test_pickplace_candidate_provider_factory_resolved_per_grasp_node():
     env.close()
 
 
+def test_pickplace_lower_kwargs_and_place_clearance_apply_to_lower_only():
+    """``lower_kwargs`` override the transport kwargs for ``lower`` only, and
+    ``place_clearance`` raises the ``lower`` target above the goal."""
+    world = GenesisWorld()
+    plane = PlaneBuilder(world, name="floor")
+    table = CachedTableBuilder(world, name="table", pos=(0.0, 0.0, 0.65))
+    target = BoxObject(size=(0.04, 0.04, 0.04), name="cube", color=(1, 0, 0, 1))
+    task = ObjectRelocateTask(
+        world, table_builder=table, clutter_manager=None,
+        target_object=target,
+    )
+    env = WorldEnv(world, [plane, table, task], render_mode=None)
+    env.reset(seed=0, reload=True)
+
+    policy = PickPlaceRefPolicy(
+        world=world,
+        eef_controller=_MockEEFController(world, pos=(0.0, 0.0, 0.8)),
+        gripper_controller=_MockGripperController(),
+        task=task,
+        target_object=target,
+        target_entity=task.target_object_entity,
+        transport_kwargs={"position_threshold": 0.02},
+        lower_kwargs={"position_threshold": 0.005, "orientation_threshold": 0.001},
+        place_clearance=0.01,
+    )
+    nodes = policy._graph._node_policies
+    lower = nodes["lower"]._policies["arm"]
+    assert lower.position_threshold == 0.005
+    assert lower.orientation_threshold == 0.001
+    for name in ("lift", "move_to_goal"):
+        assert nodes[name]._policies["arm"].position_threshold == 0.02
+    expected = task._goal_pos.detach().float() + torch.tensor([0.0, 0.0, 0.01])
+    assert torch.allclose(lower._target_pos_fn(), expected)
+    # The lower phase stays a transport phase (slip detection toggling).
+    assert lower in policy._transport_policies
+    env.close()
+
+
 # ------------------------------------------------------------------
 # GoTo action recomputation on reset (base-frame changes)
 # ------------------------------------------------------------------

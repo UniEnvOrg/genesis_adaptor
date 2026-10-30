@@ -25,8 +25,10 @@ Phase details
    horizontally to a point directly above the goal, at ``lift_height``
    above the table surface, while preserving the grasp transform.
 4. **lower** (:class:`MoveObjectLambdaPolicy`) — lower the object onto
-   the goal position on the table surface while preserving the grasp
-   transform.
+   the goal position on the table surface (``place_clearance`` above it)
+   while preserving the grasp transform; ``lower_kwargs`` can give it
+   tighter tolerances than the other transport phases, so the object is
+   only released once it is on target.
 5. **release** (:class:`RepeatActionRefPolicy`) — open the gripper for
    ``release_seconds`` to drop the object.
 6. **retreat** (:class:`GoToLambdaRefPolicy`) — retreat straight up by
@@ -129,6 +131,15 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             MoveObject-only options such as ``slip_position_threshold`` /
             ``slip_orientation_threshold`` (which ``GoToLambdaRefPolicy``
             does not accept).
+        lower_kwargs: Optional kwargs applied *only* to the ``lower`` phase's
+            :class:`MoveObjectLambdaPolicy`, overriding ``transport_kwargs``
+            (e.g. tighter ``position_threshold`` / ``orientation_threshold``:
+            the phase ends, and the release starts, as soon as the EEF is
+            within them, while the arm may still be moving).
+        place_clearance: Height (m) above the goal position the ``lower``
+            phase sets the object down at (``0``: exactly at the goal), so it
+            is released just above the table instead of being pressed into
+            it.
         release_kwargs: Optional kwargs applied *only* to the ``release``
             phase's arm :class:`GoToLambdaRefPolicy`, overriding
             ``goto_kwargs``.
@@ -164,6 +175,8 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         grasp_kwargs: Optional[Dict[str, Any]] = None,
         goto_kwargs: Optional[Dict[str, Any]] = None,
         transport_kwargs: Optional[Dict[str, Any]] = None,
+        lower_kwargs: Optional[Dict[str, Any]] = None,
+        place_clearance: float = 0.0,
         release_kwargs: Optional[Dict[str, Any]] = None,
         retreat_kwargs: Optional[Dict[str, Any]] = None,
         transport_slip_detection: bool = True,
@@ -187,6 +200,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         goto_kwargs = dict(goto_kwargs or {})
         # Phase-specific kwargs override the shared goto_kwargs baseline.
         transport_merged = {**goto_kwargs, **(transport_kwargs or {})}
+        lower_merged = {**transport_merged, **(lower_kwargs or {})}
         release_merged = {**goto_kwargs, **(release_kwargs or {})}
         retreat_merged = {**goto_kwargs, **(retreat_kwargs or {})}
 
@@ -205,6 +219,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         # Device-correct offset tensors for lambda targets.
         device = world.device
         lift_offset = torch.tensor([0.0, 0.0, lift_height], dtype=torch.float32, device=device)
+        place_offset = torch.tensor([0.0, 0.0, float(place_clearance)], dtype=torch.float32, device=device)
         retreat_offset = torch.tensor([0.0, 0.0, retreat_height], dtype=torch.float32, device=device)
 
         # Gripper hold actions for transport / release phases.
@@ -288,7 +303,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         # Helper: build a transport (MoveObject) phase node, register the
         # underlying policy for later slip configuration, and capture its
         # construction-time slip defaults.
-        def _transport_node(target_pos_fn):
+        def _transport_node(target_pos_fn, phase_kwargs=transport_merged):
             move_object_policy = MoveObjectLambdaPolicy(
                 world=world,
                 controller=eef_controller,
@@ -296,7 +311,7 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 target_pos_fn=target_pos_fn,
                 gripper_controller=gripper_controller,
                 fail_on_gripper_contact_loss=True,
-                **transport_merged,
+                **phase_kwargs,
             )
             self._transport_policies.append(move_object_policy)
             self._transport_slip_defaults.append({
@@ -321,7 +336,8 @@ class PickPlaceRefPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         # 4. Lower — move the grasped object to the goal position while
         # preserving the grasp transform (gripper closed).
         nodes["lower"] = _transport_node(
-            lambda: task._goal_pos.detach().float(),
+            lambda: task._goal_pos.detach().float() + place_offset,
+            lower_merged,
         )
 
         # 5. Release (hold arm at its current EEF pose, open gripper for a
