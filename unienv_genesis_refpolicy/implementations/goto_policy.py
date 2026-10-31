@@ -19,7 +19,13 @@ from unienv_genesis_refpolicy.base.policy import (
     require_eef_controller,
     DURATION_COMPARISON_EPS,
 )
-from unienv_genesis_refpolicy.base.motion import load_command, ramped_step_pose_toward, store_command
+from unienv_genesis_refpolicy.base import motion as _motion
+from unienv_genesis_refpolicy.base.motion import (
+    leash_command,
+    load_command,
+    ramped_step_pose_toward,
+    store_command,
+)
 
 def _quat_slerp(q0: torch.Tensor, q1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     """Spherical interpolation of ``(..., 4)`` ``(w, x, y, z)`` quaternions at ``t`` ``(...)``."""
@@ -121,6 +127,15 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             (and speed) the previous interpolating policy on this arm left
             behind, when it is close to the EEF, instead of from the EEF pose
             (:func:`~unienv_genesis_refpolicy.base.motion.load_command`).
+        max_command_lead / max_command_lead_angle: The command leash (m /
+            rad, ``None`` = unbounded, the default). Every command (the
+            interpolated pose, the hand-off start, or the target itself
+            without interpolation) is clamped onto the ball / cone of this
+            radius around the *achieved* EEF pose, measured on the controller's
+            own EEF (:func:`~unienv_genesis_refpolicy.base.motion.leash_command`),
+            and a clamped command restarts its speed ramp from rest. The
+            command then waits for an arm that cannot follow instead of
+            running ahead of it.
 
     Notes:
         Time accounting always uses the explicit ``dt`` passed to
@@ -149,6 +164,8 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         max_angular_speed: Optional[float] = DEFAULT_MAX_ANGULAR_SPEED,
         ramp_seconds: Optional[float] = None,
         continue_command: bool = False,
+        max_command_lead: Optional[float] = None,
+        max_command_lead_angle: Optional[float] = None,
     ) -> None:
         super().__init__(world)
         require_eef_controller(controller, policy_name="GoToRefPolicy")
@@ -165,6 +182,9 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         self._interpolate = self.max_linear_speed is not None or self.max_angular_speed is not None
         self.ramp_seconds = None if ramp_seconds is None else float(ramp_seconds)
         self.continue_command = bool(continue_command)
+        self.max_command_lead = None if max_command_lead is None else float(max_command_lead)
+        self.max_command_lead_angle = None if max_command_lead_angle is None else float(max_command_lead_angle)
+        self._leash = self.max_command_lead is not None or self.max_command_lead_angle is not None
 
         batch_size = world.batch_size
         device = world.device
@@ -219,6 +239,19 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
         if self._interpolate:
             self._action = controller.get_action_world(self._cmd_pos, self._cmd_quat)
 
+    def _leashed(
+        self,
+        cmd_pos: torch.Tensor,
+        cmd_quat: torch.Tensor,
+        eef_pos: torch.Tensor,
+        eef_quat: torch.Tensor,
+    ):
+        """``(pos, quat, clamped)``: the command leashed to the achieved pose (no-op without a leash)."""
+        return leash_command(
+            self.controller, cmd_pos, cmd_quat, eef_pos, eef_quat,
+            self.max_command_lead, self.max_command_lead_angle,
+        )
+
     @torch.inference_mode()
     def reset(
         self,
@@ -236,12 +269,18 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             # Start the straight-line motion from where the EEF is now (or from
             # the previous policy's command, continue_command).
             eef_pos, eef_quat = self.controller.get_eef_pose_absolute()
-            start_pos, start_quat = eef_pos.detach().float(), eef_quat.detach().float()
+            eef_pos, eef_quat = eef_pos.detach().float(), eef_quat.detach().float()
+            start_pos, start_quat = eef_pos, eef_quat
             start_speed = torch.zeros_like(self._cmd_speed)
             if self.continue_command:
                 start_pos, start_quat, start_speed = load_command(
                     self.controller, start_pos, start_quat, self.target_pos,
                 )
+                if self._leash:
+                    # A carried command is within the hand-off limits but may
+                    # still lead by more than the leash.
+                    start_pos, start_quat, clamped = self._leashed(start_pos, start_quat, eef_pos, eef_quat)
+                    start_speed = torch.where(clamped, torch.zeros_like(start_speed), start_speed)
             if mask is not None:
                 self._cmd_pos[mask] = start_pos[mask]
                 self._cmd_quat[mask] = start_quat[mask]
@@ -250,6 +289,19 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
                 self._cmd_pos.copy_(start_pos)
                 self._cmd_quat.copy_(start_quat)
                 self._cmd_speed.copy_(start_speed)
+            action = self.controller.get_action_world(self._cmd_pos, self._cmd_quat)
+        elif self._leash:
+            # No interpolation: the target itself, leashed to the EEF.
+            eef_pos, eef_quat = self.controller.get_eef_pose_absolute()
+            cmd_pos, cmd_quat, _ = self._leashed(
+                self.target_pos, self.target_quat, eef_pos.detach().float(), eef_quat.detach().float(),
+            )
+            if mask is not None:
+                self._cmd_pos[mask] = cmd_pos[mask]
+                self._cmd_quat[mask] = cmd_quat[mask]
+            else:
+                self._cmd_pos.copy_(cmd_pos)
+                self._cmd_quat.copy_(cmd_quat)
             action = self.controller.get_action_world(self._cmd_pos, self._cmd_quat)
         else:
             action = self.controller.get_action_world(self.target_pos, self.target_quat)
@@ -345,10 +397,31 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
             self._last_eef_quat.copy_(eef_quat)
 
         if self._interpolate:
-            self._advance_command(step_dt, mask)
+            self._advance_command(step_dt, mask, eef_pos, eef_quat)
+        elif self._leash:
+            self._leash_target(mask, eef_pos, eef_quat)
 
-    def _advance_command(self, dt: float, mask: Optional[torch.Tensor]) -> None:
-        """Move the commanded pose toward the target along the straight line."""
+    def _leash_target(self, mask: Optional[torch.Tensor], eef_pos: torch.Tensor, eef_quat: torch.Tensor) -> None:
+        """Without interpolation: command the target, leashed to the achieved pose."""
+        cmd_pos, cmd_quat, _ = self._leashed(self.target_pos, self.target_quat, eef_pos, eef_quat)
+        if mask is not None:
+            self._cmd_pos[mask] = cmd_pos[mask]
+            self._cmd_quat[mask] = cmd_quat[mask]
+            self._action[mask] = self.controller.get_action_world(self._cmd_pos, self._cmd_quat)[mask]
+        else:
+            self._cmd_pos.copy_(cmd_pos)
+            self._cmd_quat.copy_(cmd_quat)
+            self._action.copy_(self.controller.get_action_world(self._cmd_pos, self._cmd_quat))
+
+    def _advance_command(
+        self,
+        dt: float,
+        mask: Optional[torch.Tensor],
+        eef_pos: Optional[torch.Tensor] = None,
+        eef_quat: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Move the commanded pose toward the target along the straight line
+        (then leash it to the achieved pose ``eef_pos`` / ``eef_quat``)."""
         if self.ramp_seconds is not None:
             new_pos, new_quat, new_speed = ramped_step_pose_toward(
                 self._cmd_pos, self._cmd_quat, self.target_pos, self.target_quat, self._cmd_speed,
@@ -360,6 +433,12 @@ class GoToRefPolicy(BaseRefPolicy[torch.Tensor]):
                 dt, self.max_linear_speed, self.max_angular_speed,
             )
             new_speed = self._cmd_speed
+        if self._leash and eef_pos is not None:
+            new_pos, new_quat, clamped = self._leashed(new_pos, new_quat, eef_pos, eef_quat)
+            new_speed = _motion.leashed_speed(
+                new_speed, clamped, self._cmd_pos, self._cmd_quat, new_pos, new_quat,
+                dt, self.max_linear_speed, self.max_angular_speed,
+            )
         moved = new_pos - self._cmd_pos
         moved_norm = torch.norm(moved, dim=-1, keepdim=True)
         new_dir = torch.where(moved_norm > 1e-6, moved / moved_norm.clamp(min=1e-9), self._cmd_dir)

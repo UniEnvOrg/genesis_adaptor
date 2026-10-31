@@ -35,7 +35,13 @@ from unienv_genesis_refpolicy.grasp_providers.object_geometry import (
     ObjectGeometryGraspCandidateProvider,
 )
 from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy, step_pose_toward
-from unienv_genesis_refpolicy.base.motion import load_command, ramped_step_pose_toward, store_command
+from unienv_genesis_refpolicy.base import motion as _motion
+from unienv_genesis_refpolicy.base.motion import (
+    leash_command,
+    load_command,
+    ramped_step_pose_toward,
+    store_command,
+)
 
 class GraspPhase:
     OPEN_GRIPPER = 0
@@ -121,6 +127,11 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             phase target directly.
         ramp_seconds / continue_command: With interpolation, the trapezoidal
             speed profile and the command hand-off of :class:`GoToRefPolicy`.
+        max_command_lead / max_command_lead_angle: The command leash of
+            :class:`GoToRefPolicy` (m / rad, ``None`` = unbounded, the
+            default): the PRE_GRASP / APPROACH command — interpolated, or the
+            phase target itself without interpolation — is clamped onto the
+            ball / cone of this radius around the achieved EEF pose.
 
     The provider's
     :meth:`~unienv_genesis_refpolicy.grasp_providers.base.GraspCandidateProvider.cost`,
@@ -174,6 +185,8 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         max_angular_speed: Optional[float] = None,
         ramp_seconds: Optional[float] = None,
         continue_command: bool = False,
+        max_command_lead: Optional[float] = None,
+        max_command_lead_angle: Optional[float] = None,
     ) -> None:
         super().__init__(world)
 
@@ -200,6 +213,9 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
         self._interpolate = self.max_linear_speed is not None or self.max_angular_speed is not None
         self.ramp_seconds = None if ramp_seconds is None else float(ramp_seconds)
         self.continue_command = bool(continue_command)
+        self.max_command_lead = None if max_command_lead is None else float(max_command_lead)
+        self.max_command_lead_angle = None if max_command_lead_angle is None else float(max_command_lead_angle)
+        self._leash = self.max_command_lead is not None or self.max_command_lead_angle is not None
         self._selection_rng = torch.Generator(device=world.device)
         self._filter_candidate_fn = filter_candidate_fn
 
@@ -511,6 +527,11 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
             start_pos, start_quat, start_speed = load_command(
                 self._eef_ctrl, start_pos, start_quat, self._pre_grasp_pos,
             )
+            if self._leash:
+                start_pos, start_quat, clamped = self._leashed(
+                    start_pos, start_quat, self._initial_eef_pos, self._initial_eef_quat,
+                )
+                start_speed = torch.where(clamped, torch.zeros_like(start_speed), start_speed)
         if mask is not None:
             self._cmd_pos[mask] = start_pos[mask]
             self._cmd_quat[mask] = start_quat[mask]
@@ -647,6 +668,12 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                     step_dt, self.max_linear_speed, self.max_angular_speed,
                 )
                 new_speed = self._cmd_speed
+            if self._leash:
+                new_pos, new_quat, clamped = self._leashed(new_pos, new_quat, eef_pos, eef_quat)
+                new_speed = _motion.leashed_speed(
+                    new_speed, clamped, self._cmd_pos, self._cmd_quat, new_pos, new_quat,
+                    step_dt, self.max_linear_speed, self.max_angular_speed,
+                )
             moved = new_pos - self._cmd_pos
             moved_norm = torch.norm(moved, dim=-1, keepdim=True)
             new_dir = torch.where(moved_norm > 1e-6, moved / moved_norm.clamp(min=1e-9), self._cmd_dir)
@@ -662,12 +689,36 @@ class BoxGripperGraspPolicy(BaseRefPolicy[Dict[str, torch.Tensor]]):
                 self._cmd_dir.copy_(new_dir)
             if self.continue_command:
                 store_command(self._eef_ctrl, self._cmd_pos, self._cmd_quat, self._cmd_speed, self._cmd_dir, mask)
+        elif self._leash:
+            # No interpolation: the phase target itself, leashed to the EEF.
+            new_pos, new_quat, _ = self._leashed(
+                self._get_phase_target_pos(), self._get_phase_target_quat(), eef_pos, eef_quat,
+            )
+            if mask is not None:
+                self._cmd_pos[mask] = new_pos[mask]
+                self._cmd_quat[mask] = new_quat[mask]
+            else:
+                self._cmd_pos.copy_(new_pos)
+                self._cmd_quat.copy_(new_quat)
+
+    def _leashed(
+        self,
+        cmd_pos: torch.Tensor,
+        cmd_quat: torch.Tensor,
+        eef_pos: torch.Tensor,
+        eef_quat: torch.Tensor,
+    ):
+        """``(pos, quat, clamped)``: the command leashed to the achieved pose."""
+        return leash_command(
+            self._eef_ctrl, cmd_pos, cmd_quat, eef_pos, eef_quat,
+            self.max_command_lead, self.max_command_lead_angle,
+        )
 
     @torch.inference_mode()
     def get_action(
         self, 
     ) -> Dict[str, torch.Tensor]:
-        if self._interpolate:
+        if self._interpolate or self._leash:
             target_pos, target_quat = self._cmd_pos, self._cmd_quat
         else:
             target_pos = self._get_phase_target_pos()
