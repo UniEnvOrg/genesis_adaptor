@@ -1,8 +1,8 @@
 """Build LEAP Hand v2 Adv MJCFs (hand alone, and on the FR3) from the upstream URDFs.
 
 Upstream: github.com/leap-hand/LEAP_Hand_V2_Adv_API, ``leap_v2/leap_v2/leap_v2_{left,right}/`` (an Onshape export:
-``robot.urdf`` + STL meshes). The repository has no license file: keep the generated files local until the authors
-allow redistribution.
+``robot.urdf`` + STL meshes). The repository has no license file; the generated files are on the assets Hub repo with a
+``leap_v2_adv/SOURCE.txt`` saying so, and rights to the meshes remain with their authors.
 
 Writes, under ``unienv_genesis_collection/assets/robots/``:
 

@@ -2,8 +2,8 @@
 
 The hand (left- or right-hand model) is mounted on the back of the hand on the FR3 flange, its palm facing along the
 flange axis (``scripts/build_fr3_leap_mjcf.py`` builds ``franka_fr3_leap/fr3_leap_<side>.xml`` from
-``franka_fr3_hand/fr3_hand.xml`` and the upstream LEAP Hand v2 Adv URDF; the upstream repository has no license, so
-the generated model stays local). A bimanual setup is two of these nodes.
+``franka_fr3_hand/fr3_hand.xml`` and the upstream LEAP Hand v2 Adv URDF, whose repository has no license file: see
+``leap_v2_adv/SOURCE.txt`` in the assets). A bimanual setup is two of these nodes.
 
 DOF summary (qpos order):
   Arm:  7 revolute joints (fr3_joint1 .. fr3_joint7)
