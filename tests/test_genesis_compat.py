@@ -69,7 +69,7 @@ def test_constructive_handles_dense_fridge_scale_fast():
 def test_install_is_idempotent_and_patches_importers():
     genesis_compat.install()
     genesis_compat.install()  # second call must not raise or double-wrap
-    import genesis.utils.collision as col
+    col = pytest.importorskip("genesis.utils.collision", reason="Genesis >= 1.4.6 has no bitmask synthesis to patch")
     import genesis.utils.usd.usd_collision as usd_col
 
     assert col.solve_contype_conaffinity is genesis_compat.solve_contype_conaffinity

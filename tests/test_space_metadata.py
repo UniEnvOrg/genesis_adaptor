@@ -243,6 +243,9 @@ def test_ref_policy_action_dict_space_keeps_controller_metadata():
     from unienv_genesis_refpolicy.implementations.goto_policy import GoToRefPolicy
 
     robot = _make_panda()
+    # The policy reads the current EEF pose, so the scene must exist and be built (Genesis >= 1.4.6 holds no state
+    # before that): run the env's reload.
+    WorldEnv(robot.world, [robot], render_mode=None).reset(seed=0, reload=True)
     arm = robot.controller["arm"]
     policy = GoToRefPolicy(
         robot.world, arm,

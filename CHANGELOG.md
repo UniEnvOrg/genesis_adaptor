@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.3a2 (2026-11-08)
+
+### Fixed
+
+- **Genesis 1.4.6 support** (the `genesis-world<1.4.6` cap of 0.0.3a1 is lifted): `genesis_compat.install()` applies its patches independently, so the `Mesh.decimate` fix (still needed on 1.4.6) is no longer skipped when the collision-bitmask synthesis it also patches is absent (1.4.6 removed `genesis.utils.collision`, filtering USD collisions by link pairs instead). `matplotlib` is a dependency: 1.4.6 imports it at `import genesis` without declaring it. A test that read link poses before the world was loaded (1.4.6 allocates the state at build) now loads it first.
+
 ## 0.0.3a1 (2026-11-08)
 
 ### Added

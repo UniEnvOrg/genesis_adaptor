@@ -205,8 +205,9 @@ def _patch_decimate(module) -> None:
 def install() -> None:
     """Patch Genesis's collision-bitmask synthesis + mesh decimation.
 
-    Two fixes (both idempotent, each a no-op when the target module is
-    absent):
+    Two independent fixes (both idempotent, each a no-op when its target is
+    absent; Genesis 1.4.6 dropped the bitmask synthesis, so only the second
+    applies there):
 
     * ``genesis.utils.collision.solve_contype_conaffinity`` — replaced with
       the constructive (z3-free) assignment.  The USD and MJCF importers
@@ -220,14 +221,28 @@ def install() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
+    _patch_collision()
     try:
         import trimesh  # noqa: F401
         import fast_simplification  # noqa: F401
+        from genesis.engine import mesh as _mesh_module
+    except Exception:
+        pass
+    else:
+        try:
+            _patch_decimate(_mesh_module)
+        except Exception:  # noqa: BLE001 — never make loading worse
+            pass
+    _INSTALLED = True
+
+
+def _patch_collision() -> None:
+    """Point ``solve_contype_conaffinity`` at the constructive solver (Genesis <= 1.4.5; 1.4.6 has no such module)."""
+    try:
         import z3  # noqa: F401 — required by the fallback path
         from genesis.utils import collision as _collision
     except Exception:
         return
-
     _collision.solve_contype_conaffinity = solve_contype_conaffinity
     # The importers imported the symbol by value at module load; patch the
     # already-bound references too so the shim actually takes effect.
@@ -241,14 +256,3 @@ def install() -> None:
             continue
         if getattr(module, "solve_contype_conaffinity", None) is not None:
             module.solve_contype_conaffinity = solve_contype_conaffinity
-
-    try:
-        from genesis.engine import mesh as _mesh_module
-    except Exception:
-        pass
-    else:
-        try:
-            _patch_decimate(_mesh_module)
-        except Exception:  # noqa: BLE001 — never make loading worse
-            pass
-    _INSTALLED = True
