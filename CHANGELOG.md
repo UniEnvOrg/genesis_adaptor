@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.0.3a1 (2026-11-08)
 
 ### Added
 
@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Genesis 1.4.5 compatibility**: the `Mesh.decimate` patch of `unienv_genesis_collection.genesis_compat` called `Mesh._invalidate_geometry_cache`, which Genesis 1.4.5 removed (it drops derived geometry in its `mutates_tmesh` decorator instead), so every scene with a decimated mesh failed to build on 1.4.5. The patch now uses whichever the installed Genesis has.
 - **`PickPlaceRefPolicy` proposes grasps for the current target object after a scene reload**: a zero-argument `candidate_provider` factory in `grasp_kwargs` was resolved on the first grasp node only and the shared kwargs overwritten with that provider, so after a reload that swapped the target object the grasp phase kept proposing grasps from the *first* object's geometry (mesh, bounding box, box-likeness) at the new object's pose, and most grasps missed (`droid_sim_real` pickplace collection, same reloaded scene: 3/16 episodes kept, 13 grasp failures, vs 10/10 with the fix). The factory is now called for every grasp node the graph builds (each full reset).
 - **Scene rebuilds no longer accumulate GPU memory**: `GenesisWorld.reload` destroyed the previous scene but left its objects to Python's cyclic garbage collector, and the GPU memory they hold (solver fields, renderer buffers) stayed allocated until a full collection happened to run: about 0.6 GB per rebuild of an 8-env scene with two 720p cameras, enough to run a long collection with periodic rebuilds out of GPU memory. `reload` now runs `gc.collect()` after destroying the old scene (about 0.2 GB per rebuild remains).
 - **Forward kinematics works on Genesis 1.4.4**: Genesis removed `RigidEntity.forward_kinematics` (genesis-world#3233) in favour of `KinematicSolver.forward_kinematics_query(entity, qpos)`, which takes the full configuration and returns every link. The controllers' `compute_eef_pose_from_qpos` and the `get_action_dict` built on it, and the robot node's `forward_kinematics`, raised `AttributeError`. They now go through `unienv_genesis.utils.forward_kinematics`, which keeps the old call shape (a subset of coordinates, the others at their current values; a subset of links) on either Genesis API.

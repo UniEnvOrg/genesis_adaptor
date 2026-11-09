@@ -155,7 +155,8 @@ def test_decimate_patch_matches_unpatched_on_benign_geometry():
                 ),
             )
             self._metadata["decimated"] = True
-        self._invalidate_geometry_cache()
+        if hasattr(self, "_invalidate_geometry_cache"):  # Genesis <= 1.4.4
+            self._invalidate_geometry_cache()
         self.clear_visuals()
 
     # A dense, non-degenerate mesh whose target is reachable: both paths must

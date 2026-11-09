@@ -190,9 +190,15 @@ def _patch_decimate(module) -> None:
             )
             self._metadata["decimated"] = True
 
-        self._invalidate_geometry_cache()
+        # Genesis <= 1.4.4 drops the mesh's derived geometry here; 1.4.5 has no such method and does it in the
+        # ``mutates_tmesh`` decorator instead (applied below).
+        invalidate = getattr(self, "_invalidate_geometry_cache", None)
+        if invalidate is not None:
+            invalidate()
         self.clear_visuals()
 
+    if hasattr(module, "mutates_tmesh"):
+        decimate = module.mutates_tmesh(decimate)
     module.Mesh.decimate = decimate
 
 
