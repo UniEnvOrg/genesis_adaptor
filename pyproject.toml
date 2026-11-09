@@ -19,6 +19,9 @@ dependencies = [
     # dependency of genesis-world (its USD loader); pinned for the explicit
     # version floor.
     "usd-core>=26.8",
+    # genesis-world 1.4.6 imports matplotlib when `genesis` is imported (genesis.utils.hybrid) but declares it only in
+    # its "dev" extra, so a plain install fails to import Genesis.
+    "matplotlib>=3.7",
 ]
 
 [project.optional-dependencies]
