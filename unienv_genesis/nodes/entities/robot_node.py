@@ -145,6 +145,10 @@ class RobotDescriptionNode(EntityNode[
 
         self.entity : Optional[BaseEntity] = None
         self.controller : Optional[EntityController] = None
+        # Half-widths of uniform noise added to the reset keyframe's joint_position at every reset (same order and
+        # length; 0 keeps a joint), e.g. to start data-collection episodes from varied poses. None: the exact keyframe.
+        self.reset_joint_position_noise : Optional[torch.Tensor] = None
+        self._reset_rng = torch.Generator()
 
         # ------------------------------------------------------------------
         # Temporary build / reload sequence (intentional side-effect).
@@ -212,6 +216,8 @@ class RobotDescriptionNode(EntityNode[
     
     def reset(self, *, priority = 0, seed = None, mask = None, **kwargs):
         if priority == 50:
+            if seed is not None:
+                self._reset_rng.manual_seed(int(seed))
             # Apply the rest/keyframe pose FIRST so that the controller reset
             # below observes the final rest state rather than the world's
             # default post-`scene.reset()` state.  This runs during the
@@ -246,7 +252,7 @@ class RobotDescriptionNode(EntityNode[
             )
             if reset_keyframe.joint_position is not None:
                 self.entity.set_dofs_position(
-                    reset_keyframe.joint_position,
+                    self._reset_joint_position(reset_keyframe.joint_position, mask),
                     dofs_idx_local=dofs_idx,
                     envs_idx=env_idx,
                 )
@@ -256,6 +262,20 @@ class RobotDescriptionNode(EntityNode[
                     dofs_idx_local=dofs_idx,
                     envs_idx=env_idx,
                 )
+
+    def _reset_joint_position(self, joint_position, mask : Optional[torch.Tensor]):
+        """The keyframe's joint positions, plus ``reset_joint_position_noise`` per reset environment when set."""
+        if self.reset_joint_position_noise is None:
+            return joint_position
+        base = torch.as_tensor(joint_position, dtype=torch.float32).cpu()
+        half_width = torch.as_tensor(self.reset_joint_position_noise, dtype=torch.float32).cpu()
+        if self.world.is_batched:
+            n = int(torch.as_tensor(mask).sum()) if mask is not None else int(self.world.batch_size)
+            shape = (n, base.shape[-1])
+        else:
+            shape = tuple(base.shape)
+        noise = (torch.rand(shape, generator=self._reset_rng) * 2.0 - 1.0) * half_width
+        return base + noise
 
     def after_reset(self, *, priority = 0, mask = None):
         if priority == 50:
