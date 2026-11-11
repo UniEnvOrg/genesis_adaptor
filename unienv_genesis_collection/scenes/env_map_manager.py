@@ -58,6 +58,7 @@ Explicit HDR paths are also supported by constructing
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from dataclasses import dataclass
@@ -150,7 +151,13 @@ def _infer_env_map_id(hdr_path: str | Path | None) -> Optional[str]:
     """Infer a stable id for an env map from the manifest or filename."""
     if hdr_path is None:
         return None
+    return _infer_env_map_id_cached(str(hdr_path))
 
+
+@functools.lru_cache(maxsize=256)
+def _infer_env_map_id_cached(hdr_path: str) -> str:
+    # Cached: ``get_info`` asks every step, and reading the manifest (and resolving each entry's path) took about
+    # 30 ms; the manifest is a static asset.
     resolved_hdr_path = Path(hdr_path).resolve()
     try:
         for record in _load_env_map_manifest().values():
